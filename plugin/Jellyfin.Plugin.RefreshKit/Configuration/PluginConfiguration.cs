@@ -12,8 +12,9 @@ namespace Jellyfin.Plugin.RefreshKit.Configuration
     {
         /// <summary>
         /// Gets or sets a value indicating whether index.html is served through
-        /// the revalidating injection middleware at all. Off = the plugin is
-        /// inert: no injected tag, no stamping, host bytes pass through.
+        /// the injection middleware. When off, no runtime tag or asset stamp is
+        /// added and the host shell passes through; configuration, diagnostics,
+        /// generation and version endpoints remain available.
         /// </summary>
         public bool EnableInjection { get; set; } = true;
 
@@ -57,8 +58,9 @@ namespace Jellyfin.Plugin.RefreshKit.Configuration
         /// pick it up. The cost is that a plugin which persists per-user or
         /// runtime state into its plugin-configuration XML can make the whole
         /// server reload; the debounce, the per-plugin cooldown and
-        /// <see cref="ConfigWatchExclusions"/> bound that, and turning this off
-        /// falls back to version/DLL-change detection only.
+        /// <see cref="ConfigWatchExclusions"/> bound that. Turning this off still
+        /// detects loaded host/plugin module identity and active loose browser
+        /// asset content; it omits configuration content only.
         /// </para>
         /// </summary>
         public bool EnableConfigWatching { get; set; } = true;
@@ -83,12 +85,14 @@ namespace Jellyfin.Plugin.RefreshKit.Configuration
         /// <summary>
         /// Gets or sets the length, in minutes, of the burst window that follows a
         /// configuration-driven generation change FOR THE SAME PLUGIN. The gate is
-        /// LEADING-EDGE: a change arriving while no window is open publishes at
-        /// once (the admin's single save is live within seconds) and opens the
-        /// window; only further changes inside that window are held, and they
-        /// coalesce into one publish when it expires. Nothing is dropped. Zero
-        /// disables the cooldown (the debounce still applies). Version/DLL changes
-        /// ignore it entirely.
+        /// LEADING-EDGE: after a new configuration identity has been observed by
+        /// two provider scans at least ten seconds apart, a change arriving while
+        /// no window is open publishes and opens the window. With polling as the
+        /// only traffic, a write just after a poll can therefore take roughly two
+        /// poll intervals to appear. Further changes inside the window are held
+        /// and coalesce into one publish when it expires. Nothing is dropped.
+        /// Zero disables the cooldown (the debounce still applies). Loaded-module
+        /// and loose-asset changes ignore it entirely.
         /// </summary>
         public int ConfigCooldownMinutes { get; set; } = 5;
 

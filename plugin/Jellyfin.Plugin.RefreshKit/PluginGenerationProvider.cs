@@ -54,6 +54,13 @@ namespace Jellyfin.Plugin.RefreshKit
         internal const int MaxFilesPerPlugin = 4000;
 
         /// <summary>
+        /// Process-wide file-enumeration ceiling for one scan. Per-plugin caps
+        /// prevent one folder from monopolizing the scan; this aggregate cap
+        /// keeps the total work bounded when many plugins are loaded.
+        /// </summary>
+        internal const int MaxTotalFilesPerScan = MaxFilesPerPlugin * 4;
+
+        /// <summary>
         /// Hard cap on DIRECTORIES descended per plugin folder. The file cap
         /// alone does not bound a recursive enumeration: the walk still visits
         /// every directory looking for matches, so a deep tree costs a full
@@ -62,6 +69,9 @@ namespace Jellyfin.Plugin.RefreshKit
         /// <see cref="ScanActiveClientAssets"/>.
         /// </summary>
         internal const int MaxDirectoriesPerPlugin = 512;
+
+        /// <summary>Process-wide directory-traversal ceiling for one scan.</summary>
+        internal const int MaxTotalDirectoriesPerScan = MaxDirectoriesPerPlugin * 4;
 
         /// <summary>
         /// Upper bound on client-asset bytes hashed for one loaded plugin in one
@@ -109,11 +119,21 @@ namespace Jellyfin.Plugin.RefreshKit
         /// </summary>
         private const int ConfigDebounceSeconds = 10;
 
+        // FileStream's special one-byte buffer disables its internal buffering.
+        // Each scan already reads through one shared 80 KiB buffer; allocating a
+        // second buffer per asset/config file multiplies Gen-0/LOH pressure by the
+        // number of files without reducing syscalls.
+        private const int DirectReadFileStreamBufferSize = 1;
+
         private readonly object _lock = new object();
         private readonly Func<IReadOnlyList<ActivePluginDescriptor>> _activePluginProvider;
         private readonly Func<HostFingerprint> _hostFingerprintProvider;
         private readonly string? _configurationsPathOverride;
         private readonly Func<DateTime> _utcNow;
+        private readonly PluginScanLimits _scanLimits;
+        private readonly Action<string>? _beforeContentRead;
+        private readonly Func<string, IEnumerable<string>> _fileSystemEntriesProvider;
+        private readonly Func<Configuration.PluginConfiguration?> _configurationProvider;
         private readonly Dictionary<string, ConfigSignal> _configSignals =
             new Dictionary<string, ConfigSignal>(StringComparer.Ordinal);
         private readonly Dictionary<string, ActiveAssetSnapshot> _activeAssetSnapshots =
@@ -124,6 +144,8 @@ namespace Jellyfin.Plugin.RefreshKit
             new Dictionary<string, ActivePluginDescriptor>(StringComparer.Ordinal);
         private readonly Dictionary<string, PluginFingerprint> _lastKnownActiveFingerprints =
             new Dictionary<string, PluginFingerprint>(StringComparer.Ordinal);
+        private readonly Dictionary<string, PluginScanCharge> _lastKnownPluginScanCharges =
+            new Dictionary<string, PluginScanCharge>(StringComparer.Ordinal);
 
         private string _cached = string.Empty;
         private IReadOnlyList<PluginFingerprint> _cachedDetails = Array.Empty<PluginFingerprint>();
@@ -140,10 +162,13 @@ namespace Jellyfin.Plugin.RefreshKit
         {
             ArgumentNullException.ThrowIfNull(pluginManager);
             _utcNow = static () => DateTime.UtcNow;
+            _scanLimits = PluginScanLimits.Default;
             _activePluginProvider = () => DiscoverActivePlugins(
                 SnapshotPlugins(pluginManager),
                 CaptureLoadedModules());
             _hostFingerprintProvider = () => DiscoverHostFingerprint(CaptureLoadedModules());
+            _fileSystemEntriesProvider = Directory.EnumerateFileSystemEntries;
+            _configurationProvider = ReadConfiguration;
         }
 
         /// <summary>Test seam for deterministic loaded-state lifecycle scenarios.</summary>
@@ -151,13 +176,22 @@ namespace Jellyfin.Plugin.RefreshKit
             Func<IReadOnlyList<ActivePluginDescriptor>> activePluginProvider,
             string configurationsPath,
             Func<DateTime>? utcNow = null,
-            Func<HostFingerprint>? hostFingerprintProvider = null)
+            Func<HostFingerprint>? hostFingerprintProvider = null,
+            PluginScanLimits? scanLimits = null,
+            Action<string>? beforeContentRead = null,
+            Func<string, IEnumerable<string>>? fileSystemEntriesProvider = null,
+            Func<Configuration.PluginConfiguration?>? configurationProvider = null)
         {
             _activePluginProvider = activePluginProvider
                 ?? throw new ArgumentNullException(nameof(activePluginProvider));
             _configurationsPathOverride = configurationsPath;
             _utcNow = utcNow ?? (static () => DateTime.UtcNow);
             _hostFingerprintProvider = hostFingerprintProvider ?? (static () => HostFingerprint.Empty);
+            _scanLimits = scanLimits ?? PluginScanLimits.Default;
+            _beforeContentRead = beforeContentRead;
+            _fileSystemEntriesProvider = fileSystemEntriesProvider
+                ?? Directory.EnumerateFileSystemEntries;
+            _configurationProvider = configurationProvider ?? ReadConfiguration;
         }
 
         /// <summary>
@@ -194,7 +228,10 @@ namespace Jellyfin.Plugin.RefreshKit
             lock (_lock)
             {
                 var now = _utcNow();
-                if (_cached.Length > 0 && (now - _cachedAtUtc).TotalSeconds < CacheTtlSeconds)
+                var cacheAge = now - _cachedAtUtc;
+                if (_cached.Length > 0
+                    && cacheAge >= TimeSpan.Zero
+                    && cacheAge.TotalSeconds < CacheTtlSeconds)
                 {
                     return (_cached, _cachedDetails, _cachedHost);
                 }
@@ -278,9 +315,20 @@ namespace Jellyfin.Plugin.RefreshKit
                 ? _configurationsPathOverride!
                 : ResolveConfigurationsPath(ResolvePluginsPath());
             var results = new List<PluginFingerprint>(activePlugins.Count);
-            long remainingAssetBytes = MaxTotalAssetBytesPerScan;
-            long remainingConfigurationBytes = MaxTotalConfigurationBytesPerScan;
+            var scanBudget = new PluginScanBudget(_scanLimits);
             var contentBuffer = new byte[81920];
+            Configuration.PluginConfiguration? configuration;
+            try
+            {
+                // One coherent option snapshot controls the entire ordered scan.
+                // In particular, exclusions must be decided before any config
+                // file I/O so ignored plugins cannot consume shared allowance.
+                configuration = _configurationProvider();
+            }
+            catch
+            {
+                configuration = null;
+            }
 
             foreach (var plugin in activePlugins
                 .OrderBy(p => p.StableIdentity, StringComparer.Ordinal))
@@ -293,17 +341,31 @@ namespace Jellyfin.Plugin.RefreshKit
                     // record. Uninstall can also delete assets/config before the
                     // required restart, but the running code is still the old
                     // active state and must keep its exact last-published token.
+                    // Replay its last scan charge too: otherwise later plugins
+                    // inherit capacity that did not exist before removal and can
+                    // move from the truncation sentinel to exact content while the
+                    // loaded process state is unchanged.
+                    if (_lastKnownPluginScanCharges.TryGetValue(
+                        plugin.StableIdentity,
+                        out var retainedCharge))
+                    {
+                        scanBudget.Reserve(retainedCharge);
+                    }
+
                     results.Add(retained.AsRetainedPluginRecord());
                     continue;
                 }
 
+                var budgetBeforePlugin = scanBudget.Capture();
+                var preservePreviousAssetCharge = false;
+                var preservePreviousConfigurationCharge = false;
                 try
                 {
                     var assets = ScanActiveClientAssets(
                         plugin.DirectoryPath,
-                        remainingAssetBytes,
+                        scanBudget,
                         contentBuffer);
-                    remainingAssetBytes = Math.Max(0, remainingAssetBytes - assets.BytesHashed);
+                    var assetScanUnavailable = !assets.IsUsable;
                     var usingLastGoodAssets = false;
                     if (assets.IsUsable)
                     {
@@ -317,35 +379,56 @@ namespace Jellyfin.Plugin.RefreshKit
                         // assets here would publish the lifecycle change too early.
                         assets = previous;
                         usingLastGoodAssets = true;
+                        preservePreviousAssetCharge = true;
                     }
 
-                    var configurationSnapshot = ScanActiveConfiguration(
-                        configurationsPath,
-                        plugin.ConfigurationFileNames,
-                        remainingConfigurationBytes,
-                        contentBuffer);
-                    remainingConfigurationBytes = Math.Max(
-                        0,
-                        remainingConfigurationBytes - configurationSnapshot.BytesHashed);
                     var usingLastGoodConfiguration = false;
-                    if (configurationSnapshot.IsUsable)
+                    var configurationScanUnavailable = false;
+                    ActiveConfigurationSnapshot configurationSnapshot;
+                    var watchConfiguration = configuration?.EnableConfigWatching != false
+                        && !IsConfigWatchExcluded(
+                            configuration,
+                            plugin.Folder,
+                            plugin.Id,
+                            plugin.AssemblyNames);
+                    if (!watchConfiguration)
                     {
-                        _activeConfigurationSnapshots[plugin.StableIdentity] = configurationSnapshot;
+                        // Disabled/excluded means omitted, not merely hidden after
+                        // scanning. It consumes no I/O budget and retains no stale
+                        // snapshot that could reappear if watching is re-enabled.
+                        configurationSnapshot = ActiveConfigurationSnapshot.Empty;
+                        _activeConfigurationSnapshots.Remove(plugin.StableIdentity);
+                        _configSignals.Remove(plugin.Folder);
                     }
-                    else if (_activeConfigurationSnapshots.TryGetValue(
-                        plugin.StableIdentity,
-                        out var previousConfiguration))
+                    else
                     {
-                        configurationSnapshot = previousConfiguration;
-                        usingLastGoodConfiguration = true;
+                        configurationSnapshot = ScanActiveConfiguration(
+                            configurationsPath,
+                            plugin.ConfigurationFileNames,
+                            scanBudget,
+                            contentBuffer);
+                        configurationScanUnavailable = !configurationSnapshot.IsUsable;
+                        if (configurationSnapshot.IsUsable)
+                        {
+                            _activeConfigurationSnapshots[plugin.StableIdentity] = configurationSnapshot;
+                        }
+                        else if (_activeConfigurationSnapshots.TryGetValue(
+                            plugin.StableIdentity,
+                            out var previousConfiguration))
+                        {
+                            configurationSnapshot = previousConfiguration;
+                            usingLastGoodConfiguration = true;
+                            preservePreviousConfigurationCharge = true;
+                        }
                     }
 
-                    var publishedConfigurationIdentity = PublishConfigIdentity(
-                        plugin.Folder,
-                        plugin.Id,
-                        plugin.AssemblyNames,
-                        configurationSnapshot.Identity,
-                        now);
+                    var publishedConfigurationIdentity = watchConfiguration
+                        ? PublishConfigIdentity(
+                            plugin.Folder,
+                            configurationSnapshot.Identity,
+                            now,
+                            configuration)
+                        : string.Empty;
 
                     var fingerprint = new PluginFingerprint(
                         plugin.Folder,
@@ -360,13 +443,13 @@ namespace Jellyfin.Plugin.RefreshKit
                         assets.DirectoriesScanned,
                         assets.BytesHashed,
                         assets.IsTruncated,
-                        !assets.IsUsable,
+                        assetScanUnavailable,
                         usingLastGoodAssets,
                         publishedConfigurationIdentity,
                         configurationSnapshot.FileCount,
                         configurationSnapshot.BytesHashed,
                         configurationSnapshot.IsTruncated,
-                        !configurationSnapshot.IsUsable,
+                        configurationScanUnavailable,
                         usingLastGoodConfiguration,
                         usingLastKnownPluginRecord: false);
                     _lastKnownActiveFingerprints[plugin.StableIdentity] = fingerprint;
@@ -382,6 +465,8 @@ namespace Jellyfin.Plugin.RefreshKit
                         plugin.StableIdentity,
                         out var previousFingerprint))
                     {
+                        preservePreviousAssetCharge = true;
+                        preservePreviousConfigurationCharge = true;
                         results.Add(previousFingerprint);
                         continue;
                     }
@@ -410,6 +495,34 @@ namespace Jellyfin.Plugin.RefreshKit
                         usingLastKnownPluginRecord: false);
                     _lastKnownActiveFingerprints[plugin.StableIdentity] = fingerprint;
                     results.Add(fingerprint);
+                }
+                finally
+                {
+                    // Keep the actual reservation rather than deriving it from
+                    // diagnostics. Enumerated non-assets, queued directories and
+                    // failed reads all consume budget without appearing in the
+                    // successfully hashed/scanned counters on the published row.
+                    // A last-good subsystem retains at least its prior charge. An
+                    // early failure (for example, a temporarily missing plugin
+                    // directory) must not refund that subsystem's capacity to
+                    // later plugins and change their fingerprints while its
+                    // published identity is frozen. The two subsystems remain
+                    // independent: a frozen asset row does not retain config
+                    // bytes that a successful current config scan released.
+                    var attemptedCharge = scanBudget.GetChargeSince(budgetBeforePlugin);
+                    if ((preservePreviousAssetCharge || preservePreviousConfigurationCharge)
+                        && _lastKnownPluginScanCharges.TryGetValue(
+                            plugin.StableIdentity,
+                            out var previousCharge))
+                    {
+                        scanBudget.Reserve(previousCharge.GetDeficitFrom(
+                            attemptedCharge,
+                            preservePreviousAssetCharge,
+                            preservePreviousConfigurationCharge));
+                    }
+
+                    _lastKnownPluginScanCharges[plugin.StableIdentity] =
+                        scanBudget.GetChargeSince(budgetBeforePlugin);
                 }
             }
 
@@ -656,9 +769,9 @@ namespace Jellyfin.Plugin.RefreshKit
         /// identity is the loaded module MVID, not whatever bytes an installer has
         /// staged at the same path for the next restart.
         /// </summary>
-        private static ActiveAssetSnapshot ScanActiveClientAssets(
+        private ActiveAssetSnapshot ScanActiveClientAssets(
             string directory,
-            long remainingGlobalBytes,
+            PluginScanBudget scanBudget,
             byte[] buffer)
         {
             if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
@@ -666,55 +779,91 @@ namespace Jellyfin.Plugin.RefreshKit
                 return ActiveAssetSnapshot.Unavailable;
             }
 
-            var byteLimit = Math.Min(MaxAssetBytesPerPlugin, Math.Max(0, remainingGlobalBytes));
-            if (byteLimit == 0)
+            if (_scanLimits.MaxAssetBytesPerPlugin == 0 || scanBudget.RemainingAssetBytes == 0)
             {
                 return ActiveAssetSnapshot.Truncated(0, 0, 0, 0);
             }
 
             long newestTicks = 0;
             long bytesHashed = 0;
-            var filesSeen = 0;
+            long bytesReserved = 0;
+            var filesReserved = 0;
             var directoriesSeen = 0;
+            var directoriesReserved = 0;
             var material = new List<string>();
             var pending = new Stack<string>();
+
+            if (_scanLimits.MaxDirectoriesPerPlugin == 0
+                || scanBudget.ReserveDirectories(1) == 0)
+            {
+                return ActiveAssetSnapshot.Truncated(0, 0, 0, 0);
+            }
+
+            directoriesReserved++;
             pending.Push(directory);
 
             while (pending.Count > 0)
             {
-                if (directoriesSeen >= MaxDirectoriesPerPlugin)
-                {
-                    return ActiveAssetSnapshot.Truncated(
-                        newestTicks,
-                        material.Count,
-                        directoriesSeen,
-                        bytesHashed);
-                }
-
                 var current = pending.Pop();
                 directoriesSeen++;
                 try
                 {
-                    var remainingFiles = MaxFilesPerPlugin - filesSeen;
-                    var files = Directory.EnumerateFiles(current)
-                        .Take(remainingFiles + 1)
-                        .OrderBy(path => path, StringComparer.Ordinal)
-                        .ToList();
-                    if (files.Count > remainingFiles)
+                    var files = new List<string>();
+                    var subdirectories = new List<string>();
+                    foreach (var entry in _fileSystemEntriesProvider(current))
                     {
-                        // The native enumeration order is filesystem-dependent.
-                        // Do not hash an arbitrary prefix: publish one stable
-                        // budget-exceeded identity and expose truncation instead.
-                        return ActiveAssetSnapshot.Truncated(
-                            newestTicks,
-                            material.Count,
-                            directoriesSeen,
-                            bytesHashed);
+                        var attributes = File.GetAttributes(entry);
+                        if ((attributes & FileAttributes.Directory) != 0)
+                        {
+                            // Charge every directory entry as it is yielded, before
+                            // sorting or deciding whether a reparse point is safe to
+                            // descend. The first entry beyond either ceiling is the
+                            // only overflow sentinel consumed from the native
+                            // enumerator; a directory-only tree cannot force an
+                            // unbounded preliminary file walk.
+                            if (directoriesReserved >= _scanLimits.MaxDirectoriesPerPlugin
+                                || scanBudget.RemainingDirectories == 0
+                                || scanBudget.ReserveDirectories(1) != 1)
+                            {
+                                return ActiveAssetSnapshot.Truncated(
+                                    newestTicks,
+                                    material.Count,
+                                    directoriesSeen,
+                                    bytesHashed);
+                            }
+
+                            directoriesReserved++;
+                            if ((attributes & FileAttributes.ReparsePoint) == 0)
+                            {
+                                subdirectories.Add(entry);
+                            }
+
+                            continue;
+                        }
+
+                        // Files of every extension consume the file-enumeration
+                        // allowance. Otherwise a folder containing only irrelevant
+                        // files could still make the periodic scan unbounded.
+                        if (filesReserved >= _scanLimits.MaxFilesPerPlugin
+                            || scanBudget.RemainingFiles == 0
+                            || scanBudget.ReserveFiles(1) != 1)
+                        {
+                            return ActiveAssetSnapshot.Truncated(
+                                newestTicks,
+                                material.Count,
+                                directoriesSeen,
+                                bytesHashed);
+                        }
+
+                        filesReserved++;
+                        files.Add(entry);
                     }
+
+                    files.Sort(StringComparer.Ordinal);
+                    subdirectories.Sort(StringComparer.Ordinal);
 
                     foreach (var file in files)
                     {
-                        filesSeen++;
                         var extension = Path.GetExtension(file);
                         if (!IsClientAsset(extension))
                         {
@@ -729,15 +878,10 @@ namespace Jellyfin.Plugin.RefreshKit
                                 continue;
                             }
 
-                            using var stream = new FileStream(
-                                file,
-                                FileMode.Open,
-                                FileAccess.Read,
-                                FileShare.ReadWrite | FileShare.Delete,
-                                buffer.Length,
-                                FileOptions.SequentialScan);
-                            var length = stream.Length;
-                            if (length < 0 || length > byteLimit - bytesHashed)
+                            var length = info.Length;
+                            if (length < 0
+                                || length > _scanLimits.MaxAssetBytesPerPlugin - bytesReserved
+                                || length > scanBudget.RemainingAssetBytes)
                             {
                                 return ActiveAssetSnapshot.Truncated(
                                     newestTicks,
@@ -746,7 +890,26 @@ namespace Jellyfin.Plugin.RefreshKit
                                     bytesHashed);
                             }
 
+                            // Reserve the declared length before opening or hashing.
+                            // A denied/racing read must consume the same aggregate
+                            // allowance as a successful attempt, otherwise a run of
+                            // failures can bypass the process-wide I/O ceiling.
+                            scanBudget.ReserveAssetBytes(length);
+                            bytesReserved += length;
                             var ticks = info.LastWriteTimeUtc.Ticks;
+                            using var stream = new FileStream(
+                                file,
+                                FileMode.Open,
+                                FileAccess.Read,
+                                FileShare.ReadWrite | FileShare.Delete,
+                                DirectReadFileStreamBufferSize,
+                                FileOptions.SequentialScan);
+                            if (stream.Length != length)
+                            {
+                                return ActiveAssetSnapshot.Unavailable;
+                            }
+
+                            _beforeContentRead?.Invoke(file);
                             var contentHash = HashBoundedStream(stream, length, buffer);
                             info.Refresh();
                             if (!info.Exists || info.Length != length || info.LastWriteTimeUtc.Ticks != ticks)
@@ -771,41 +934,10 @@ namespace Jellyfin.Plugin.RefreshKit
                         }
                     }
 
-                    // Every queued directory has already consumed a future traversal
-                    // slot. Reserving only directoriesSeen lets a wide/deep tree grow
-                    // pending far beyond the 512-directory promise before the pop-side
-                    // sentinel notices. The subtraction makes both enumeration work
-                    // and queue memory genuinely bounded by the same budget.
-                    var remainingDirectories = MaxDirectoriesPerPlugin
-                        - directoriesSeen
-                        - pending.Count;
-                    var subdirectories = Directory.EnumerateDirectories(current)
-                        .Take(remainingDirectories + 1)
-                        .OrderBy(path => path, StringComparer.Ordinal)
-                        .ToList();
-                    if (subdirectories.Count > remainingDirectories)
-                    {
-                        return ActiveAssetSnapshot.Truncated(
-                            newestTicks,
-                            material.Count,
-                            directoriesSeen,
-                            bytesHashed);
-                    }
-
                     // Push in reverse so the ordinal-lowest directory is visited first.
                     for (var index = subdirectories.Count - 1; index >= 0; index--)
                     {
-                        try
-                        {
-                            if ((File.GetAttributes(subdirectories[index]) & FileAttributes.ReparsePoint) == 0)
-                            {
-                                pending.Push(subdirectories[index]);
-                            }
-                        }
-                        catch
-                        {
-                            return ActiveAssetSnapshot.Unavailable;
-                        }
+                        pending.Push(subdirectories[index]);
                     }
                 }
                 catch
@@ -875,10 +1007,10 @@ namespace Jellyfin.Plugin.RefreshKit
             return false;
         }
 
-        private static ActiveConfigurationSnapshot ScanActiveConfiguration(
+        private ActiveConfigurationSnapshot ScanActiveConfiguration(
             string configurationsPath,
             IReadOnlyList<string> configurationFileNames,
-            long remainingGlobalBytes,
+            PluginScanBudget scanBudget,
             byte[] buffer)
         {
             if (configurationFileNames.Count == 0)
@@ -891,16 +1023,15 @@ namespace Jellyfin.Plugin.RefreshKit
                 return ActiveConfigurationSnapshot.Unavailable;
             }
 
-            var byteLimit = Math.Min(
-                MaxConfigurationBytesPerPlugin,
-                Math.Max(0, remainingGlobalBytes));
-            if (byteLimit == 0)
+            if (_scanLimits.MaxConfigurationBytesPerPlugin == 0
+                || scanBudget.RemainingConfigurationBytes == 0)
             {
                 return ActiveConfigurationSnapshot.Truncated(0, 0, 0);
             }
 
             long newestTicks = 0;
             long bytesHashed = 0;
+            long bytesReserved = 0;
             var material = new List<string>();
             foreach (var configuredName in configurationFileNames
                 .OrderBy(name => name, StringComparer.Ordinal))
@@ -931,15 +1062,10 @@ namespace Jellyfin.Plugin.RefreshKit
                         continue;
                     }
 
-                    using var stream = new FileStream(
-                        file,
-                        FileMode.Open,
-                        FileAccess.Read,
-                        FileShare.ReadWrite | FileShare.Delete,
-                        buffer.Length,
-                        FileOptions.SequentialScan);
-                    var length = stream.Length;
-                    if (length < 0 || length > byteLimit - bytesHashed)
+                    var length = info.Length;
+                    if (length < 0
+                        || length > _scanLimits.MaxConfigurationBytesPerPlugin - bytesReserved
+                        || length > scanBudget.RemainingConfigurationBytes)
                     {
                         return ActiveConfigurationSnapshot.Truncated(
                             newestTicks,
@@ -947,7 +1073,24 @@ namespace Jellyfin.Plugin.RefreshKit
                             bytesHashed);
                     }
 
+                    // As with assets, reserve before the read. A configuration
+                    // file that becomes unreadable cannot refund the global cap.
+                    scanBudget.ReserveConfigurationBytes(length);
+                    bytesReserved += length;
                     var ticks = info.LastWriteTimeUtc.Ticks;
+                    using var stream = new FileStream(
+                        file,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete,
+                        DirectReadFileStreamBufferSize,
+                        FileOptions.SequentialScan);
+                    if (stream.Length != length)
+                    {
+                        return ActiveConfigurationSnapshot.Unavailable;
+                    }
+
+                    _beforeContentRead?.Invoke(file);
                     var contentHash = HashBoundedStream(stream, length, buffer);
                     info.Refresh();
                     if (!info.Exists || info.Length != length || info.LastWriteTimeUtc.Ticks != ticks)
@@ -1007,8 +1150,10 @@ namespace Jellyfin.Plugin.RefreshKit
         /// another full window — the "my setting did nothing for five minutes"
         /// behaviour this gate exists to avoid. The cost is that a plugin
         /// rewriting its configuration continuously can produce two bumps per
-        /// window rather than one; the benefit is that an ordinary single save is
-        /// always live within the debounce plus one client poll.</description></item>
+        /// window rather than one. A new identity still needs two provider
+        /// observations at least <see cref="ConfigDebounceSeconds"/> apart; when
+        /// polling is the only traffic, a write just after a poll normally appears
+        /// within roughly two poll intervals.</description></item>
         /// <item><description>A change that arrives after a window has already
         /// expired is a leading edge in its own right: it publishes at once and
         /// opens a fresh window, so burst protection re-arms itself.</description></item>
@@ -1016,26 +1161,34 @@ namespace Jellyfin.Plugin.RefreshKit
         /// </summary>
         private string PublishConfigIdentity(
             string folder,
-            string id,
-            IReadOnlyList<string> assemblyNames,
             string rawIdentity,
-            DateTime now)
+            DateTime now,
+            Configuration.PluginConfiguration? configuration)
         {
-            var configuration = ReadConfiguration();
-            if (configuration?.EnableConfigWatching == false
-                || IsConfigWatchExcluded(configuration, folder, id, assemblyNames))
-            {
-                // Excluded plugins fall back to version/DLL detection only.
-                _configSignals.Remove(folder);
-                return string.Empty;
-            }
-
             if (!_configSignals.TryGetValue(folder, out var signal))
             {
-                signal = new ConfigSignal { PublishedIdentity = rawIdentity };
+                signal = new ConfigSignal
+                {
+                    PublishedIdentity = rawIdentity,
+                    LastObservedUtc = now,
+                };
                 _configSignals[folder] = signal;
                 return signal.PublishedIdentity;
             }
+
+            if (signal.LastObservedUtc != DateTime.MinValue && now < signal.LastObservedUtc)
+            {
+                // Wall clocks can move backwards after an NTP correction, VM
+                // restore or manual adjustment. Restart a pending debounce and
+                // close its old absolute cooldown rather than freezing freshness
+                // until UTC catches up with timestamps from the former timeline.
+                signal.PendingFirstSeenUtc = signal.PendingIdentity == null
+                    ? DateTime.MinValue
+                    : now;
+                signal.CooldownUntilUtc = DateTime.MinValue;
+            }
+
+            signal.LastObservedUtc = now;
 
             if (rawIdentity.Equals(signal.PublishedIdentity, StringComparison.Ordinal))
             {
@@ -1131,6 +1284,148 @@ namespace Jellyfin.Plugin.RefreshKit
             return false;
         }
 
+        /// <summary>
+        /// Mutable allowance shared by every plugin in one coherently ordered
+        /// scan. Reservations are intentionally never refunded: work attempted
+        /// before an I/O race or access failure still consumed the advertised
+        /// process-wide budget.
+        /// </summary>
+        private sealed class PluginScanBudget
+        {
+            public PluginScanBudget(PluginScanLimits limits)
+            {
+                RemainingFiles = limits.MaxTotalFilesPerScan;
+                RemainingDirectories = limits.MaxTotalDirectoriesPerScan;
+                RemainingAssetBytes = limits.MaxTotalAssetBytesPerScan;
+                RemainingConfigurationBytes = limits.MaxTotalConfigurationBytesPerScan;
+            }
+
+            public int RemainingFiles { get; private set; }
+
+            public int RemainingDirectories { get; private set; }
+
+            public long RemainingAssetBytes { get; private set; }
+
+            public long RemainingConfigurationBytes { get; private set; }
+
+            public PluginScanBudgetState Capture() =>
+                new PluginScanBudgetState(
+                    RemainingFiles,
+                    RemainingDirectories,
+                    RemainingAssetBytes,
+                    RemainingConfigurationBytes);
+
+            public PluginScanCharge GetChargeSince(PluginScanBudgetState before) =>
+                new PluginScanCharge(
+                    before.RemainingFiles - RemainingFiles,
+                    before.RemainingDirectories - RemainingDirectories,
+                    before.RemainingAssetBytes - RemainingAssetBytes,
+                    before.RemainingConfigurationBytes - RemainingConfigurationBytes);
+
+            public void Reserve(PluginScanCharge charge)
+            {
+                ReserveFiles(charge.Files);
+                ReserveDirectories(charge.Directories);
+                ReserveAssetBytes(Math.Min(charge.AssetBytes, RemainingAssetBytes));
+                ReserveConfigurationBytes(Math.Min(
+                    charge.ConfigurationBytes,
+                    RemainingConfigurationBytes));
+            }
+
+            public int ReserveFiles(int requested)
+            {
+                var reserved = Math.Min(Math.Max(0, requested), RemainingFiles);
+                RemainingFiles -= reserved;
+                return reserved;
+            }
+
+            public int ReserveDirectories(int requested)
+            {
+                var reserved = Math.Min(Math.Max(0, requested), RemainingDirectories);
+                RemainingDirectories -= reserved;
+                return reserved;
+            }
+
+            public void ReserveAssetBytes(long requested)
+            {
+                if (requested < 0 || requested > RemainingAssetBytes)
+                {
+                    throw new InvalidOperationException("Asset bytes must be checked before reservation.");
+                }
+
+                RemainingAssetBytes -= requested;
+            }
+
+            public void ReserveConfigurationBytes(long requested)
+            {
+                if (requested < 0 || requested > RemainingConfigurationBytes)
+                {
+                    throw new InvalidOperationException(
+                        "Configuration bytes must be checked before reservation.");
+                }
+
+                RemainingConfigurationBytes -= requested;
+            }
+        }
+
+        private readonly struct PluginScanBudgetState
+        {
+            public PluginScanBudgetState(
+                int remainingFiles,
+                int remainingDirectories,
+                long remainingAssetBytes,
+                long remainingConfigurationBytes)
+            {
+                RemainingFiles = remainingFiles;
+                RemainingDirectories = remainingDirectories;
+                RemainingAssetBytes = remainingAssetBytes;
+                RemainingConfigurationBytes = remainingConfigurationBytes;
+            }
+
+            public int RemainingFiles { get; }
+
+            public int RemainingDirectories { get; }
+
+            public long RemainingAssetBytes { get; }
+
+            public long RemainingConfigurationBytes { get; }
+        }
+
+        private readonly struct PluginScanCharge
+        {
+            public PluginScanCharge(
+                int files,
+                int directories,
+                long assetBytes,
+                long configurationBytes)
+            {
+                Files = files;
+                Directories = directories;
+                AssetBytes = assetBytes;
+                ConfigurationBytes = configurationBytes;
+            }
+
+            public int Files { get; }
+
+            public int Directories { get; }
+
+            public long AssetBytes { get; }
+
+            public long ConfigurationBytes { get; }
+
+            public PluginScanCharge GetDeficitFrom(
+                PluginScanCharge actual,
+                bool preserveAssets,
+                bool preserveConfiguration) =>
+                new PluginScanCharge(
+                    preserveAssets ? Math.Max(0, Files - actual.Files) : 0,
+                    preserveAssets ? Math.Max(0, Directories - actual.Directories) : 0,
+                    preserveAssets ? Math.Max(0, AssetBytes - actual.AssetBytes) : 0,
+                    preserveConfiguration
+                        ? Math.Max(0, ConfigurationBytes - actual.ConfigurationBytes)
+                        : 0);
+        }
+
         /// <summary>Debounce/cooldown state for one plugin's configuration file.</summary>
         private sealed class ConfigSignal
         {
@@ -1148,6 +1443,9 @@ namespace Jellyfin.Plugin.RefreshKit
             /// publishes on the leading edge.
             /// </summary>
             public DateTime CooldownUntilUtc { get; set; } = DateTime.MinValue;
+
+            /// <summary>Last wall-clock observation, used to detect a rollback.</summary>
+            public DateTime LastObservedUtc { get; set; } = DateTime.MinValue;
         }
 
         private readonly struct ActiveAssetSnapshot
@@ -1331,6 +1629,61 @@ namespace Jellyfin.Plugin.RefreshKit
                 return string.Empty;
             }
         }
+    }
+
+    /// <summary>
+    /// Immutable scan ceilings. Production uses <see cref="Default"/>; focused
+    /// tests inject small limits so aggregate-boundary behavior is deterministic
+    /// without creating thousands of filesystem entries or multi-megabyte files.
+    /// </summary>
+    internal sealed class PluginScanLimits
+    {
+        public static PluginScanLimits Default { get; } = new PluginScanLimits();
+
+        public PluginScanLimits(
+            int maxFilesPerPlugin = PluginGenerationProvider.MaxFilesPerPlugin,
+            int maxTotalFilesPerScan = PluginGenerationProvider.MaxTotalFilesPerScan,
+            int maxDirectoriesPerPlugin = PluginGenerationProvider.MaxDirectoriesPerPlugin,
+            int maxTotalDirectoriesPerScan = PluginGenerationProvider.MaxTotalDirectoriesPerScan,
+            long maxAssetBytesPerPlugin = PluginGenerationProvider.MaxAssetBytesPerPlugin,
+            long maxTotalAssetBytesPerScan = PluginGenerationProvider.MaxTotalAssetBytesPerScan,
+            long maxConfigurationBytesPerPlugin = PluginGenerationProvider.MaxConfigurationBytesPerPlugin,
+            long maxTotalConfigurationBytesPerScan = PluginGenerationProvider.MaxTotalConfigurationBytesPerScan)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(maxFilesPerPlugin);
+            ArgumentOutOfRangeException.ThrowIfNegative(maxTotalFilesPerScan);
+            ArgumentOutOfRangeException.ThrowIfNegative(maxDirectoriesPerPlugin);
+            ArgumentOutOfRangeException.ThrowIfNegative(maxTotalDirectoriesPerScan);
+            ArgumentOutOfRangeException.ThrowIfNegative(maxAssetBytesPerPlugin);
+            ArgumentOutOfRangeException.ThrowIfNegative(maxTotalAssetBytesPerScan);
+            ArgumentOutOfRangeException.ThrowIfNegative(maxConfigurationBytesPerPlugin);
+            ArgumentOutOfRangeException.ThrowIfNegative(maxTotalConfigurationBytesPerScan);
+
+            MaxFilesPerPlugin = maxFilesPerPlugin;
+            MaxTotalFilesPerScan = maxTotalFilesPerScan;
+            MaxDirectoriesPerPlugin = maxDirectoriesPerPlugin;
+            MaxTotalDirectoriesPerScan = maxTotalDirectoriesPerScan;
+            MaxAssetBytesPerPlugin = maxAssetBytesPerPlugin;
+            MaxTotalAssetBytesPerScan = maxTotalAssetBytesPerScan;
+            MaxConfigurationBytesPerPlugin = maxConfigurationBytesPerPlugin;
+            MaxTotalConfigurationBytesPerScan = maxTotalConfigurationBytesPerScan;
+        }
+
+        public int MaxFilesPerPlugin { get; }
+
+        public int MaxTotalFilesPerScan { get; }
+
+        public int MaxDirectoriesPerPlugin { get; }
+
+        public int MaxTotalDirectoriesPerScan { get; }
+
+        public long MaxAssetBytesPerPlugin { get; }
+
+        public long MaxTotalAssetBytesPerScan { get; }
+
+        public long MaxConfigurationBytesPerPlugin { get; }
+
+        public long MaxTotalConfigurationBytesPerScan { get; }
     }
 
     /// <summary>Path-independent fingerprint of the loaded Jellyfin host.</summary>

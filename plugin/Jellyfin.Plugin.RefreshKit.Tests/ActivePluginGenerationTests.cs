@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
 using Xunit;
@@ -12,6 +14,10 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
     public sealed class ActivePluginGenerationTests : IDisposable
     {
         private static readonly Guid DemoId = new Guid("9c4e63f1-031b-4f25-988b-4f7d78a8b53e");
+        // This is only a deadlock escape for deterministic coordination, not a
+        // performance assertion. Dedicated reader threads avoid thread-pool
+        // starvation while the first reader owns the provider's scan lock.
+        private static readonly TimeSpan ConcurrencyDeadlockGuard = TimeSpan.FromSeconds(30);
         private readonly string _root;
         private readonly string _configurations;
 
@@ -416,6 +422,745 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Fact]
+        public void AggregateAssetFileCapIsSharedInStablePluginOrder()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "file-cap-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            var second = NodePlugin(
+                _root,
+                "file-cap-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            var limits = new PluginScanLimits(maxTotalFilesPerScan: 1);
+            var reverseProvider = new PluginGenerationProvider(
+                () => new[] { second, first },
+                _configurations,
+                scanLimits: limits);
+            var forwardProvider = new PluginGenerationProvider(
+                () => new[] { first, second },
+                _configurations,
+                scanLimits: limits);
+
+            Assert.Equal(reverseProvider.Generation, forwardProvider.Generation);
+            var firstDetail = Assert.Single(
+                reverseProvider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var secondDetail = Assert.Single(
+                reverseProvider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.False(firstDetail.AssetScanTruncated);
+            Assert.Equal(1, firstDetail.AssetFileCount);
+            Assert.True(secondDetail.AssetScanTruncated);
+            Assert.Equal(0, secondDetail.AssetFileCount);
+        }
+
+        [Fact]
+        public void AggregateAssetDirectoryCapIsSharedInStablePluginOrder()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "directory-cap-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            var second = NodePlugin(
+                _root,
+                "directory-cap-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            var limits = new PluginScanLimits(maxTotalDirectoriesPerScan: 3);
+            var reverseProvider = new PluginGenerationProvider(
+                () => new[] { second, first },
+                _configurations,
+                scanLimits: limits);
+            var forwardProvider = new PluginGenerationProvider(
+                () => new[] { first, second },
+                _configurations,
+                scanLimits: limits);
+
+            Assert.Equal(reverseProvider.Generation, forwardProvider.Generation);
+            var firstDetail = Assert.Single(
+                reverseProvider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var secondDetail = Assert.Single(
+                reverseProvider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.False(firstDetail.AssetScanTruncated);
+            Assert.Equal(2, firstDetail.AssetDirectoriesScanned);
+            Assert.True(secondDetail.AssetScanTruncated);
+            Assert.Equal(1, secondDetail.AssetDirectoriesScanned);
+        }
+
+        [Fact]
+        public void RetainedPluginKeepsAggregateAssetByteBudgetReservedUntilRestart()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "retained-byte-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            var second = NodePlugin(
+                _root,
+                "retained-byte-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            var assetLength = new FileInfo(
+                Path.Combine(first.DirectoryPath, "web", "client.js")).Length;
+            IReadOnlyList<ActivePluginDescriptor> active = new[] { second, first };
+            var limits = new PluginScanLimits(maxTotalAssetBytesPerScan: assetLength);
+            var provider = new PluginGenerationProvider(
+                () => active,
+                _configurations,
+                scanLimits: limits);
+            var beforeRemoval = provider.Generation;
+
+            var firstBeforeRemoval = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var secondBeforeRemoval = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.False(firstBeforeRemoval.AssetScanTruncated);
+            Assert.True(secondBeforeRemoval.AssetScanTruncated);
+
+            active = new[] { second };
+            provider.Invalidate();
+
+            Assert.Equal(beforeRemoval, provider.Generation);
+            var retained = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var stillTruncated = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.True(retained.UsingLastKnownPluginRecord);
+            Assert.True(stillTruncated.AssetScanTruncated);
+
+            var restartedProvider = new PluginGenerationProvider(
+                () => active,
+                _configurations,
+                scanLimits: limits);
+            Assert.NotEqual(beforeRemoval, restartedProvider.Generation);
+            Assert.False(Assert.Single(restartedProvider.Details).AssetScanTruncated);
+        }
+
+        [Fact]
+        public void RetainedPluginKeepsAggregateAssetFileBudgetReserved()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "retained-file-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            var second = NodePlugin(
+                _root,
+                "retained-file-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            File.Move(
+                Path.Combine(first.DirectoryPath, "web", "client.js"),
+                Path.Combine(first.DirectoryPath, "client.js"));
+            Directory.Delete(Path.Combine(first.DirectoryPath, "web"));
+            File.WriteAllText(Path.Combine(first.DirectoryPath, "ignored.txt"), "not a client asset");
+            File.Move(
+                Path.Combine(second.DirectoryPath, "web", "client.js"),
+                Path.Combine(second.DirectoryPath, "client.js"));
+            Directory.Delete(Path.Combine(second.DirectoryPath, "web"));
+            IReadOnlyList<ActivePluginDescriptor> active = new[] { second, first };
+            var provider = new PluginGenerationProvider(
+                () => active,
+                _configurations,
+                scanLimits: new PluginScanLimits(maxTotalFilesPerScan: 2));
+            var beforeRemoval = provider.Generation;
+
+            var firstBeforeRemoval = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            Assert.False(firstBeforeRemoval.AssetScanTruncated);
+            Assert.Equal(1, firstBeforeRemoval.AssetFileCount);
+            Assert.True(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal))
+                .AssetScanTruncated);
+
+            active = new[] { second };
+            provider.Invalidate();
+
+            Assert.Equal(beforeRemoval, provider.Generation);
+            Assert.True(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal))
+                .AssetScanTruncated);
+        }
+
+        [Fact]
+        public void RetainedPluginKeepsAggregateAssetDirectoryBudgetReserved()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "retained-directory-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            var second = NodePlugin(
+                _root,
+                "retained-directory-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            var firstWeb = Path.Combine(first.DirectoryPath, "web");
+            var firstBranch = Path.Combine(first.DirectoryPath, "a");
+            Directory.Move(firstWeb, firstBranch);
+            var firstAsset = Path.Combine(firstBranch, "client.js");
+            var failFirstRead = false;
+            IReadOnlyList<ActivePluginDescriptor> active = new[] { second, first };
+            var provider = new PluginGenerationProvider(
+                () => active,
+                _configurations,
+                scanLimits: new PluginScanLimits(maxTotalDirectoriesPerScan: 4),
+                beforeContentRead: path =>
+                {
+                    if (failFirstRead && path.Equals(firstAsset, StringComparison.Ordinal))
+                    {
+                        throw new IOException("Deterministic asset read failure.");
+                    }
+                });
+            _ = provider.Generation;
+
+            Directory.CreateDirectory(Path.Combine(first.DirectoryPath, "b"));
+            failFirstRead = true;
+            provider.Invalidate();
+            var beforeRemoval = provider.Generation;
+
+            var firstBeforeRemoval = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var secondBeforeRemoval = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.True(firstBeforeRemoval.UsingLastGoodAssets);
+            Assert.Equal(2, firstBeforeRemoval.AssetDirectoriesScanned);
+            Assert.True(secondBeforeRemoval.AssetScanTruncated);
+            Assert.Equal(1, secondBeforeRemoval.AssetDirectoriesScanned);
+
+            active = new[] { second };
+            provider.Invalidate();
+
+            Assert.Equal(beforeRemoval, provider.Generation);
+            var stillTruncated = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.True(stillTruncated.AssetScanTruncated);
+            Assert.Equal(1, stillTruncated.AssetDirectoriesScanned);
+        }
+
+        [Fact]
+        public void RetainedPluginKeepsAggregateConfigurationBudgetReserved()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "retained-configuration-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "First.xml");
+            var second = NodePlugin(
+                _root,
+                "retained-configuration-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "Second.xml");
+            File.WriteAllText(Path.Combine(_configurations, "First.xml"), "aa");
+            File.WriteAllText(Path.Combine(_configurations, "Second.xml"), "bb");
+            var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            IReadOnlyList<ActivePluginDescriptor> active = new[] { second, first };
+            var limits = new PluginScanLimits(maxTotalConfigurationBytesPerScan: 2);
+            var provider = new PluginGenerationProvider(
+                () => active,
+                _configurations,
+                () => now,
+                scanLimits: limits);
+            var beforeRemoval = provider.Generation;
+
+            Assert.False(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal))
+                .ConfigurationScanTruncated);
+            Assert.True(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal))
+                .ConfigurationScanTruncated);
+
+            active = new[] { second };
+            now = now.AddSeconds(1);
+            provider.Invalidate();
+            _ = provider.Generation;
+            now = now.AddSeconds(11);
+            provider.Invalidate();
+
+            Assert.Equal(beforeRemoval, provider.Generation);
+            Assert.True(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal))
+                .ConfigurationScanTruncated);
+
+            var restartedProvider = new PluginGenerationProvider(
+                () => active,
+                _configurations,
+                () => now,
+                scanLimits: limits);
+            Assert.NotEqual(beforeRemoval, restartedProvider.Generation);
+            Assert.False(Assert.Single(restartedProvider.Details).ConfigurationScanTruncated);
+        }
+
+        [Fact]
+        public void FailedAssetReadKeepsLastGoodSnapshotAndChargesAggregateBytes()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "asset-failure-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            var second = NodePlugin(
+                _root,
+                "asset-failure-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            var firstAsset = Path.Combine(first.DirectoryPath, "web", "client.js");
+            var secondAsset = Path.Combine(second.DirectoryPath, "web", "client.js");
+            File.WriteAllText(firstAsset, "aa");
+            File.WriteAllText(secondAsset, "bb");
+            var failFirstRead = false;
+            var injectedFailures = 0;
+            IReadOnlyList<ActivePluginDescriptor> active = new[] { second, first };
+            var provider = new PluginGenerationProvider(
+                () => active,
+                _configurations,
+                scanLimits: new PluginScanLimits(maxTotalAssetBytesPerScan: 4),
+                beforeContentRead: path =>
+                {
+                    if (failFirstRead && path.Equals(firstAsset, StringComparison.Ordinal))
+                    {
+                        injectedFailures++;
+                        throw new IOException("Deterministic asset read failure.");
+                    }
+                });
+            var baselineFirst = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var baselineSecond = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.False(baselineFirst.AssetScanTruncated);
+            Assert.False(baselineSecond.AssetScanTruncated);
+
+            File.WriteAllText(firstAsset, "fail");
+            failFirstRead = true;
+            provider.Invalidate();
+            var failedFirst = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var exhaustedSecond = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+
+            Assert.Equal(1, injectedFailures);
+            Assert.True(failedFirst.UsingLastGoodAssets);
+            Assert.True(failedFirst.AssetScanUnavailable);
+            Assert.Equal(baselineFirst.AssetIdentity, failedFirst.AssetIdentity);
+            Assert.True(exhaustedSecond.AssetScanTruncated);
+            Assert.Equal(0, exhaustedSecond.AssetBytesHashed);
+
+            var generationWithFailedReservation = provider.Generation;
+            active = new[] { second };
+            provider.Invalidate();
+
+            Assert.Equal(generationWithFailedReservation, provider.Generation);
+            Assert.True(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal))
+                .AssetScanTruncated);
+        }
+
+        [Fact]
+        public void EarlyAssetFailureKeepsPriorChargeForDownstreamAndRetainedPlugins()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "early-asset-failure-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            var second = NodePlugin(
+                _root,
+                "early-asset-failure-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            File.WriteAllText(Path.Combine(first.DirectoryPath, "web", "client.js"), "aa");
+            File.WriteAllText(Path.Combine(second.DirectoryPath, "web", "client.js"), "bb");
+            IReadOnlyList<ActivePluginDescriptor> active = new[] { second, first };
+            var limits = new PluginScanLimits(maxTotalAssetBytesPerScan: 2);
+            var provider = new PluginGenerationProvider(
+                () => active,
+                _configurations,
+                scanLimits: limits);
+            var baseline = provider.Generation;
+            var baselineFirst = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var baselineSecond = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.False(baselineFirst.AssetScanTruncated);
+            Assert.True(baselineSecond.AssetScanTruncated);
+
+            var unavailableDirectory = first.DirectoryPath + ".temporarily-unavailable";
+            Directory.Move(first.DirectoryPath, unavailableDirectory);
+            provider.Invalidate();
+
+            Assert.Equal(baseline, provider.Generation);
+            var failedFirst = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var stillExhaustedSecond = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.True(failedFirst.UsingLastGoodAssets);
+            Assert.True(failedFirst.AssetScanUnavailable);
+            Assert.Equal(baselineFirst.AssetIdentity, failedFirst.AssetIdentity);
+            Assert.True(stillExhaustedSecond.AssetScanTruncated);
+            Assert.Equal(0, stillExhaustedSecond.AssetBytesHashed);
+
+            Directory.Move(unavailableDirectory, first.DirectoryPath);
+            provider.Invalidate();
+            Assert.Equal(baseline, provider.Generation);
+
+            active = new[] { second };
+            provider.Invalidate();
+            Assert.Equal(baseline, provider.Generation);
+            Assert.True(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal))
+                .AssetScanTruncated);
+
+            var restartedProvider = new PluginGenerationProvider(
+                () => active,
+                _configurations,
+                scanLimits: limits);
+            Assert.NotEqual(baseline, restartedProvider.Generation);
+            Assert.False(Assert.Single(restartedProvider.Details).AssetScanTruncated);
+        }
+
+        [Fact]
+        public void AssetFallbackDoesNotRetainReleasedConfigurationBudget()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "mixed-fallback-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "FirstMixed.xml");
+            var second = NodePlugin(
+                _root,
+                "mixed-fallback-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "SecondMixed.xml");
+            var firstConfiguration = Path.Combine(_configurations, "FirstMixed.xml");
+            var secondConfiguration = Path.Combine(_configurations, "SecondMixed.xml");
+            File.WriteAllText(Path.Combine(first.DirectoryPath, "web", "client.js"), "aa");
+            File.WriteAllText(Path.Combine(second.DirectoryPath, "web", "client.js"), "bb");
+            File.WriteAllText(firstConfiguration, "aa");
+            File.WriteAllText(secondConfiguration, "bb");
+            var provider = new PluginGenerationProvider(
+                () => new[] { second, first },
+                _configurations,
+                scanLimits: new PluginScanLimits(
+                    maxTotalAssetBytesPerScan: 2,
+                    maxTotalConfigurationBytesPerScan: 2));
+            _ = provider.Generation;
+            Assert.True(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal))
+                .ConfigurationScanTruncated);
+
+            var unavailableDirectory = first.DirectoryPath + ".temporarily-unavailable";
+            Directory.Move(first.DirectoryPath, unavailableDirectory);
+            File.WriteAllText(firstConfiguration, string.Empty);
+            provider.Invalidate();
+
+            var failedFirst = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var secondAfterRelease = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.True(failedFirst.UsingLastGoodAssets);
+            Assert.True(failedFirst.AssetScanUnavailable);
+            Assert.False(failedFirst.UsingLastGoodConfiguration);
+            Assert.False(secondAfterRelease.ConfigurationScanTruncated);
+            Assert.Equal(2, secondAfterRelease.ConfigurationBytesHashed);
+            Assert.True(secondAfterRelease.AssetScanTruncated);
+
+            Directory.Move(unavailableDirectory, first.DirectoryPath);
+        }
+
+        [Fact]
+        public void FailedConfigurationReadKeepsLastGoodSnapshotAndChargesAggregateBytes()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "configuration-failure-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "First.xml");
+            var second = NodePlugin(
+                _root,
+                "configuration-failure-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "Second.xml");
+            var firstConfiguration = Path.Combine(_configurations, "First.xml");
+            var secondConfiguration = Path.Combine(_configurations, "Second.xml");
+            File.WriteAllText(firstConfiguration, "aa");
+            File.WriteAllText(secondConfiguration, "bb");
+            var failFirstRead = false;
+            var injectedFailures = 0;
+            IReadOnlyList<ActivePluginDescriptor> active = new[] { second, first };
+            var provider = new PluginGenerationProvider(
+                () => active,
+                _configurations,
+                scanLimits: new PluginScanLimits(maxTotalConfigurationBytesPerScan: 4),
+                beforeContentRead: path =>
+                {
+                    if (failFirstRead && path.Equals(firstConfiguration, StringComparison.Ordinal))
+                    {
+                        injectedFailures++;
+                        throw new IOException("Deterministic configuration read failure.");
+                    }
+                });
+            var baselineFirst = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var baselineSecond = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.False(baselineFirst.ConfigurationScanTruncated);
+            Assert.False(baselineSecond.ConfigurationScanTruncated);
+
+            File.WriteAllText(firstConfiguration, "fail");
+            failFirstRead = true;
+            provider.Invalidate();
+            var failedFirst = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var exhaustedSecond = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+
+            Assert.Equal(1, injectedFailures);
+            Assert.True(failedFirst.UsingLastGoodConfiguration);
+            Assert.True(failedFirst.ConfigurationScanUnavailable);
+            Assert.Equal(baselineFirst.ConfigurationIdentity, failedFirst.ConfigurationIdentity);
+            Assert.True(exhaustedSecond.ConfigurationScanTruncated);
+            Assert.Equal(0, exhaustedSecond.ConfigurationBytesHashed);
+
+            active = new[] { second };
+            provider.Invalidate();
+
+            Assert.True(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal))
+                .ConfigurationScanTruncated);
+        }
+
+        [Fact]
+        public void ConfigurationFallbackReservesTheUnattemptedPriorByteDeficit()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "configuration-deficit-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "FirstDeficit.xml");
+            var second = NodePlugin(
+                _root,
+                "configuration-deficit-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "SecondDeficit.xml");
+            var firstConfiguration = Path.Combine(_configurations, "FirstDeficit.xml");
+            var secondConfiguration = Path.Combine(_configurations, "SecondDeficit.xml");
+            File.WriteAllText(firstConfiguration, "aaaa");
+            File.WriteAllText(secondConfiguration, "bb");
+            var failFirstRead = false;
+            var provider = new PluginGenerationProvider(
+                () => new[] { second, first },
+                _configurations,
+                scanLimits: new PluginScanLimits(maxTotalConfigurationBytesPerScan: 4),
+                beforeContentRead: path =>
+                {
+                    if (failFirstRead && path.Equals(firstConfiguration, StringComparison.Ordinal))
+                    {
+                        throw new IOException("Deterministic early configuration failure.");
+                    }
+                });
+            var baselineFirst = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            Assert.Equal(4, baselineFirst.ConfigurationBytesHashed);
+            Assert.True(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal))
+                .ConfigurationScanTruncated);
+
+            // The failing attempt reserves only two bytes. Reusing the prior
+            // four-byte snapshot must reserve the missing two before B scans.
+            File.WriteAllText(firstConfiguration, "aa");
+            failFirstRead = true;
+            provider.Invalidate();
+
+            var failedFirst = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var stillExhaustedSecond = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+            Assert.True(failedFirst.UsingLastGoodConfiguration);
+            Assert.True(failedFirst.ConfigurationScanUnavailable);
+            Assert.Equal(baselineFirst.ConfigurationIdentity, failedFirst.ConfigurationIdentity);
+            Assert.True(stillExhaustedSecond.ConfigurationScanTruncated);
+            Assert.Equal(0, stillExhaustedSecond.ConfigurationBytesHashed);
+        }
+
+        [Fact]
+        public void ExcludedConfigurationConsumesNoIoOrAggregateBudget()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "excluded-configuration-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "Excluded.xml");
+            var second = NodePlugin(
+                _root,
+                "watched-configuration-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "Watched.xml");
+            var excludedPath = Path.Combine(_configurations, "Excluded.xml");
+            var watchedPath = Path.Combine(_configurations, "Watched.xml");
+            File.WriteAllText(excludedPath, "aa");
+            File.WriteAllText(watchedPath, "bb");
+            var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var configurationReads = new List<string>();
+            var provider = new PluginGenerationProvider(
+                () => new[] { second, first },
+                _configurations,
+                () => now,
+                scanLimits: new PluginScanLimits(maxTotalConfigurationBytesPerScan: 2),
+                beforeContentRead: path =>
+                {
+                    if (Path.GetExtension(path).Equals(".xml", StringComparison.OrdinalIgnoreCase))
+                    {
+                        configurationReads.Add(path);
+                    }
+                },
+                configurationProvider: () => new Configuration.PluginConfiguration
+                {
+                    ConfigWatchExclusions = new[] { firstId.ToString("D") },
+                });
+            var baseline = provider.Generation;
+            var excluded = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(firstId.ToString("D"), StringComparison.Ordinal));
+            var watched = Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal));
+
+            Assert.Equal(string.Empty, excluded.ConfigurationIdentity);
+            Assert.Equal(0, excluded.ConfigurationFileCount);
+            Assert.False(watched.ConfigurationScanTruncated);
+            Assert.Equal(2, watched.ConfigurationBytesHashed);
+            Assert.DoesNotContain(excludedPath, configurationReads);
+            Assert.Contains(watchedPath, configurationReads);
+
+            File.WriteAllText(excludedPath, "changed-and-larger");
+            now = now.AddSeconds(1);
+            provider.Invalidate();
+            Assert.Equal(baseline, provider.Generation);
+            now = now.AddSeconds(11);
+            provider.Invalidate();
+            Assert.Equal(baseline, provider.Generation);
+            Assert.DoesNotContain(excludedPath, configurationReads);
+            Assert.False(Assert.Single(
+                provider.Details,
+                detail => detail.Id.Equals(secondId.ToString("D"), StringComparison.Ordinal))
+                .ConfigurationScanTruncated);
+        }
+
+        [Fact]
+        public void DisabledConfigurationWatchingPerformsNoConfigurationIo()
+        {
+            var descriptor = NodePlugin(
+                _root,
+                "disabled-configuration-watching",
+                Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "Disabled.xml");
+            var configurationPath = Path.Combine(_configurations, "Disabled.xml");
+            File.WriteAllText(configurationPath, "before");
+            var configurationReads = 0;
+            var provider = new PluginGenerationProvider(
+                () => new[] { descriptor },
+                _configurations,
+                beforeContentRead: path =>
+                {
+                    if (path.Equals(configurationPath, StringComparison.Ordinal))
+                    {
+                        configurationReads++;
+                    }
+                },
+                configurationProvider: () => new Configuration.PluginConfiguration
+                {
+                    EnableConfigWatching = false,
+                });
+            var baseline = provider.Generation;
+            var detail = Assert.Single(provider.Details);
+
+            Assert.Equal(0, configurationReads);
+            Assert.Equal(string.Empty, detail.ConfigurationIdentity);
+            Assert.Equal(0, detail.ConfigurationFileCount);
+
+            File.WriteAllText(configurationPath, "after");
+            provider.Invalidate();
+            Assert.Equal(baseline, provider.Generation);
+            Assert.Equal(0, configurationReads);
+        }
+
+        [Fact]
         public void CacheTtlStartsWhenSlowScanCompletes()
         {
             var folder = NewPluginFolder("slow-scan", "asset");
@@ -437,6 +1182,209 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
 
             Assert.Equal(first, immediateSecond);
             Assert.Equal(1, scans);
+        }
+
+        [Fact]
+        public void BackwardClockStepExpiresCacheAndRestartsPendingConfigDebounce()
+        {
+            var folder = NewPluginFolder("clock-rollback", "asset-one");
+            var descriptor = Descriptor(
+                folder,
+                "11111111-1111-1111-1111-111111111111",
+                "Clock.xml");
+            var asset = Path.Combine(folder, "web", "client.js");
+            var configuration = Path.Combine(_configurations, "Clock.xml");
+            File.WriteAllText(configuration, "config-one");
+            var now = new DateTime(2026, 1, 1, 1, 0, 0, DateTimeKind.Utc);
+            var scans = 0;
+            var provider = new PluginGenerationProvider(
+                () =>
+                {
+                    scans++;
+                    return new[] { descriptor };
+                },
+                _configurations,
+                () => now);
+            var baseline = provider.Generation;
+
+            File.WriteAllText(asset, "asset-two");
+            File.WriteAllText(configuration, "config-two");
+            now = now.AddHours(-1);
+
+            // No explicit invalidation: a negative cache age itself must force
+            // a rescan. The changed asset publishes immediately; configuration
+            // begins a fresh debounce on the corrected clock timeline.
+            var afterRollback = provider.Generation;
+            Assert.NotEqual(baseline, afterRollback);
+            Assert.Equal(2, scans);
+
+            provider.Invalidate();
+            Assert.Equal(afterRollback, provider.Generation);
+            now = now.AddSeconds(11);
+            provider.Invalidate();
+
+            var afterDebounce = provider.Generation;
+            Assert.NotEqual(afterRollback, afterDebounce);
+            Assert.Equal(4, scans);
+        }
+
+        [Fact]
+        public void BackwardClockStepRestartsExistingPendingDebounceAndClosesOldCooldown()
+        {
+            var folder = NewPluginFolder("clock-rollback-pending", "asset");
+            var descriptor = Descriptor(
+                folder,
+                "11111111-1111-1111-1111-111111111111",
+                "ClockPending.xml");
+            var configuration = Path.Combine(_configurations, "ClockPending.xml");
+            File.WriteAllText(configuration, "config-one");
+            var now = new DateTime(2026, 1, 1, 1, 0, 0, DateTimeKind.Utc);
+            var provider = new PluginGenerationProvider(
+                () => new[] { descriptor },
+                _configurations,
+                () => now);
+            var baseline = provider.Generation;
+
+            // Publish one ordinary leading edge, which opens the default five-
+            // minute cooldown.
+            File.WriteAllText(configuration, "config-two");
+            now = now.AddSeconds(1);
+            provider.Invalidate();
+            Assert.Equal(baseline, provider.Generation);
+            now = now.AddSeconds(11);
+            provider.Invalidate();
+            var leadingEdge = provider.Generation;
+            Assert.NotEqual(baseline, leadingEdge);
+
+            // A second identity matures while that cooldown is open and is held.
+            File.WriteAllText(configuration, "config-three");
+            now = now.AddSeconds(1);
+            provider.Invalidate();
+            Assert.Equal(leadingEdge, provider.Generation);
+            now = now.AddSeconds(11);
+            provider.Invalidate();
+            Assert.Equal(leadingEdge, provider.Generation);
+
+            // Moving to an earlier clock timeline must neither publish instantly
+            // nor wait for the stale absolute cooldown/debounce timestamps.
+            now = now.AddHours(-1);
+            provider.Invalidate();
+            Assert.Equal(leadingEdge, provider.Generation);
+            now = now.AddSeconds(9);
+            provider.Invalidate();
+            Assert.Equal(leadingEdge, provider.Generation);
+            now = now.AddSeconds(2);
+            provider.Invalidate();
+            var afterFreshDebounce = provider.Generation;
+            Assert.NotEqual(leadingEdge, afterFreshDebounce);
+
+            // The post-rollback publish is a new leading edge and opens a fresh
+            // cooldown on the corrected timeline.
+            File.WriteAllText(configuration, "config-four");
+            now = now.AddSeconds(1);
+            provider.Invalidate();
+            Assert.Equal(afterFreshDebounce, provider.Generation);
+            now = now.AddSeconds(11);
+            provider.Invalidate();
+            Assert.Equal(afterFreshDebounce, provider.Generation);
+
+            now = now.AddMinutes(5);
+            provider.Invalidate();
+            var trailingPublish = provider.Generation;
+            Assert.NotEqual(afterFreshDebounce, trailingPublish);
+        }
+
+        [Theory]
+        [InlineData(10)]
+        [InlineData(50)]
+        [InlineData(100)]
+        public async Task ConcurrentGenerationReadsShareExactlyOneScanPerInvalidation(
+            int readerCount)
+        {
+            var descriptor = NodePlugin(
+                _root,
+                "concurrent-polling",
+                DemoId,
+                "11111111-1111-1111-1111-111111111111");
+            var asset = Path.Combine(descriptor.DirectoryPath, "web", "client.js");
+            var originalTimestamp = File.GetLastWriteTimeUtc(asset);
+            var scanCount = 0;
+            var contentReadCount = 0;
+            Task? activeReaderEntryBarrier = null;
+            var provider = new PluginGenerationProvider(
+                () =>
+                {
+                    Interlocked.Increment(ref scanCount);
+                    var barrier = activeReaderEntryBarrier;
+                    if (barrier != null && !barrier.Wait(ConcurrencyDeadlockGuard))
+                    {
+                        throw new TimeoutException(
+                            $"The scan began before all {readerCount} generation readers entered.");
+                    }
+
+                    return new[] { descriptor };
+                },
+                _configurations,
+                beforeContentRead: _ => Interlocked.Increment(ref contentReadCount));
+
+            async Task<string[]> ReadWaveAsync()
+            {
+                var enteredCount = 0;
+                var allReadersEntered = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                activeReaderEntryBarrier = allReadersEntered.Task;
+                try
+                {
+                    return await RunSynchronizedReadersAsync(
+                        readerCount,
+                        () =>
+                        {
+                            if (Interlocked.Increment(ref enteredCount) == readerCount)
+                            {
+                                allReadersEntered.TrySetResult(true);
+                            }
+
+                            return provider.Generation;
+                        });
+                }
+                finally
+                {
+                    activeReaderEntryBarrier = null;
+                }
+            }
+
+            string AssertCoherentWave(string[] results)
+            {
+                Assert.Equal(readerCount, results.Length);
+                return Assert.Single(results.Distinct(StringComparer.Ordinal));
+            }
+
+            var coldResults = await ReadWaveAsync();
+            var coldGeneration = AssertCoherentWave(coldResults);
+            Assert.Equal(1, Volatile.Read(ref scanCount));
+            Assert.Equal(1, Volatile.Read(ref contentReadCount));
+
+            var immediateResults = await ReadWaveAsync();
+            Assert.Equal(coldGeneration, AssertCoherentWave(immediateResults));
+            Assert.Equal(1, Volatile.Read(ref scanCount));
+            Assert.Equal(1, Volatile.Read(ref contentReadCount));
+
+            // Same path, length and timestamp but different bytes is the cache-
+            // invalidation case Refresh Kit exists to detect.
+            File.WriteAllText(asset, "next bytes");
+            File.SetLastWriteTimeUtc(asset, originalTimestamp);
+            provider.Invalidate();
+
+            var invalidatedResults = await ReadWaveAsync();
+            var invalidatedGeneration = AssertCoherentWave(invalidatedResults);
+            Assert.NotEqual(coldGeneration, invalidatedGeneration);
+            Assert.Equal(2, Volatile.Read(ref scanCount));
+            Assert.Equal(2, Volatile.Read(ref contentReadCount));
+
+            var postInvalidationResults = await ReadWaveAsync();
+            Assert.Equal(invalidatedGeneration, AssertCoherentWave(postInvalidationResults));
+            Assert.Equal(2, Volatile.Read(ref scanCount));
+            Assert.Equal(2, Volatile.Read(ref contentReadCount));
         }
 
         [Fact]
@@ -466,6 +1414,137 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             var overLimit = Assert.Single(provider.Details);
             Assert.True(overLimit.AssetScanTruncated);
             Assert.Equal(0, overLimit.AssetBytesHashed);
+        }
+
+        [Fact]
+        public void NativeEntryEnumerationStopsAtFirstDirectoryOverflowRegardlessOfOrder()
+        {
+            var folder = NewPluginFolder("native-entry-budget", "asset");
+            var descriptor = Descriptor(folder, "11111111-1111-1111-1111-111111111111");
+            var children = Enumerable.Range(0, 10)
+                .Select(index => Directory.CreateDirectory(
+                    Path.Combine(folder, $"branch-{index:D2}"))).Select(info => info.FullName)
+                .ToArray();
+            var forwardMoves = 0;
+            var reverseMoves = 0;
+
+            IEnumerable<string> CountedEntries(
+                string current,
+                IReadOnlyList<string> rootEntries,
+                Action onYield)
+            {
+                var entries = current.Equals(folder, StringComparison.Ordinal)
+                    ? rootEntries
+                    : Directory.EnumerateFileSystemEntries(current).ToArray();
+                foreach (var entry in entries)
+                {
+                    onYield();
+                    yield return entry;
+                }
+            }
+
+            var limits = new PluginScanLimits(
+                maxDirectoriesPerPlugin: 1,
+                maxTotalDirectoriesPerScan: 1);
+            var forward = new PluginGenerationProvider(
+                () => new[] { descriptor },
+                _configurations,
+                scanLimits: limits,
+                fileSystemEntriesProvider: current => CountedEntries(
+                    current,
+                    children,
+                    () => forwardMoves++));
+            var reverse = new PluginGenerationProvider(
+                () => new[] { descriptor },
+                _configurations,
+                scanLimits: limits,
+                fileSystemEntriesProvider: current => CountedEntries(
+                    current,
+                    children.AsEnumerable().Reverse().ToArray(),
+                    () => reverseMoves++));
+
+            var forwardGeneration = forward.Generation;
+            var reverseGeneration = reverse.Generation;
+            var forwardDetail = Assert.Single(forward.Details);
+            var reverseDetail = Assert.Single(reverse.Details);
+
+            Assert.Equal(1, forwardMoves);
+            Assert.Equal(1, reverseMoves);
+            Assert.Equal(forwardGeneration, reverseGeneration);
+            Assert.True(forwardDetail.AssetScanTruncated);
+            Assert.True(reverseDetail.AssetScanTruncated);
+            Assert.Equal(1, forwardDetail.AssetDirectoriesScanned);
+            Assert.Equal(1, reverseDetail.AssetDirectoriesScanned);
+            Assert.Equal(0, forwardDetail.AssetFileCount);
+            Assert.Equal(0, reverseDetail.AssetFileCount);
+        }
+
+        [Fact]
+        public void NativeEntryEnumerationStopsAtFirstFileOverflowRegardlessOfOrder()
+        {
+            var folder = Path.Combine(_root, "native-file-budget");
+            Directory.CreateDirectory(folder);
+            var files = Enumerable.Range(0, 10)
+                .Select(index => Path.Combine(folder, $"entry-{index:D2}.txt"))
+                .ToArray();
+            foreach (var file in files)
+            {
+                File.WriteAllText(file, "not a client asset");
+            }
+
+            var descriptor = Descriptor(folder, "11111111-1111-1111-1111-111111111111");
+            var forwardMoves = 0;
+            var reverseMoves = 0;
+
+            IEnumerable<string> CountedEntries(
+                string current,
+                IReadOnlyList<string> rootEntries,
+                Action onYield)
+            {
+                var entries = current.Equals(folder, StringComparison.Ordinal)
+                    ? rootEntries
+                    : Directory.EnumerateFileSystemEntries(current).ToArray();
+                foreach (var entry in entries)
+                {
+                    onYield();
+                    yield return entry;
+                }
+            }
+
+            var limits = new PluginScanLimits(
+                maxFilesPerPlugin: 1,
+                maxTotalFilesPerScan: 1);
+            var forward = new PluginGenerationProvider(
+                () => new[] { descriptor },
+                _configurations,
+                scanLimits: limits,
+                fileSystemEntriesProvider: current => CountedEntries(
+                    current,
+                    files,
+                    () => forwardMoves++));
+            var reverse = new PluginGenerationProvider(
+                () => new[] { descriptor },
+                _configurations,
+                scanLimits: limits,
+                fileSystemEntriesProvider: current => CountedEntries(
+                    current,
+                    files.AsEnumerable().Reverse().ToArray(),
+                    () => reverseMoves++));
+
+            var forwardGeneration = forward.Generation;
+            var reverseGeneration = reverse.Generation;
+            var forwardDetail = Assert.Single(forward.Details);
+            var reverseDetail = Assert.Single(reverse.Details);
+
+            Assert.Equal(2, forwardMoves);
+            Assert.Equal(2, reverseMoves);
+            Assert.Equal(forwardGeneration, reverseGeneration);
+            Assert.True(forwardDetail.AssetScanTruncated);
+            Assert.True(reverseDetail.AssetScanTruncated);
+            Assert.Equal(1, forwardDetail.AssetDirectoriesScanned);
+            Assert.Equal(1, reverseDetail.AssetDirectoriesScanned);
+            Assert.Equal(0, forwardDetail.AssetFileCount);
+            Assert.Equal(0, reverseDetail.AssetFileCount);
         }
 
         [Fact]
@@ -547,6 +1626,44 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
 
         private PluginGenerationProvider Provider(Func<IReadOnlyList<ActivePluginDescriptor>> source) =>
             new PluginGenerationProvider(source, _configurations);
+
+        private static async Task<T[]> RunSynchronizedReadersAsync<T>(
+            int readerCount,
+            Func<T> read)
+        {
+            var readyCount = 0;
+            var allReadersReady = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var start = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var readers = Enumerable.Range(0, readerCount)
+                .Select(_ => Task.Factory.StartNew(
+                    () =>
+                    {
+                        if (Interlocked.Increment(ref readyCount) == readerCount)
+                        {
+                            allReadersReady.TrySetResult(true);
+                        }
+
+                        start.Task.GetAwaiter().GetResult();
+                        return read();
+                    },
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+                    TaskScheduler.Default))
+                .ToArray();
+
+            try
+            {
+                await allReadersReady.Task.WaitAsync(ConcurrencyDeadlockGuard);
+                start.TrySetResult(true);
+                return await Task.WhenAll(readers).WaitAsync(ConcurrencyDeadlockGuard);
+            }
+            finally
+            {
+                start.TrySetResult(true);
+            }
+        }
 
         private string NewPluginFolder(string folderName, string assetBody)
         {
