@@ -21,6 +21,8 @@ set -euo pipefail
 umask 022
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
+# Resolved from this script's directory at runtime.
+# shellcheck disable=SC1091
 source "${HERE}/lib/common.sh"
 
 usage() {

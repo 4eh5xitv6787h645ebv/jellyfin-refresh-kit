@@ -97,10 +97,10 @@ elif [ -x "${HOME}/.dotnet/dotnet" ]; then
 else
     DOTNET="$(command -v dotnet || true)"
 fi
-[ -n "${DOTNET}" ] && [ -x "${DOTNET}" ] || {
+if [ -z "${DOTNET}" ] || [ ! -x "${DOTNET}" ]; then
     echo "FATAL: dotnet is required; install the SDK pinned by global.json." >&2
     exit 1
-}
+fi
 
 [ -f "${REPO_ROOT}/jellyfin-refresh-kit.js" ] || {
     echo "FATAL: jellyfin-refresh-kit.js is missing; it is embedded at build time." >&2
@@ -259,10 +259,10 @@ if [ "${HAS_GIT}" = true ]; then
         exit 1
     fi
 else
-    [ -n "${RK_SOURCE_REVISION:-}" ] && [ -n "${SOURCE_DATE_EPOCH:-}" ] || {
+    if [ -z "${RK_SOURCE_REVISION:-}" ] || [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
         echo "FATAL: a source-only build requires RK_SOURCE_REVISION and SOURCE_DATE_EPOCH." >&2
         exit 1
-    }
+    fi
     SOURCE_REVISION="${RK_SOURCE_REVISION,,}"
     BUILD_EPOCH="${SOURCE_DATE_EPOCH}"
     if [ -n "${RK_SOURCE_DIRTY:-}" ] && [ "${RK_SOURCE_DIRTY}" != true ]; then
@@ -461,11 +461,11 @@ print(version)
 print(match.group(1))
 PY
 )
-[ "${COPIED_PROJECT_IDENTITY[0]}" = "${VERSION}" ] && \
-    [ "${COPIED_PROJECT_IDENTITY[1],,}" = "${GUID,,}" ] || {
+if [ "${COPIED_PROJECT_IDENTITY[0]}" != "${VERSION}" ] || \
+    [ "${COPIED_PROJECT_IDENTITY[1],,}" != "${GUID,,}" ]; then
     echo "FATAL: plugin version or GUID changed while immutable inputs were captured." >&2
     exit 1
-}
+fi
 
 if [ "${UPDATE_MANIFEST}" = true ]; then
     [ "${HAS_GIT}" = true ] || {

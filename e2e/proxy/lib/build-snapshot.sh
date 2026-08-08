@@ -22,14 +22,14 @@ rk_proxy_resolve_build_snapshot() {
     resolved="$(readlink -f -- "${requested}" 2>/dev/null || true)"
     snapshot_root="$(readlink -f -- "${repo}/plugin/.builds" 2>/dev/null || true)"
 
-    [ -n "${resolved}" ] && [ -d "${resolved}" ] || {
+    if [ -z "${resolved}" ] || [ ! -d "${resolved}" ]; then
         rk_proxy_snapshot_die "plugin build snapshot does not exist: ${requested}"
         return 1
-    }
-    [ -n "${snapshot_root}" ] && [ -d "${snapshot_root}" ] || {
+    fi
+    if [ -z "${snapshot_root}" ] || [ ! -d "${snapshot_root}" ]; then
         rk_proxy_snapshot_die "immutable build root does not exist: ${repo}/plugin/.builds"
         return 1
-    }
+    fi
     [ "$(dirname -- "${resolved}")" = "${snapshot_root}" ] || {
         rk_proxy_snapshot_die "plugin build resolved outside plugin/.builds: ${resolved}"
         return 1

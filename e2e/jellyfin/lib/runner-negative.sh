@@ -7,6 +7,8 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../run.sh
+# Resolved from this script's directory at runtime.
+# shellcheck disable=SC1091
 source "${HERE}/../run.sh"
 
 declare -a EVENTS=()
@@ -28,7 +30,11 @@ event_seen() {
 # function models browser-third-party-lifecycle.cjs exiting nonzero.
 check_prerequisites() { EVENTS+=("prerequisites"); }
 rk_require() { EVENTS+=("require:$*"); }
-rk_pin_build_snapshot() { EVENTS+=("pin"); RK_BUILD_SNAPSHOT='/fixture/snapshot'; }
+rk_pin_build_snapshot() {
+    EVENTS+=("pin")
+    RK_BUILD_SNAPSHOT='/fixture/snapshot'
+    export RK_BUILD_SNAPSHOT
+}
 ensure_stages() { EVENTS+=("stages"); }
 prepare_third_party_target() { EVENTS+=("prepare:$1"); }
 rk_compose() { EVENTS+=("compose:$*"); }

@@ -9,6 +9,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUITE="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$SUITE/../.." && pwd)"
 # shellcheck source=build-snapshot.sh
+# Resolved from this script's directory at runtime.
+# shellcheck disable=SC1091
 source "$HERE/build-snapshot.sh"
 
 ORIGIN="${RK_ORIGIN:-http://127.0.0.1:8116}"

@@ -19,10 +19,10 @@ elif [ -x "${HOME}/.dotnet/dotnet" ]; then
 else
     DOTNET="$(command -v dotnet || true)"
 fi
-[ -n "${DOTNET}" ] && [ -x "${DOTNET}" ] || {
+if [ -z "${DOTNET}" ] || [ ! -x "${DOTNET}" ]; then
     echo "FATAL: install the .NET SDK pinned by global.json." >&2
     exit 1
-}
+fi
 DOTNET_INSTALL_ROOT="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${DOTNET}")"
 
 TEST_PROJECT="plugin/Jellyfin.Plugin.RefreshKit.Tests/Jellyfin.Plugin.RefreshKit.Tests.csproj"
@@ -213,16 +213,16 @@ test_dotnet() {
 
     local runtimes
     runtimes="$("${DOTNET}" --list-runtimes)"
-    grep -q '^Microsoft.NETCore.App 9\.' <<<"${runtimes}" && \
-        grep -q '^Microsoft.AspNetCore.App 9\.' <<<"${runtimes}" || {
+    if ! grep -q '^Microsoft.NETCore.App 9\.' <<<"${runtimes}" || \
+        ! grep -q '^Microsoft.AspNetCore.App 9\.' <<<"${runtimes}"; then
         echo "FATAL: net9 tests require installed Microsoft.NETCore.App and Microsoft.AspNetCore.App 9.x runtimes; refusing a net10 roll-forward." >&2
         return 1
-    }
-    grep -q '^Microsoft.NETCore.App 10\.' <<<"${runtimes}" && \
-        grep -q '^Microsoft.AspNetCore.App 10\.' <<<"${runtimes}" || {
+    fi
+    if ! grep -q '^Microsoft.NETCore.App 10\.' <<<"${runtimes}" || \
+        ! grep -q '^Microsoft.AspNetCore.App 10\.' <<<"${runtimes}"; then
         echo "FATAL: net10 tests require installed Microsoft.NETCore.App and Microsoft.AspNetCore.App 10.x runtimes." >&2
         return 1
-    }
+    fi
 
     heading "Restoring the locked .NET test graph"
     "${DOTNET}" restore "${TEST_PROJECT}" --locked-mode --nologo \

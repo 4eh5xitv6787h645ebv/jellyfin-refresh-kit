@@ -15,10 +15,10 @@ elif [ -x "${HOME}/.dotnet/dotnet" ]; then
 else
     DOTNET="$(command -v dotnet || true)"
 fi
-[ -n "${DOTNET}" ] && [ -x "${DOTNET}" ] || {
+if [ -z "${DOTNET}" ] || [ ! -x "${DOTNET}" ]; then
     echo "FATAL: install the .NET SDK pinned by global.json." >&2
     exit 1
-}
+fi
 
 command -v node >/dev/null 2>&1 || {
     echo "FATAL: Node.js is required." >&2

@@ -20,6 +20,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 REPO="$(cd "$HERE/../.." && pwd -P)"
 # shellcheck source=lib/build-snapshot.sh
+# Resolved from this script's directory at runtime.
+# shellcheck disable=SC1091
 source "$HERE/lib/build-snapshot.sh"
 
 PROJECT="${RK_PROXY_PROJECT:-rk-proxy-$(id -u)}"

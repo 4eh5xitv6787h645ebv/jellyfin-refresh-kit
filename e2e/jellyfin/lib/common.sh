@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Shared variables are consumed by the scripts that source this library.
+# shellcheck disable=SC2034
 
 # Shared paths and project-scoped Docker helpers. Source this file; do not run it.
 
@@ -61,8 +63,9 @@ rk_pin_build_snapshot() {
     local requested resolved
     requested="${RK_BUILD_SNAPSHOT:-${RK_REPO_ROOT}/plugin/build}"
     resolved="$(readlink -f -- "${requested}" 2>/dev/null || true)"
-    [ -n "${resolved}" ] && [ -d "${resolved}" ] || \
+    if [ -z "${resolved}" ] || [ ! -d "${resolved}" ]; then
         rk_die "plugin build snapshot does not exist: ${requested}"
+    fi
     case "${resolved}" in
         "${RK_REPO_ROOT}/plugin/.builds/"*) ;;
         *) rk_die "plugin build resolved outside plugin/.builds: ${resolved}" ;;

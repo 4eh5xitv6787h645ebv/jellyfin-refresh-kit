@@ -8,6 +8,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=build-snapshot.sh
+# Resolved from this script's directory at runtime.
+# shellcheck disable=SC1091
 source "${HERE}/build-snapshot.sh"
 
 FIXTURE_ROOT="$(mktemp -d)"
@@ -55,11 +57,11 @@ RETAINED="${RK_BUILD_SNAPSHOT}"
     echo "FAIL: fixture did not move the public link to snapshot-b" >&2
     exit 1
 }
-[ "${RETAINED}" = "${SNAPSHOT_A}" ] && \
-    [ "$(cat "${RETAINED}/stage/identity")" = a ] || {
+if [ "${RETAINED}" != "${SNAPSHOT_A}" ] || \
+    [ "$(cat "${RETAINED}/stage/identity")" != a ]; then
         echo "FAIL: pinned proxy snapshot followed a later public-link update" >&2
         exit 1
-    }
+fi
 
 # A process boundary must receive the canonical directory, not another mutable
 # alias. The verifier stub would accept it, so success here can only come from

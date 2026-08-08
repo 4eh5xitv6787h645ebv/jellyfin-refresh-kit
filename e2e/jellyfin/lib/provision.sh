@@ -7,6 +7,8 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
+# Resolved from this script's directory at runtime.
+# shellcheck disable=SC1091
 source "${HERE}/common.sh"
 
 TARGET="${1:-}"
@@ -67,9 +69,9 @@ except Exception:
 }
 
 wizard_request() {
-    local label="$1" attempt
+    local label="$1"
     shift
-    for attempt in $(seq 1 20); do
+    for _ in $(seq 1 20); do
         if curl --fail --silent --show-error --connect-timeout 2 --max-time 10 "$@"; then
             return 0
         fi
@@ -79,14 +81,14 @@ wizard_request() {
 }
 
 authenticate() {
-    local payload response token attempt
+    local payload response token
     payload="$(python3 - "${RK_LAB_USER}" "${RK_LAB_PASSWORD}" <<'PY'
 import json
 import sys
 print(json.dumps({"Username": sys.argv[1], "Pw": sys.argv[2]}, separators=(",", ":")))
 PY
 )"
-    for attempt in $(seq 1 90); do
+    for _ in $(seq 1 90); do
         response="$(curl --silent --show-error --connect-timeout 2 --max-time 5 \
             -X POST "${ORIGIN}/Users/AuthenticateByName" \
             -H 'Content-Type: application/json' \
