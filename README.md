@@ -160,6 +160,19 @@ timers**, and so does an interaction: each discrete event supersedes the
 previous one's settle timer rather than adding to it, so typing a query does not
 queue one probe per keystroke.
 
+**Ambient backdrop video does not block (2.3.0).** A `<video>` that is muted
+(or at volume 0) **and** looping **and** has no controls is decoration, not a
+session — that is exactly the full-bleed backdrop Media Bar and its forks put
+behind the Home screen. Before 2.3.0 it blocked forever *and* defeated the
+starvation escape below, because a looping video always shows fresh playback
+progress: measured live, `blockedRetries` climbed 1 → 176 over 160s on `#/home`
+with Media Bar installed, i.e. layer 3 was off for as long as the user stayed on
+Home. All three conditions must hold — unmute it, give it controls or stop it
+looping and it blocks exactly as before, Jellyfin's own player included — and an
+ambient video that goes fullscreen is still caught by the `fullscreen_media`
+gate. The deliberate false negative: someone who *chooses* to watch a muted,
+looping, controls-less video can be reloaded under.
+
 A media element that *is* a session but then **freezes** — paused and abandoned,
 or stalled mid-buffer — cannot starve the reload forever either: once
 `media_element` has held the gate for ~10 minutes of *zero* playback progress
@@ -237,14 +250,66 @@ The full contract is written (and frozen) in the file header — the short form:
 the manager normalizes the arriving config with its own rules and **ignores
 unknown keys**, so an older manager accepts a newer copy's config; the call
 **never throws**; a duplicate registration (same name + same config — e.g. a
-double-included tag) silently dedupes; `__contractVersion` (currently `2`) is
+double-included tag) silently dedupes; `__contractVersion` (currently `3`) is
 strictly additive forever — revision 2 adds `__claimSingularGlobal(obj)`, the
 page-level once-only claim on a singular config object, which exists for objects
 that cannot carry the ordinary non-enumerable claim marker (frozen, sealed,
-exotic). A v1 caller never calls it and is unaffected. If the already-installed global is a **1.x
+exotic), and revision 3 adds `__handoffTo(newManager)` (below). A v1 caller
+never calls either and is unaffected. If the already-installed global is a **1.x
 singleton** (no `__registerInstance`), a 2.x copy logs one warning and goes
 **inert** rather than fight it — mixing 1.x + 2.x means the 1.x-shipping
 plugin should upgrade its kit copy.
+
+### Newest wins: the manager handoff (kit 2.3)
+
+"The first copy manages the page" was a real problem, not a detail. It meant a
+plugin shipping the newest kit could not guarantee its own fixes governed the
+page: whichever copy's `<script>` tag happened to parse first ran the flip
+guard, the reload budget, the safety gates and the URL interception **for every
+adoption on the page**. A live four-copy test made the consequence concrete — a
+2.1.2 copy loading ahead of a 2.2.0 copy ran 2.1.2's pair-based flip guard and
+reload-looped a tab (7 reloads in 185s across 3 version identities) that the
+2.2.0 copy sitting right next to it had already fixed.
+
+Since 2.3.0 the rule is **the newest copy on the page manages it**. An arriving
+copy compares itself against `manager.kitVersion` *numerically, segment by
+segment* (never as strings — `2.10.0` beats `2.9.0`) and:
+
+| Arriving copy vs. manager | What happens |
+| --- | --- |
+| older, or equal | registers as an instance (unchanged; equal versions never hand over) |
+| **newer**, manager speaks contract ≥ 3 | **handoff** — the newer copy takes the page over, one `console.log` says so |
+| **newer**, manager speaks contract < 3 | registers as an instance **plus one loud `console.warn`** naming both versions and stating that page-level reload semantics on this page are the older copy's |
+
+The handoff is lossless and synchronous. The old manager stops (every timer
+cancelled, every listener removed, every instance latched off so a request
+already in flight cannot act), and hands over each registered instance **with
+its live state** — resolved baseline and latest version, pending update,
+bootstrap entry progress, one-shot warning latches — plus the shared page state,
+including a reload that is already committed. Nothing is re-fetched, no entry
+chain is re-executed, no warning is printed to the console twice, and the reload
+budget and per-tab flip history need no transfer at all: they live in
+`localStorage`/`sessionStorage` under page-wide keys, keyed by instance names
+the handoff preserves.
+
+Two things about the old copy afterwards, both deliberate:
+
+* Its `createElement` wrapper flips to a permanent **inert pass-through** rather
+  than being uninstalled (other code may already hold a reference to it), and
+  the new manager stacks its own on top. Still exactly one wrapper that does
+  anything — the newest one — so URLs are never versioned twice.
+* `window.JellyfinRefreshKit` still points at it, because that property is
+  installed non-configurable on purpose and can never be re-pointed. It is an
+  **inert delegate**: every member, `kitVersion` and `__contractVersion`
+  included, forwards to the current manager, so app code and later kit copies
+  always reach the live one. `state().shared.managerLineage` lists the copies in
+  the order they ran the page.
+
+> **No version of this kit has ever been released publicly, and pre-2.3.0
+> copies must never be.** A pre-2.3.0 manager cannot hand a page over, so a
+> newer copy arriving after one is stuck under it — everything works, but every
+> page-level fix made since is inert. Ship 2.3.0 or newer in every adopting
+> plugin.
 
 `window.JellyfinRefreshKit` is installed **non-configurable**, and the manager
 also keeps a non-enumerable backup handle (`__jellyfinRefreshKitManager`) that a
@@ -690,25 +755,32 @@ window.JellyfinRefreshKit.checkNow()             // -> Promise (all instances)
 window.JellyfinRefreshKit.state()                // aggregate snapshot, see below
 
 // Multi-instance surface (2.0)
-window.JellyfinRefreshKit.kitVersion             // manager copy's kit version
+window.JellyfinRefreshKit.kitVersion             // CURRENT manager copy's kit version
 window.JellyfinRefreshKit.instances()            // ['KefinTweaks', 'DemoPack', ...]
 window.JellyfinRefreshKit.get(name)              // instance handle:
 //   { name, version, latestVersion, versionedUrl(u, force), checkNow(), state() }
 
 // Registration contract (for kit copies, not for app code)
 window.JellyfinRefreshKit.__registerInstance(config, kitVersion)
-window.JellyfinRefreshKit.__contractVersion      // 2
+window.JellyfinRefreshKit.__contractVersion      // 3
 window.JellyfinRefreshKit.__claimSingularGlobal(obj)  // contract rev 2; for kit copies
+window.JellyfinRefreshKit.__handoffTo(newManager)     // contract rev 3; for kit copies
 ```
+
+After a handoff every one of these forwards to the manager that took over, so
+the object you hold is always answering for the live one (see *Newest wins*).
 
 `state()` keeps every 1.1.0 field at the top level (describing the sole/first
 instance) and adds: `instanceCount`, `instances` (name → per-instance block),
-`interceptorInstalled` / `interceptorCount` (always 1), `contractVersion`,
-`bootVersion` / `baselineFromBootSeed`, `candidateVersion`, `flapDisarmedFor`,
+`interceptorInstalled` / `interceptorCount` (always 1 — an inert wrapper left
+behind by a handoff is not an interceptor), `contractVersion`,
+`bootVersion` / `baselineFromBootSeed`, `candidateVersion`, `flapDisarmedFor`
+(the **latest** refused transition), `restoredByHandoff`,
 `entriesDeduped`, `wouldBlockNow`, `idleWindowMs` / `effectiveIdleWindowMs` /
 `effectiveIdleWindowFrom`, and `shared` (pending instances, effective idle
 window and the instance imposing it, `reloadCommitted` / `reloadsSurvived`,
-`blockedRetries`, `mediaBlockedForMs`, effective budget, budget key).
+`blockedRetries`, `mediaBlockedForMs`, effective budget, budget key,
+`managerHandoffs` / `managerLineage`).
 
 In `shared`, every field describing *the reload the engine is trying to
 perform* is `null` when there is nothing pending — `blockReason`,

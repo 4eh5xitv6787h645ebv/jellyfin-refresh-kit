@@ -507,7 +507,15 @@
  *   playback position / a played range / an in-progress seek — a decorative
  *   element a plugin parks in the DOM with a src and preload set is NOT a
  *   session and no longer blocks (before, it blocked forever and silently
- *   switched layer 3 off for that page). A media element that IS a session but
+ *   switched layer 3 off for that page). Since 2.3.0 an AMBIENT BACKDROP VIDEO
+ *   — muted (or volume 0) AND looping AND without controls, which is what Media
+ *   Bar and friends put behind the Home screen — is not a session either, even
+ *   while it plays. It used to block forever AND keep the starvation escape
+ *   from ever firing, because a looping video always shows fresh playback
+ *   progress. The false negative is deliberate and narrow: a user who
+ *   deliberately watches a muted, looping, controls-less video can be reloaded
+ *   under. Unmute it, give it controls, stop it looping or make it fullscreen
+ *   and it blocks exactly as before. A media element that IS a session but
  *   then freezes — paused and abandoned, or stalled mid-buffer — still blocks,
  *   but only for ~10 minutes of zero playback progress anywhere on the page
  *   (the same span the retry ladder covers); after that the kit logs one line
@@ -598,11 +606,15 @@
      *           hasLeftVersion guard, which a live 4-copy test turned into a
      *           real reload loop (7 reloads in 185s over 3 version identities)
      *           on a page where the newest copy present had already fixed it.
-     *           Also: the recurring "update available" line names the flap
-     *           refusal instead of leaving it to a warning logged once and
-     *           scrolled away; flapDisarmedFor reports the LATEST refused
-     *           transition; and a frozen singular window config takes the
-     *           WeakSet claim path silently instead of via a swallowed throw.
+     *           Also: an AMBIENT BACKDROP VIDEO (muted + looping + no controls
+     *           — Media Bar's Home-screen backdrop and every fork of it) no
+     *           longer holds the reload gate forever, which it did while also
+     *           keeping the parked-media starvation escape from ever firing;
+     *           the recurring "update available" line names the flap refusal
+     *           instead of leaving it to a warning logged once and scrolled
+     *           away; flapDisarmedFor reports the LATEST refused transition;
+     *           and a frozen singular window config takes the WeakSet claim
+     *           path silently instead of via a swallowed throw.
      */
     var KIT_VERSION = '2.3.0';
 
@@ -2048,8 +2060,66 @@
      * @param {HTMLMediaElement} el
      * @returns {boolean}
      */
+    /**
+     * Is this element AMBIENT DECORATION rather than something anyone is
+     * watching? Ambient video does not block the auto-reload.
+     *
+     * THE CASE THIS EXISTS FOR. Media Bar (and its forks, and several skins)
+     * puts a full-bleed backdrop video behind the Home screen —
+     * `.video-container > video.preview-video`: autoplay, muted, looping, no
+     * controls, never started by the user. To hasLiveMedia() that is
+     * indistinguishable from a film: it is not paused, so it is "playing", so
+     * the gate returns 'media_element'. And because it genuinely plays, the
+     * parked-media starvation escape can never fire either — every probe sees
+     * fresh playback progress and restarts the ~10-minute clock. A live
+     * revalidation measured exactly that: blockedRetries climbing 1 → 176 over
+     * 160s on #/home with Media Bar installed, i.e. layer 3 switched off for as
+     * long as the user sits on Home, which is where users sit.
+     *
+     * THE HEURISTIC, deliberately conservative: MUTED (or volume 0) AND LOOPING
+     * AND WITHOUT CONTROLS. All three together describe decoration and nothing
+     * else in practice — a person actually watching something either hears it
+     * or has the controls to scrub it, and content does not loop. Any ONE of
+     * them being false leaves the element blocking exactly as before: an
+     * unmuted video blocks, a video with controls blocks, a non-looping video
+     * blocks. Jellyfin's own player has controls and is not looping, so the
+     * player is untouched by this; a trailer/theme-song preview with sound
+     * still blocks; and an ambient video that goes FULLSCREEN is caught earlier
+     * by the 'fullscreen_media' gate, which runs before the media probe.
+     *
+     * THE TRADEOFF, stated plainly: a user who deliberately sits watching a
+     * muted, looping, controls-less video can be reloaded under. That is
+     * accepted — the description IS ambient decoration, the reload is
+     * safe-gated on everything else (idle, dialogs, editors, route,
+     * fullscreen, visibility), and the alternative is that a single decorative
+     * element on the most-visited page in Jellyfin permanently disables the
+     * kit's third layer for every adopter on the page.
+     *
+     * Video only: an <audio> element is never "ambient backdrop", and muting a
+     * podcast does not make it decoration.
+     *
+     * @param {HTMLMediaElement} el
+     * @returns {boolean}
+     */
+    function isAmbientVideo(el) {
+        try {
+            if (String(el.tagName || '').toUpperCase() !== 'VIDEO') return false;
+            var silent = el.muted === true || el.volume === 0;
+            if (!silent) return false;
+            if (el.loop !== true) return false;
+            if (el.controls === true) return false;
+            return true;
+        } catch (_) {
+            // Unreadable element: NOT ambient. Every unknown is treated as a
+            // session, which is the same direction hasLiveMedia() fails in.
+            return false;
+        }
+    }
+
     function hasLiveMedia(el) {
         try {
+            // Ambient backdrop decoration is not a session anybody is having.
+            if (isAmbientVideo(el)) return false;
             var src = el.currentSrc || el.getAttribute('src') || '';
             if (!src) {
                 var sourceEl = el.querySelector('source[src]');
@@ -2513,6 +2583,13 @@
             var out = '';
             for (var i = 0; i < media.length; i++) {
                 var el = /** @type {HTMLMediaElement} */ (media[i]);
+                // AMBIENT VIDEO IS NOT PROGRESS. An exempted backdrop loops
+                // forever, so including it here would restart the starvation
+                // clock on every probe and starve the escape that exists for a
+                // genuinely stuck element sharing the page with it. It cannot
+                // be what is holding the gate — it does not block — so it has
+                // no business in the fingerprint of what does.
+                if (isAmbientVideo(el)) continue;
                 out += (el.currentSrc || el.getAttribute('src') || '') + '@' +
                     (el.paused ? 'p' : 'r') + ':' +
                     (typeof el.currentTime === 'number' ? el.currentTime.toFixed(1) : '?') + '|';
