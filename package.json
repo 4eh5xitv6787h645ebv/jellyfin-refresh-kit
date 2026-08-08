@@ -1,0 +1,16 @@
+{
+  "name": "jellyfin-refresh-kit",
+  "version": "0.0.0-private",
+  "private": true,
+  "description": "Development-only browser regression tests for Jellyfin Refresh Kit",
+  "scripts": {
+    "test:browser": "node --test tests/browser/*.test.cjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "puppeteer": "24.39.0",
+    "ws": "8.21.3"
+  }
+}

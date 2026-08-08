@@ -412,16 +412,19 @@
  *   5. media_element   — never overridden by anything in 2.4.0. Ambient
  *                        backdrop video is exempt (2.3.0) and a frozen element
  *                        loses the gate after ~10 minutes of zero progress.
- *   6. active_editor   — the FOCUSED field only. Not overridden by the
- *                        screensaver: absent or not, the user's typing is
- *                        still there when they come back. (2.4.1) Does not
- *                        fire for an EMPTY field on an empty route — Jellyfin
- *                        focuses the login form for you, so without this the
- *                        refusal was permanent there and relaxation 8 could
- *                        never be reached. Any typed value still refuses.
- *   7. password_entry  — (2.4.0) ANY input[type=password] on the page holding a
- *                        value, focused or not. A pure refusal: it can only
- *                        ever stop a reload the gates above would have allowed.
+ *   6. active_editor   — the FOCUSED, rendered, interactive field only. Not
+ *                        overridden by the screensaver: absent or not, the
+ *                        user's typing is still there when they come back.
+ *                        (2.4.1) Does not fire for an EMPTY field on an empty
+ *                        route — Jellyfin focuses the login form for you, so
+ *                        without this the refusal was permanent there and
+ *                        relaxation 8 could never be reached. Any typed value
+ *                        still refuses.
+ *   7. password_entry  — (2.4.0) Any rendered, interactive
+ *                        input[type=password] holding a value, focused or not.
+ *                        (2.4.2) Retained hidden/disabled/inert forms do not
+ *                        block forever after navigation. A pure refusal: it
+ *                        only stops a reload the gates above would allow.
  *   8. not_idle        — idleSeconds (max across pending instances), floored at
  *                        MIN_SETTLE_MS. (2.4.0) Drops to that floor on the
  *                        empty routes (#/login, #/selectserver), under the
@@ -746,8 +749,21 @@
      *           refusal below it is untouched. Found on Jellyfin 12.0.0, but it
      *           was never a 12 bug — the same client code ships in 10.11, and
      *           both are fixed by the same narrowing.
+     *   2.4.2 — A COMPLETED LOGIN NO LONGER BLOCKS EVERY FUTURE UPDATE. Jellyfin
+     *           10.11 retains its login view in the DOM after authentication,
+     *           hidden with the typed password still in the field. The password
+     *           gate used to count retained hidden fields, so an authenticated
+     *           home tab reported `password_entry` forever. It now protects
+     *           populated password fields only while rendered and interactive;
+     *           visible enabled login/settings forms remain protected exactly
+     *           as before.
+     *           Forced checks now join the request already in flight; cache
+     *           stamps stay before URL fragments; opener-cloned tab history is
+     *           discarded; CSS-hidden retained dialogs no longer block; and a
+     *           stuck bootstrap entry times out with explicit diagnostics and
+     *           stops the remaining ordered chain.
      */
-    var KIT_VERSION = '2.4.1';
+    var KIT_VERSION = '2.4.2';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -809,6 +825,15 @@
      * @type {string}
      */
     var RECOVERY_KEY = 'jellyfin-refresh-kit-recovery-v1';
+
+    /**
+     * Per-TAB identity used only to detect sessionStorage copied by a
+     * same-origin window.open(). Browsers clone the opener's sessionStorage
+     * into that new browsing context, even though the records above describe
+     * history belonging exclusively to the opener tab.
+     * @type {string}
+     */
+    var TAB_ID_KEY = 'jellyfin-refresh-kit-tab-v1';
 
     /** @type {number} Cap on remembered flip records (per tab, all instances). */
     var MAX_FLIP_RECORDS = 24;
@@ -934,6 +959,15 @@
      * @type {number}
      */
     var DEFAULT_ENTRY_TIMEOUT_MS = 3000;
+
+    /**
+     * Bootstrap mode only: hard ceiling on ONE entry element reaching load or
+     * error. A dynamic script removed after timing out can still execute if its
+     * response arrives later, so the ordered chain stops at the timeout rather
+     * than starting a later entry that the straggler could overtake.
+     * @type {number}
+     */
+    var ENTRY_LOAD_TIMEOUT_MS = 30000;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Tiny safe helpers
@@ -2002,6 +2036,23 @@
     }
 
     /**
+     * Append one encoded query parameter, keeping any fragment last. A query
+     * suffix written after `#` is only fragment text and never reaches the
+     * server, which matters especially for the version endpoint's cache stamp.
+     * @param {string} url
+     * @param {string} key
+     * @param {string|number} value
+     * @returns {string}
+     */
+    function appendQueryParameter(url, key, value) {
+        var hashAt = url.indexOf('#');
+        var base = hashAt === -1 ? url : url.slice(0, hashAt);
+        var hash = hashAt === -1 ? '' : url.slice(hashAt);
+        var sep = base.indexOf('?') === -1 ? '?' : (/[?&]$/.test(base) ? '' : '&');
+        return base + sep + encodeURIComponent(key) + '=' + encodeURIComponent(value) + hash;
+    }
+
+    /**
      * Append `?v=<version>` (or `&v=`), keeping any fragment in place. Callers
      * are responsible for the "should we" checks (hasVersionParam etc.).
      * @param {string} url
@@ -2009,11 +2060,7 @@
      * @returns {string}
      */
     function appendVersion(url, version) {
-        var hashAt = url.indexOf('#');
-        var base = hashAt === -1 ? url : url.slice(0, hashAt);
-        var hash = hashAt === -1 ? '' : url.slice(hashAt);
-        var sep = base.indexOf('?') === -1 ? '?' : '&';
-        return base + sep + 'v=' + encodeURIComponent(version) + hash;
+        return appendQueryParameter(url, 'v', version);
     }
 
     /**
@@ -2454,7 +2501,7 @@
     }
 
     /**
-     * Is there a PASSWORD FIELD ON THIS PAGE WITH SOMETHING TYPED IN IT?
+     * Is there an INTERACTIVE, RENDERED PASSWORD FIELD WITH SOMETHING IN IT?
      *
      * The 'active_editor' gate only covers the field that currently has FOCUS,
      * which is exactly the wrong shape for a password: a user types their
@@ -2465,8 +2512,16 @@
      * from browser autofill the way a username is.
      *
      * It matters most on precisely the route 2.4.0 just relaxed (login), which
-     * is why the two arrived together — but it applies EVERYWHERE, because a
-     * password field with a value in it means the same thing on any page.
+     * is why the two arrived together — but it applies everywhere a rendered
+     * password field can hold work in progress.
+     *
+     * RENDERED is load-bearing (2.4.2). Jellyfin 10.11 keeps the completed
+     * login view in the DOM after authentication, `display:none`, with the
+     * submitted password still in its input. Counting that retained field
+     * blocked every later update for the life of the authenticated document.
+     * A disabled field, or one in a hidden/aria-hidden/inert subtree, with
+     * hidden/collapsed computed visibility, or with no layout box is not work
+     * the user is currently doing. Unknown state still fails safe and counts.
      *
      * KNOWN LIMITATION: querySelectorAll does not descend into shadow roots, so
      * a password field inside a web component's shadow DOM (some third-party
@@ -2480,9 +2535,75 @@
         var fields = document.querySelectorAll('input[type="password"]');
         for (var i = 0; i < fields.length; i++) {
             var value = fields[i].value;
-            if (typeof value === 'string' && value.length > 0) return true;
+            if (typeof value === 'string' && value.length > 0
+                && !isDisabledFormControl(fields[i]) && isRenderedElement(fields[i])) {
+                return true;
+            }
         }
         return false;
+    }
+
+    /**
+     * Is a native form control positively disabled? `:disabled` also catches a
+     * control disabled by an ancestor fieldset, for which the input's own
+     * `.disabled` property remains false. Probe failure returns false so an
+     * unknown state remains protected. `aria-disabled` is intentionally absent:
+     * it describes intent to assistive technology but does not stop a browser
+     * user focusing or typing into a native password input.
+     * @param {Element} element
+     * @returns {boolean}
+     */
+    function isDisabledFormControl(element) {
+        try {
+            if (element.disabled === true) return true;
+            return typeof element.matches === 'function' && element.matches(':disabled');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
+     * Is an element part of the rendered page the user can currently interact
+     * with? False only on positive evidence that it is retained but hidden. Any
+     * probe failure returns true so an exotic element cannot weaken a safety
+     * gate. `display:contents` has no box of its own but may have visible,
+     * interactive descendants, so it is conservatively rendered.
+     * @param {Element} element
+     * @returns {boolean}
+     */
+    function isRenderedElement(element) {
+        try {
+            // Node.isConnected is absent in some older embedded engines. Its
+            // absence is unknown, not evidence that a live element is detached.
+            if (typeof element.isConnected === 'boolean' && !element.isConnected) return false;
+            if (element.closest('[hidden], [aria-hidden="true"], [inert]')) return false;
+            var style = window.getComputedStyle(element);
+            if (style && (style.display === 'none'
+                || style.visibility === 'hidden'
+                || style.visibility === 'collapse'
+                || style.contentVisibility === 'hidden')) {
+                return false;
+            }
+            if (style && style.display === 'contents') {
+                // It has no box to test below. Still honor positive evidence
+                // that an ancestor removes the whole subtree from layout.
+                var parent = element.parentElement;
+                while (parent) {
+                    var parentStyle = window.getComputedStyle(parent);
+                    if (parentStyle && (parentStyle.display === 'none'
+                        || parentStyle.contentVisibility === 'hidden')) return false;
+                    parent = parent.parentElement;
+                }
+                return true;
+            }
+            if (typeof element.checkVisibility === 'function'
+                && !element.checkVisibility({ visibilityProperty: true })) return false;
+
+            var rects = element.getClientRects();
+            return !rects || rects.length > 0;
+        } catch (_) {
+            return true;
+        }
     }
 
     /**
@@ -2660,9 +2781,10 @@
                     '.dialog.opened, .actionSheet.opened, [role="dialog"], [aria-modal="true"]'
                 );
                 for (var i = 0; i < dialogs.length; i++) {
-                    // A closed-but-retained dialog stays in the DOM inside an
-                    // aria-hidden/hidden subtree; only visible ones block.
-                    if (!dialogs[i].closest('[aria-hidden="true"], [hidden]')) return 'dialog';
+                    // Jellyfin and plugins retain closed dialogs in several
+                    // shapes: hidden attributes, aria-hidden ancestors, or CSS
+                    // display/visibility. Only a rendered one is an active task.
+                    if (isRenderedElement(dialogs[i])) return 'dialog';
                 }
             }
 
@@ -2674,7 +2796,8 @@
             }
 
             var active = document.activeElement;
-            if (active && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName || ''))) {
+            if (active && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName || ''))
+                && !isDisabledFormControl(active) && isRenderedElement(active)) {
                 // AN EMPTY FIELD ON AN EMPTY ROUTE IS NOT WORK IN PROGRESS
                 // (2.4.1). This is the one narrowing that makes 2.4.0's login
                 // relaxation real, because without it the relaxation below was
@@ -2807,6 +2930,66 @@
             return null;
         }
     }
+
+    /** @returns {string} Best-effort identity; uniqueness, not secrecy, matters. */
+    function newTabId() {
+        return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) +
+            '-' + Math.random().toString(36).slice(2);
+    }
+
+    /**
+     * Give this browsing context an identity and discard opener-cloned history.
+     *
+     * sessionStorage is normally described as per-tab, but window.open() starts
+     * a same-origin child with a COPY of the opener's store. Flip, left-version,
+     * recovery and session-budget records in that copy describe navigations the
+     * new tab never made. Comparing the copied identity with the opener lets us
+     * distinguish that first child document from an ordinary reload, on which
+     * the child's newly-issued identity must remain stable with all its history.
+     * localStorage's budget is intentionally untouched because it is the shared
+     * cross-tab half of the reload ceiling.
+     */
+    function initializeTabStorage() {
+        var ss = safeStorage('sessionStorage');
+        if (!ss) return;
+
+        var ownId = safe(function () { return ss.getItem(TAB_ID_KEY); }, null);
+        var openerId = safe(function () {
+            var opener = window.opener;
+            if (!opener || opener === window || opener.closed) return null;
+            var openerStorage = opener.sessionStorage;
+            return openerStorage && typeof openerStorage.getItem === 'function'
+                ? openerStorage.getItem(TAB_ID_KEY) : null;
+        }, null);
+
+        if (ownId && openerId && ownId === openerId) {
+            [FLIP_KEY, LEFT_KEY, RECOVERY_KEY, BUDGET_KEY].forEach(function (key) {
+                safe(function () {
+                    if (typeof ss.removeItem === 'function') ss.removeItem(key);
+                });
+                // A few embedded storage shims expose removeItem but silently
+                // ignore it. An empty list has the same semantics and gives us
+                // a write fallback when read-back proves the key survived.
+                if (safe(function () { return ss.getItem(key); }, null) !== null) {
+                    safe(function () { ss.setItem(key, '[]'); });
+                }
+            });
+            ownId = null;
+            safe(function () {
+                console.debug(LOG, 'discarded sessionStorage history cloned from the opener tab');
+            });
+        }
+
+        if (!ownId) safe(function () {
+            var nextId = newTabId();
+            if (nextId === openerId) nextId += '-child';
+            ss.setItem(TAB_ID_KEY, nextId);
+        });
+    }
+
+    // This must run before the first instance asks recoverySpent() or reads a
+    // flap record; otherwise cloned history can veto its very first decision.
+    safe(initializeTabStorage);
 
     /**
      * Reserve one reload against the rolling budget.
@@ -3820,8 +4003,13 @@
         var confirmSpentThisCycle = false;
         /** @type {boolean} One-shot latch for the confirmation-churn warning. */
         var warnedConfirmChurn = false;
-        /** @type {boolean} True while a version fetch for this instance is in flight. */
-        var fetchInFlight = false;
+        /**
+         * The one version fetch currently in flight. Every caller, including a
+         * forced checkNow(), joins it so responses cannot land out of order and
+         * regress latest/candidate state.
+         * @type {Promise<void>|null}
+         */
+        var fetchInFlight = null;
         /** @type {boolean} One-shot latch for the flap-disarm log line. */
         var warnedFlap = false;
         /** @type {string|null} The version pair auto-reload was disarmed for. */
@@ -3834,10 +4022,18 @@
         var entriesDeduped = cfg.entryScripts.length > 0 && !!entriesSuppressed;
         /** @type {boolean} One-shot latch so the entry chain can only start once. */
         var entriesStarted = false;
-        /** @type {boolean} True once every entry has settled (loaded, or failed and skipped). */
+        /**
+         * True once the chain reached a terminal state: every entry settled,
+         * or one timed out and the remaining ordered chain was stopped.
+         * @type {boolean}
+         */
         var entriesLoaded = false;
         /** @type {boolean} Did the entries get a ?v= — i.e. did the version resolve in time? */
         var entriesVersioned = false;
+        /** @type {Array<{url:string,reason:string}>} Settled entry failures for diagnostics. */
+        var entryFailures = [];
+        /** @type {string|null} Entry whose timeout stopped the remaining chain. */
+        var entryTimedOutUrl = null;
         /** @type {number|null} setTimeout handle for the bootstrap entry-timeout race. */
         var entryBootTimer = null;
         /**
@@ -3846,7 +4042,8 @@
          * the closure that started it and must be allowed to finish (the page
          * needs those files), but the instance that takes over still has to
          * learn when it settled or its state() would report entriesLoaded:false
-         * forever. @type {Promise<void>|null}
+         * forever. Its result carries timeout/error diagnostics across that
+         * handoff too. @type {Promise<Object>|null}
          */
         var entriesChain = null;
         /**
@@ -3855,6 +4052,43 @@
          * instance wakes up again. @type {boolean}
          */
         var deactivated = false;
+
+        /**
+         * Copy only the diagnostic record shape this runtime emits.
+         * @param {*} value
+         * @returns {Array<{url:string,reason:string}>}
+         */
+        function copyEntryFailures(value) {
+            if (!Array.isArray(value)) return [];
+            var out = [];
+            for (var i = 0; i < value.length; i++) {
+                var item = value[i];
+                if (!item || typeof item.url !== 'string') continue;
+                if (item.reason !== 'load_error' && item.reason !== 'timeout') continue;
+                out.push({ url: item.url, reason: item.reason });
+            }
+            return out;
+        }
+
+        /** @returns {Object} Immutable-by-copy result for handoff observers. */
+        function entryChainSummary() {
+            return {
+                entryFailures: copyEntryFailures(entryFailures),
+                entryTimedOutUrl: entryTimedOutUrl
+            };
+        }
+
+        /**
+         * Adopt the terminal result of an entry chain owned by a retired copy.
+         * @param {*} summary
+         */
+        function applyEntryChainSummary(summary) {
+            entriesLoaded = true;
+            if (!summary || typeof summary !== 'object') return;
+            entryFailures = copyEntryFailures(summary.entryFailures);
+            entryTimedOutUrl = typeof summary.entryTimedOutUrl === 'string'
+                ? summary.entryTimedOutUrl : null;
+        }
 
         // ── Handoff: resume the previous manager's instance, don't restart it ──
         if (restored) {
@@ -3879,10 +4113,13 @@
             entriesStarted = restore.entriesStarted === true;
             entriesLoaded = restore.entriesLoaded === true;
             entriesVersioned = restore.entriesVersioned === true;
+            entryFailures = copyEntryFailures(restore.entryFailures);
+            entryTimedOutUrl = typeof restore.entryTimedOutUrl === 'string'
+                ? restore.entryTimedOutUrl : null;
             if (entriesStarted && !entriesLoaded && restore.entriesChain &&
                 typeof restore.entriesChain.then === 'function') {
                 safe(function () {
-                    restore.entriesChain.then(function () { entriesLoaded = true; },
+                    restore.entriesChain.then(applyEntryChainSummary,
                         function () { entriesLoaded = true; });
                 });
             }
@@ -3959,7 +4196,7 @@
 
             if (!cfg.versionUrl) return Promise.reject(new Error('no versionUrl configured'));
 
-            var url = cfg.versionUrl + (cfg.versionUrl.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now();
+            var url = appendQueryParameter(cfg.versionUrl, '_', Date.now());
             // AbortController where it exists, so a timed-out request is also
             // CANCELLED rather than left holding one of the browser's six
             // per-host connections. Where it does not, withTimeout still
@@ -4252,19 +4489,19 @@
         function poll(force, isConfirm) {
             if (deactivated) return Promise.resolve();
             if (cfg.mode === 'off') return Promise.resolve();
+            // Forced checks bypass the spacing floor, not single-flight. They
+            // join the active request so an older response cannot arrive last
+            // and overwrite a newer candidate/latest value.
+            if (fetchInFlight) return fetchInFlight;
             if (!force && (Date.now() - lastFetchAt) < MIN_FETCH_GAP_MS) return Promise.resolve();
-            // One version request per instance at a time. Without this every
-            // wake of a tab whose endpoint is hanging started another one.
-            if (!force && fetchInFlight) return Promise.resolve();
 
             if (!isConfirm) confirmSpentThisCycle = false;
-            fetchInFlight = true;
-            return fetchVersion().then(function (v) {
-                fetchInFlight = false;
+            fetchInFlight = fetchVersion().then(function (v) {
+                fetchInFlight = null;
                 warnedFetchFailure = false;
                 safe(function () { onVersion(v); });
             }, function (err) {
-                fetchInFlight = false;
+                fetchInFlight = null;
                 // Version-source failure is NOT an update. Warn once, stay quiet
                 // afterwards (a 404'd version.json must not spam the console every
                 // minute), never reload, and keep polling — the endpoint may come
@@ -4274,6 +4511,7 @@
                     safe(function () { console.warn(LOG, TAG, 'version check failed (further failures silenced):', err && err.message ? err.message : err); });
                 }
             });
+            return fetchInFlight;
         }
 
         /**
@@ -4361,26 +4599,53 @@
         /**
          * Append ONE entry and resolve when it has settled.
          *
-         * The promise resolves on error as well as on success — deliberately. The
-         * contract is "order is preserved and the page survives"; a 404 on entry 2
-         * must not strand entries 3..n. The failure is logged once, right here,
-         * with the URL, because that is the only place that knows which file died.
+         * An ordinary load error is fail-open: the chain continues so a 404 on
+         * entry 2 does not strand entries 3..n. A TIMEOUT is different. Removing
+         * a dynamic script does not reliably cancel it; it can execute when the
+         * late response arrives. Starting entry 2 after entry 1 timed out would
+         * therefore permit 2-before-1 execution, so timeout stops the chain.
          *
          * @param {string} url
-         * @returns {Promise<void>}
+         * @returns {Promise<'loaded'|'load_error'|'timeout'>}
          */
         function appendEntry(url) {
             return new Promise(function (resolve) {
                 var settled = false;
-                function finish(ok) {
+                var el = null;
+                var watchdog = null;
+
+                function finish(outcome) {
                     if (settled) return;
                     settled = true;
-                    if (!ok) {
+                    if (watchdog !== null) { clearTimeout(watchdog); watchdog = null; }
+                    if (el) {
+                        // A late load/error after timeout must not mutate state or
+                        // retain this closure for the life of the document.
                         safe(function () {
-                            console.warn(LOG, TAG, 'entry failed to load (skipping, remaining entries continue):', url);
+                            el.onload = null;
+                            el.onerror = null;
                         });
                     }
-                    resolve();
+
+                    if (outcome !== 'loaded') {
+                        entryFailures.push({ url: url, reason: outcome });
+                    }
+                    if (outcome === 'timeout') {
+                        entryTimedOutUrl = url;
+                        safe(function () {
+                            if (el && el.parentNode) el.parentNode.removeChild(el);
+                        });
+                        safe(function () {
+                            console.warn(LOG, TAG, 'entry timed out after ' + ENTRY_LOAD_TIMEOUT_MS +
+                                'ms; stopping remaining entries to preserve execution order:', url);
+                        });
+                    } else if (outcome === 'load_error') {
+                        safe(function () {
+                            console.warn(LOG, TAG,
+                                'entry failed to load (skipping, remaining entries continue):', url);
+                        });
+                    }
+                    resolve(outcome);
                 }
 
                 var failed = safe(function () {
@@ -4395,9 +4660,9 @@
                     // harmless and intentional — the URL already has v=, so the
                     // page-level matcher sees it and passes through rather than
                     // double-versioning (or cross-versioning by another instance).
-                    var el = document.createElement(isCss ? 'link' : 'script');
-                    el.onload = function () { finish(true); };
-                    el.onerror = function () { finish(false); };
+                    el = document.createElement(isCss ? 'link' : 'script');
+                    el.onload = function () { finish('loaded'); };
+                    el.onerror = function () { finish('load_error'); };
                     if (isCss) {
                         el.rel = 'stylesheet';
                         el.href = finalUrl;
@@ -4409,27 +4674,28 @@
                         el.async = false;
                         el.src = finalUrl;
                     }
+                    watchdog = setTimeout(function () { finish('timeout'); }, ENTRY_LOAD_TIMEOUT_MS);
                     (document.head || document.documentElement).appendChild(el);
                     return false;
                 }, true);
 
                 // Creating/appending threw (no <head>, CSP, exotic engine): treat it
                 // exactly like a load failure so the chain keeps moving.
-                if (failed) finish(false);
+                if (failed) finish('load_error');
             });
         }
 
         /**
          * Load every configured entry, strictly in order, once. (Order holds
          * WITHIN this instance; other instances' chains run concurrently.)
-         * @returns {Promise<void>}
+         * @returns {Promise<Object>}
          */
         function loadEntries() {
-            if (entriesStarted) return Promise.resolve();
+            if (entriesStarted) return entriesChain || Promise.resolve(entryChainSummary());
             // Deactivated BEFORE the chain started: the instance that took over
             // owns these entries and will load them itself. Starting here would
             // be the double-execution the whole handoff is careful to avoid.
-            if (deactivated) return Promise.resolve();
+            if (deactivated) return Promise.resolve(entryChainSummary());
             entriesStarted = true;
             entriesVersioned = !!baselineVersion;
 
@@ -4441,11 +4707,22 @@
 
             var chain = Promise.resolve();
             cfg.entryScripts.forEach(function (url) {
-                chain = chain.then(function () { return appendEntry(url); });
+                chain = chain.then(function () {
+                    if (entryTimedOutUrl) return undefined;
+                    return appendEntry(url);
+                });
             });
             entriesChain = chain.then(function () {
                 entriesLoaded = true;
-                safe(function () { console.log(LOG, TAG, 'bootstrap: all entries settled'); });
+                safe(function () {
+                    if (entryTimedOutUrl) {
+                        console.log(LOG, TAG, 'bootstrap: entry chain stopped at timed-out entry:',
+                            entryTimedOutUrl);
+                    } else {
+                        console.log(LOG, TAG, 'bootstrap: all entries settled');
+                    }
+                });
+                return entryChainSummary();
             });
             return entriesChain;
         }
@@ -4652,6 +4929,8 @@
                 entriesStarted: entriesStarted,
                 entriesLoaded: entriesLoaded,
                 entriesVersioned: entriesVersioned,
+                entryFailures: copyEntryFailures(entryFailures),
+                entryTimedOutUrl: entryTimedOutUrl,
                 entriesChain: entriesChain
             };
         }
@@ -4700,6 +4979,10 @@
                 entriesLoaded: entriesLoaded,
                 entriesVersioned: entriesVersioned,
                 entriesDeduped: entriesDeduped,
+                entryLoadTimeoutMs: ENTRY_LOAD_TIMEOUT_MS,
+                entryTimedOut: entryTimedOutUrl !== null,
+                entryTimedOutUrl: entryTimedOutUrl,
+                entryFailures: copyEntryFailures(entryFailures),
                 entryScripts: cfg.entryScripts.slice(),
                 version: baselineVersion,
                 latestVersion: latestVersion,

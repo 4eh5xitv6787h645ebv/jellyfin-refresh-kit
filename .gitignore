@@ -3,6 +3,7 @@ plugin/Jellyfin.Plugin.RefreshKit/bin/
 plugin/Jellyfin.Plugin.RefreshKit/obj/
 plugin/Jellyfin.Plugin.RefreshKit.Tests/bin/
 plugin/Jellyfin.Plugin.RefreshKit.Tests/obj/
+node_modules/
 
 # proxy e2e rig scratch
 e2e/proxy/.rk-token
