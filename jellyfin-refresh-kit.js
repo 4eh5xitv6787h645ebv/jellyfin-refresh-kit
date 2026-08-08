@@ -739,6 +739,26 @@
     var HIDDEN_RETRY_MIN_MS = 5000;
 
     /**
+     * How long the MASKED POST-PLAYBACK WINDOW stays open after the user leaves
+     * Jellyfin's video route (2.4.0). Long enough to cover the view teardown
+     * and the retry tick that notices it, short enough that it is spent on the
+     * transition it was opened for and never banked for later.
+     * @type {number}
+     */
+    var MASKED_TRANSITION_MS = 2500;
+
+    /**
+     * How old the PREVIOUS route sample may be and still count as having
+     * watched a transition. Beyond it the engine was not running (nothing was
+     * pending), so "it was a video route last time I looked" says nothing about
+     * what the user just did. Deliberately a small multiple of the 1Hz retry
+     * cadence, so ordinary background-tab timer throttling cannot invalidate a
+     * sample taken one tick ago.
+     * @type {number}
+     */
+    var MASKED_SAMPLE_MAX_AGE_MS = 5000;
+
+    /**
      * Hard cap on hidden-tab single-shot re-arms per hide, which — at the
      * default 25s cadence — covers roughly the same ~10 minutes the visible 1Hz
      * ladder does. Past it the hidden tab holds NO timer at all and the reload
@@ -1721,6 +1741,23 @@
     /** @type {number} Hidden single-shot re-arms since this tab was hidden. */
     var hiddenRetries = 0;
     /**
+     * The last location.hash the engine SAW, and when it saw it (2.4.0). Not a
+     * navigation history — a pair of readings taken at moments the engine was
+     * already awake, which is all that is needed to notice the one transition
+     * the kit acts on: leaving the video route. See sampleRoute().
+     * @type {string|null}
+     */
+    var lastSeenHash = null;
+    /** @type {number} When lastSeenHash was read. */
+    var lastSeenHashAt = 0;
+    /**
+     * Wall-clock expiry of the masked post-playback window. A timestamp rather
+     * than a boolean precisely so it cannot be banked: nothing has to remember
+     * to spend or clear it.
+     * @type {number}
+     */
+    var maskedTransitionUntil = 0;
+    /**
      * When the current zero-progress 'media_element' block started, or null when
      * there is no such streak. Measured in WALL TIME rather than counted in
      * retry ticks on purpose: the 1Hz ladder is capped and can retire long
@@ -2218,6 +2255,81 @@
     }
 
     /**
+     * Is this hash Jellyfin's own video route?
+     *
+     * BOTH ROUTER SPELLINGS, and prefix-matched on purpose: the 10.11 client
+     * navigates to "#/video?id=…&serverId=…", older/alternative shells use the
+     * "#!/video" form, and a route always carries its query string. Anchoring
+     * at 0 is what keeps it from matching a route that merely mentions video.
+     * @param {string} hash
+     * @returns {boolean}
+     */
+    function isPlaybackRoute(hash) {
+        var h = String(hash || '');
+        return h.indexOf('#/video') === 0 || h.indexOf('#!/video') === 0;
+    }
+
+    /**
+     * SAMPLE THE ROUTE, and notice the one transition worth acting on: the user
+     * LEAVING playback.
+     *
+     * Why sampling and not a listener: the 10.11 web client navigates with
+     * history.pushState, which fires NEITHER hashchange NOR popstate. A kit
+     * that listened for those events would simply never hear an in-app
+     * navigation, and the alternative — patching history.pushState — is the
+     * kind of global surgery this kit refuses to do on someone else's page. So
+     * the route is READ at the moments the engine is already awake: every retry
+     * tick and every interaction settle. No new listeners, no new timers.
+     *
+     * THE MOMENT: the instant a user comes out of the player, the screen is
+     * already being torn down and rebuilt — the poster wall is repainting, the
+     * player chrome is unmounting. A reload landing inside that redraw is
+     * invisible in a way it can never be on a settled page. It is also the
+     * single likeliest moment for a stale-code page to be sitting on a pending
+     * update, because the whole time playback ran, 'playback_route' was
+     * refusing it.
+     *
+     * So leaving playback opens a SHORT-LIVED window (MASKED_TRANSITION_MS) in
+     * which the reload's IDLE requirement — and only the idle requirement —
+     * drops to the settle floor. Every other gate still decides: video teardown
+     * is asynchronous, so a lingering <video> keeps blocking on media_element,
+     * and a dialog opened on the way out still blocks.
+     *
+     * IT CANNOT BE BANKED. The window expires on a wall clock rather than
+     * waiting to be spent, so an update arriving ten minutes after the user
+     * left the player gets the ordinary idle rules, not a relaxation earned
+     * long ago.
+     *
+     * A STALE PREVIOUS SAMPLE ARMS NOTHING. Between two samples more than
+     * MASKED_SAMPLE_MAX_AGE_MS apart the kit did not watch anything — the
+     * engine was asleep, because nothing was pending — and "the hash used to be
+     * a video route the last time I looked, an hour ago" is not evidence that
+     * the user just left the player.
+     */
+    function sampleRoute() {
+        var hash = safe(function () { return String(location.hash || ''); }, '') || '';
+        var now = Date.now();
+        var prev = lastSeenHash;
+        var prevAt = lastSeenHashAt;
+        lastSeenHash = hash;
+        lastSeenHashAt = now;
+        if (prev === null || prev === hash) return;
+        if ((now - prevAt) > MASKED_SAMPLE_MAX_AGE_MS) return;
+        if (!isPlaybackRoute(prev) || isPlaybackRoute(hash)) return;
+        maskedTransitionUntil = now + MASKED_TRANSITION_MS;
+        safe(function () {
+            console.debug(LOG, 'left the playback route (' + prev + ' → ' + hash + ') — a reload for the ' +
+                'next ' + (MASKED_TRANSITION_MS / 1000) + 's is masked by the view change, so the idle ' +
+                'requirement drops to the settle floor. Every other gate still applies.');
+        });
+    }
+
+    /** @returns {boolean} Is the masked post-playback window open right now? */
+    function maskedTransitionActive() {
+        return Date.now() < maskedTransitionUntil;
+    }
+
+    /**
      * @param {number} idleMs The idle window that must have elapsed (already
      *   floored at MIN_SETTLE_MS by the caller).
      * @param {boolean} [skipMediaGate] Ignore the <video>/<audio> probe. Set
@@ -2265,7 +2377,7 @@
             // Jellyfin's own video route. Even before a <video> exists, being on
             // #/video means a session is starting.
             var hash = String(location.hash || '');
-            if (hash.indexOf('#/video') === 0 || hash.indexOf('#!/video') === 0) return 'playback_route';
+            if (isPlaybackRoute(hash)) return 'playback_route';
 
             if (document.fullscreenElement || document.pictureInPictureElement) return 'fullscreen_media';
 
@@ -2878,6 +2990,12 @@
         // one-navigation-one-slot latch exists to prevent.
         if (handedOff) return;
 
+        // Read the route before anything else decides. This is one of exactly
+        // two places the kit samples it (the other is onDiscreteInteraction),
+        // and it covers the retry tick and the interaction settle — the two
+        // moments the engine is awake anyway. See sampleRoute().
+        safe(sampleRoute);
+
         // The navigation is already committed; this document is on its way out.
         // Anything that arms between here and unload is served by the reload
         // that is already in flight, so it must not reserve a second slot of
@@ -2907,7 +3025,15 @@
         var pending = pendingInstances();
         if (pending.length === 0) return;
 
-        var idleWindow = effectiveIdleWindowMs(pending);
+        // MASKED POST-PLAYBACK WINDOW (2.4.0): coming out of the player, the
+        // view is already being torn down and rebuilt, so the idle requirement
+        // — the gate that exists to keep a reload from landing on a page the
+        // user is looking at — drops to the settle floor for a couple of
+        // seconds. ONLY the idle requirement: `reason` below is still the full
+        // gate chain, and a <video> that has not finished tearing down yet
+        // still blocks on media_element.
+        var masked = maskedTransitionActive();
+        var idleWindow = masked ? MIN_SETTLE_MS : effectiveIdleWindowMs(pending);
         var reason = blockReasonFor(idleWindow);
 
         // PARKED-MEDIA STARVATION ESCAPE. hasLiveMedia() already refuses to
@@ -3168,9 +3294,24 @@
         blockedRetries = 0;
         settleHopTimer = setTimeout(function () {
             settleHopTimer = null;
-            // Wait out the remaining idle window from THIS interaction.
-            var remaining = Math.max(0,
-                lastInteractionAt + effectiveIdleWindowMs(pendingInstances()) - Date.now());
+            // THE SECOND (AND LAST) ROUTE SAMPLING POINT, and it belongs HERE
+            // rather than in the event handler above: the click that leaves the
+            // player is a discrete interaction, and at the moment it is
+            // observed the host has not navigated yet — the task-0 hop exists
+            // precisely so its handler has run. Sampling before it would read
+            // the OLD hash, arm nothing, and then cancel the 1Hz ladder that
+            // would otherwise have noticed the transition a second later,
+            // making the interaction that left the player the one thing that
+            // could stop the masked window from ever opening.
+            safe(sampleRoute);
+            // Wait out the remaining idle window from THIS interaction — or,
+            // inside the masked post-playback window, only the settle floor,
+            // which is the same relaxation tryReload() applies. Without it the
+            // interaction that LEFT the player would itself impose the full
+            // idle wait the mask exists to lift.
+            var remaining = Math.max(0, lastInteractionAt +
+                (maskedTransitionActive() ? MIN_SETTLE_MS : effectiveIdleWindowMs(pendingInstances())) -
+                Date.now());
             settleTimer = setTimeout(function () {
                 settleTimer = null;
                 safe(tryReload);
@@ -5282,6 +5423,11 @@
                     hiddenForMs: hiddenForMs(),
                     hiddenTimerArmed: hiddenTimer !== null,
                     hiddenRetries: hiddenRetries,
+                    // MASKED POST-PLAYBACK WINDOW (2.4.0): >0 means the user
+                    // just left the video route and the idle requirement is
+                    // relaxed to the settle floor for that many more ms.
+                    maskedTransitionMsLeft: Math.max(0, maskedTransitionUntil - Date.now()),
+                    lastSeenRoute: lastSeenHash,
                     effectiveReloadBudget: effectiveReloadBudget(),
                     budgetKey: BUDGET_KEY,
                     budgetWindowMs: BUDGET_WINDOW_MS
