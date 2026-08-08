@@ -790,6 +790,12 @@ namespace Jellyfin.Plugin.RefreshKit
             var filesReserved = 0;
             var directoriesSeen = 0;
             var directoriesReserved = 0;
+            var fileReservationCeiling = Math.Min(
+                _scanLimits.MaxFilesPerPlugin,
+                scanBudget.RemainingFiles);
+            var directoryReservationCeiling = Math.Min(
+                _scanLimits.MaxDirectoriesPerPlugin,
+                scanBudget.RemainingDirectories);
             var material = new List<string>();
             var pending = new Stack<string>();
 
@@ -825,6 +831,12 @@ namespace Jellyfin.Plugin.RefreshKit
                                 || scanBudget.RemainingDirectories == 0
                                 || scanBudget.ReserveDirectories(1) != 1)
                             {
+                                NormalizeEntryOverflowCharge(
+                                    scanBudget,
+                                    fileReservationCeiling,
+                                    directoryReservationCeiling,
+                                    ref filesReserved,
+                                    ref directoriesReserved);
                                 return ActiveAssetSnapshot.Truncated(
                                     newestTicks,
                                     material.Count,
@@ -848,6 +860,12 @@ namespace Jellyfin.Plugin.RefreshKit
                             || scanBudget.RemainingFiles == 0
                             || scanBudget.ReserveFiles(1) != 1)
                         {
+                            NormalizeEntryOverflowCharge(
+                                scanBudget,
+                                fileReservationCeiling,
+                                directoryReservationCeiling,
+                                ref filesReserved,
+                                ref directoriesReserved);
                             return ActiveAssetSnapshot.Truncated(
                                 newestTicks,
                                 material.Count,
@@ -960,6 +978,27 @@ namespace Jellyfin.Plugin.RefreshKit
                 bytesHashed,
                 isTruncated: false,
                 isUsable: true);
+        }
+
+        /// <summary>
+        /// Normalizes the hidden aggregate charge after native entry enumeration
+        /// overflows. The sentinel cannot reveal which file/directory entries the
+        /// operating system would have yielded next, so reserving both ceilings is
+        /// the only conservative result that is independent of native mixed-entry
+        /// order. Those reservations are retained with the plugin fingerprint and
+        /// keep later plugins deterministic too.
+        /// </summary>
+        private static void NormalizeEntryOverflowCharge(
+            PluginScanBudget scanBudget,
+            int fileReservationCeiling,
+            int directoryReservationCeiling,
+            ref int filesReserved,
+            ref int directoriesReserved)
+        {
+            filesReserved += scanBudget.ReserveFiles(
+                Math.Max(0, fileReservationCeiling - filesReserved));
+            directoriesReserved += scanBudget.ReserveDirectories(
+                Math.Max(0, directoryReservationCeiling - directoriesReserved));
         }
 
         private static string HashBoundedStream(Stream stream, long length, byte[] buffer)

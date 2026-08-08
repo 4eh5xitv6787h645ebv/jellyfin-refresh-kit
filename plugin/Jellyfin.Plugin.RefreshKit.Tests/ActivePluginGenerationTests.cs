@@ -1548,6 +1548,68 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Fact]
+        public void MixedEntryOverflowNormalizesAggregateChargeRegardlessOfNativeOrder()
+        {
+            var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var first = NodePlugin(
+                _root,
+                "mixed-order-first",
+                firstId,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            var second = NodePlugin(
+                _root,
+                "mixed-order-second",
+                secondId,
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            var firstWeb = Path.Combine(first.DirectoryPath, "web");
+            var firstFile = Path.Combine(first.DirectoryPath, "first.txt");
+            var secondFile = Path.Combine(first.DirectoryPath, "second.txt");
+            File.WriteAllText(firstFile, "irrelevant");
+            File.WriteAllText(secondFile, "irrelevant");
+            var fileFirst = new[] { firstFile, secondFile, firstWeb };
+            var directoryFirst = new[] { firstWeb, firstFile, secondFile };
+
+            IEnumerable<string> Entries(string current, IReadOnlyList<string> firstRootEntries) =>
+                current.Equals(first.DirectoryPath, StringComparison.Ordinal)
+                    ? firstRootEntries
+                    : Directory.EnumerateFileSystemEntries(current);
+
+            var limits = new PluginScanLimits(
+                maxFilesPerPlugin: 1,
+                maxTotalFilesPerScan: 2,
+                maxDirectoriesPerPlugin: 2,
+                maxTotalDirectoriesPerScan: 3);
+            var fileFirstProvider = new PluginGenerationProvider(
+                () => new[] { first, second },
+                _configurations,
+                scanLimits: limits,
+                fileSystemEntriesProvider: current => Entries(current, fileFirst));
+            var directoryFirstProvider = new PluginGenerationProvider(
+                () => new[] { first, second },
+                _configurations,
+                scanLimits: limits,
+                fileSystemEntriesProvider: current => Entries(current, directoryFirst));
+
+            var fileFirstGeneration = fileFirstProvider.Generation;
+            var directoryFirstGeneration = directoryFirstProvider.Generation;
+            var fileFirstDetails = fileFirstProvider.Details;
+            var directoryFirstDetails = directoryFirstProvider.Details;
+
+            Assert.Equal(fileFirstGeneration, directoryFirstGeneration);
+            Assert.Equal(2, fileFirstDetails.Count);
+            Assert.Equal(2, directoryFirstDetails.Count);
+            Assert.All(fileFirstDetails, detail => Assert.True(detail.AssetScanTruncated));
+            Assert.All(directoryFirstDetails, detail => Assert.True(detail.AssetScanTruncated));
+            Assert.Equal(
+                fileFirstDetails.Select(detail => detail.AssetIdentity),
+                directoryFirstDetails.Select(detail => detail.AssetIdentity));
+            Assert.Equal(
+                fileFirstDetails.Select(detail => detail.AssetDirectoriesScanned),
+                directoryFirstDetails.Select(detail => detail.AssetDirectoriesScanned));
+        }
+
+        [Fact]
         public void GenerationIsIndependentOfPluginOrderAndAbsoluteInstallPath()
         {
             var firstRoot = Path.Combine(_root, "node-a");
