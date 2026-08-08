@@ -44,11 +44,53 @@ cmd_up() {
     bash "$HERE/lib/provision.sh"
 }
 
+# Mechanism 1 (the revalidating shell) can only be measured when no OUTER
+# middleware replaces the shell's response headers. Jellyfin Enhanced's
+# injection middleware does exactly that — see "the ordering caveat" in
+# plugin/README.md — so the ETag legs are run with the third-party injectors
+# parked, and the injectors are put back afterwards. Everything else in this
+# suite runs with them installed.
+park_injectors() {
+    docker exec "$CONTAINER" sh -c '
+        mkdir -p /config/plugins-parked
+        for d in /config/plugins/*/; do
+            case "$d" in
+                */configurations/|*"Jellyfin Refresh Kit"*) continue ;;
+            esac
+            mv "$d" /config/plugins-parked/ 2>/dev/null || true
+        done' >/dev/null
+    restart_origin
+}
+
+restore_injectors() {
+    docker exec "$CONTAINER" sh -c '
+        [ -d /config/plugins-parked ] || exit 0
+        for d in /config/plugins-parked/*/; do
+            [ -e "$d" ] || continue
+            mv "$d" /config/plugins/ 2>/dev/null || true
+        done
+        rmdir /config/plugins-parked 2>/dev/null || true' >/dev/null
+    restart_origin
+}
+
+restart_origin() {
+    docker restart "$CONTAINER" >/dev/null
+    for _ in $(seq 1 120); do
+        [ "$(curl -s -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$ORIGIN/RefreshKit/Generation")" = 200 ] && break
+        sleep 2
+    done
+    sleep 3
+}
+
 cmd_matrix() {
     local rc=0
+    echo "==> parking third-party injectors (they replace the shell's headers)"
+    park_injectors
     for s in "${SETUPS[@]}"; do
         bash "$HERE/lib/matrix.sh" "${s%:*}" "${s##*:}" || rc=1
     done
+    echo "==> restoring third-party injectors"
+    restore_injectors
     return $rc
 }
 
@@ -91,7 +133,9 @@ cmd_subpath() {
         sleep 2
     done
 
+    park_injectors
     bash "$HERE/lib/matrix.sh" "nginx SUBPATH $base" 8125 "$base" || true
+    restore_injectors
     node "$HERE/lib/ws.js" 8125 "$TOKEN_FILE" "$base" || true
     node "$HERE/lib/e2e.js" 8125 "$base" || true
 
