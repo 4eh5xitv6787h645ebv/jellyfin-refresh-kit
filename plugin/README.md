@@ -249,6 +249,147 @@ already see — an opaque token and a public MIT-licensed script.
 
 ---
 
+## Reverse proxies & CDNs
+
+Almost nobody reaches Jellyfin on `:8096`. The plugin was therefore run behind
+the proxies people actually deploy — the same 10.11.11 server, the same two
+plugins (this one plus Jellyfin Enhanced), one proxy per port. The rig that
+produced this table lives in [`e2e/proxy/`](../e2e/proxy/README.md) and rebuilds
+itself from nothing: `./run.sh all`.
+
+| Setup | Shell `rk-` ETag + `304`/`412` | gzip / br | Generation endpoint | One smart reload | Websocket |
+|---|---|---|---|---|---|
+| **No proxy** (baseline) | ✅ 18/18 | ✅ | ✅ 5 s | ✅ exactly 1 | ✅ |
+| **nginx — official Jellyfin docs config** | ✅ 18/18 | ✅ | ✅ 5 s | ✅ exactly 1 | ✅ |
+| **Nginx Proxy Manager style** (incl. "Cache Assets") | ✅ 18/18 | ✅ | ✅ 5 s | ✅ exactly 1 | ✅ |
+| **Caddy** (the docs' 2-line `reverse_proxy`) | ✅ | ✅ ¹ | ✅ 5 s | ✅ exactly 1 | ✅ |
+| **Traefik v3** | ✅ | ✅ ¹ | ✅ 5 s | ✅ exactly 1 | ✅ |
+| **HAProxy** | ✅ 18/18 | ✅ | ✅ 5 s | ✅ exactly 1 | ✅ |
+| **nginx subpath** (`location /jellyfin` + `BaseUrl`) | ✅ 18/18 | ✅ | ✅ | ✅ exactly 1 | ✅ |
+| **nginx `proxy_cache`, naive** | ❌ ETag lost | ❌ | ❌ **frozen** | ❌ **2 reloads** | ✅ |
+| **nginx `proxy_cache`, honouring `Cache-Control`** | ⚠ fresh, but no client `304`/`412` | ✅ | ✅ | ✅ | ✅ |
+| **nginx `proxy_cache` + the exemption below** | ✅ 18/18 | ✅ | ✅ | ✅ exactly 1 | ✅ |
+
+¹ Caddy and Traefik ask upstream for gzip themselves and transparently decode
+it, so an ordinary client request returns an *identity* body carrying the
+**gzip representation's** ETag. Revalidation is unaffected — the proxy sends the
+same `Accept-Encoding` upstream on the conditional and gets its `304` — and
+`Vary: Accept-Encoding` is preserved either way.
+
+### What the kit actually asks of a proxy
+
+Three things, and every proxy above does all three out of the box:
+
+1. **Pass the shell's validators through.** `ETag` in one direction,
+   `If-None-Match` / `If-Match` in the other. That is what turns a page load
+   into a `304` instead of a download.
+2. **Don't cache `/web/` or `/RefreshKit/` yourself.** The origin already says
+   `Cache-Control: no-cache` on the shell and `no-store` on the generation
+   endpoint. A proxy that believes them needs no configuration at all.
+3. **Leave the content coding alone, or re-code it honestly.** One
+   `Content-Encoding` header, a body that matches it. The kit ETags each coding
+   separately, so gzip and identity revalidate independently.
+
+### The one misconfiguration that breaks freshness
+
+`proxy_cache` **plus** `proxy_ignore_headers Cache-Control`:
+
+```nginx
+proxy_cache jfcache;
+proxy_cache_valid 200 10m;
+proxy_ignore_headers Cache-Control Expires;   # ← this line
+```
+
+Measured through that config: the origin's generation moved twice and the proxy
+kept serving a shell stamped with a generation from **before either change**,
+while `/RefreshKit/Generation` — a `no-store` endpoint — was pinned to a value
+ten minutes old. Both halves of the loop are frozen at once: the client cannot
+get a new shell, and it cannot even be told that one exists.
+
+It gets actively worse than "stale". In the browser leg, that proxy produced
+**two reloads instead of one**: the tab reloaded, was handed the cached shell,
+found its boot version still behind the endpoint, and armed again — a loop
+bounded only by the client's reload budget. A misconfigured cache does not just
+withhold the fix; it turns the fix into a flicker.
+
+**The remedy is one line — delete `Cache-Control` (and `Expires`) from
+`proxy_ignore_headers`:**
+
+```nginx
+proxy_ignore_headers Set-Cookie X-Accel-Expires;   # never Cache-Control
+```
+
+That alone restores freshness: after the same bump, the shell and the generation
+endpoint both tracked the origin immediately.
+
+**Recommended on top of it** — exempt the two paths that must never be cached,
+which also buys back the client `304`s that any `proxy_cache` costs you (nginx
+strips `If-None-Match` / `If-Match` from the upstream request whenever caching is
+enabled for that location, so every navigation becomes a full download and
+`If-Match` stops returning `412`):
+
+```nginx
+location = /web/           { proxy_cache off; proxy_pass http://jellyfin:8096; }
+location = /web/index.html { proxy_cache off; proxy_pass http://jellyfin:8096; }
+location /RefreshKit/      { proxy_cache off; proxy_pass http://jellyfin:8096; }
+```
+
+With both remedies the caching proxy scored the same 18/18 as no proxy at all.
+
+Simplest advice of all: **don't put `proxy_cache` in front of Jellyfin.** The
+official docs config has none, the assets that matter are already immutable per
+URL, and there is nothing left for a proxy cache to win.
+
+### Cloudflare and other CDNs
+
+Cloudflare's defaults are safe. HTML is not cached by default, so `/web/` and
+`/RefreshKit/*` go to the origin and everything works exactly as it does with no
+CDN — the "Nginx Proxy Manager style" and "no proxy" rows describe it.
+
+A **"Cache Everything" Page Rule (or Cache Rule) is the adversarial row above**,
+with the same two failures: a pinned shell and a pinned generation endpoint. If
+you must run one, add a bypass rule for `/web/` and `/RefreshKit/*` — the same
+exemption as the nginx block, expressed in Cloudflare's terms. Cloudflare's
+"Respect Existing Headers" origin cache-control setting is the direct equivalent
+of not ignoring `Cache-Control`, and is the minimum.
+
+The same reasoning transfers to any CDN: this plugin's correctness needs exactly
+one guarantee from an intermediary — **that `no-cache` and `no-store` mean what
+they say on `/web/` and `/RefreshKit/`.** Every other path may be cached as
+aggressively as you like; the kit's stamping makes those URLs change whenever
+their content does.
+
+### Subpath / base URL
+
+Fully supported, no configuration. Set the base URL in
+Dashboard → Networking (`BaseUrl`, e.g. `/jellyfin`) and proxy the prefix
+through unchanged. The injected tag uses **relative** URLs —
+`src="../RefreshKit/kit.js?v=…"`, `data-version-url="../RefreshKit/Generation"`
+— so from `/jellyfin/web/` they resolve to `/jellyfin/RefreshKit/…` with nothing
+to configure and nothing to rewrite. Verified end to end behind
+`location /jellyfin`: 18/18 on the freshness matrix, websocket up, login, and
+exactly one smart reload with the stamps updated.
+
+### Two things a proxy cannot fix
+
+* **A plugin whose injection middleware runs OUTSIDE this one replaces the
+  shell's response headers**, and the `rk-` ETag goes with them — see
+  [the ordering caveat](#-the-ordering-caveat--read-this). Measured again here:
+  with Jellyfin Enhanced installed, *every* setup in the table (including no
+  proxy at all) serves the shell with no validator. Mechanisms 2 and 3 are
+  unaffected, which is why the reload column is green throughout. The freshness
+  matrix above was therefore run with third-party injectors parked; the suite
+  does that automatically.
+* **`password_entry` outlives the login form.** Jellyfin 10.11 keeps the login
+  view in the DOM after a successful sign-in, hidden, with the typed password
+  still sitting in `#txtManualPassword`. The kit's 2.4.0 `password_entry` gate
+  counts *any* password field holding a value, visible or not — so a tab that
+  signed in by typing a password refuses every auto-reload for the life of that
+  document, reporting `blockReason: "password_entry"`. Nothing to do with
+  proxies, and `state().shared.blockReason` names it immediately.
+
+---
+
 ## Relationship to single-file adoption
 
 Nothing about the copy-the-file path changes.
