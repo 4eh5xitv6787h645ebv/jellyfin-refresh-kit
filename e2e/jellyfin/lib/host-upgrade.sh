@@ -8,7 +8,8 @@ set -euo pipefail
 umask 077
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=e2e/jellyfin/lib/common.sh
+# The path is resolved from this file, not the caller's working directory.
+# shellcheck disable=SC1091
 source "${HERE}/common.sh"
 
 JF101110_IMAGE='jellyfin/jellyfin:10.11.10@sha256:f66273e014b307e4ac46778845ebc1e9ee24b2e57c1fc17d5ec5ac3015649bfa'

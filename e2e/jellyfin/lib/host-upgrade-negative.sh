@@ -6,26 +6,27 @@
 
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LAB="$(cd "${HERE}/.." && pwd)"
+NEGATIVE_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAB="$(cd "${NEGATIVE_HERE}/.." && pwd)"
 
 for script in \
-    "${HERE}/host-upgrade.sh" \
-    "${HERE}/host-upgrade-negative.sh" \
+    "${NEGATIVE_HERE}/host-upgrade.sh" \
+    "${NEGATIVE_HERE}/host-upgrade-negative.sh" \
     "${LAB}/run.sh"; do
     bash -n "${script}"
 done
-node --check "${HERE}/host-upgrade-browser.cjs"
-node "${HERE}/host-upgrade-browser.cjs" --self-test
+node --check "${NEGATIVE_HERE}/host-upgrade-browser.cjs"
+node "${NEGATIVE_HERE}/host-upgrade-browser.cjs" --self-test
 python3 -c 'compile(open(__import__("sys").argv[1], encoding="utf-8").read(), __import__("sys").argv[1], "exec")' \
-    "${HERE}/verify-host-upgrade-results.py"
-python3 "${HERE}/verify-host-upgrade-results.py" --self-test
+    "${NEGATIVE_HERE}/verify-host-upgrade-results.py"
+python3 "${NEGATIVE_HERE}/verify-host-upgrade-results.py" --self-test
 
 # Source-only tests stop before any Docker invocation: whitelist, offline-mode,
 # and timeout validation all precede image inspection/pull by contract.
 (
-    # shellcheck source=e2e/jellyfin/lib/host-upgrade.sh
-    source "${HERE}/host-upgrade.sh"
+    # The path is resolved from this file, not the caller's working directory.
+    # shellcheck disable=SC1091
+    source "${NEGATIVE_HERE}/host-upgrade.sh"
     if ensure_exact_image 'jellyfin/jellyfin:10.11.10' 2>/dev/null; then
         printf 'FATAL: tag-only image escaped the exact whitelist\n' >&2
         exit 1
@@ -39,16 +40,16 @@ python3 "${HERE}/verify-host-upgrade-results.py" --self-test
         exit 1
     fi
 )
-if RK_HOST_UPGRADE_PORT=80 bash -c 'source "$1"' sh "${HERE}/host-upgrade.sh" 2>/dev/null; then
+if RK_HOST_UPGRADE_PORT=80 bash -c 'source "$1"' sh "${NEGATIVE_HERE}/host-upgrade.sh" 2>/dev/null; then
     printf 'FATAL: unsafe host port was accepted\n' >&2
     exit 1
 fi
 
 python3 - \
     "${LAB}/docker-compose.yml" \
-    "${HERE}/host-upgrade.sh" \
-    "${HERE}/host-upgrade-browser.cjs" \
-    "${HERE}/verify-host-upgrade-results.py" <<'PY'
+    "${NEGATIVE_HERE}/host-upgrade.sh" \
+    "${NEGATIVE_HERE}/host-upgrade-browser.cjs" \
+    "${NEGATIVE_HERE}/verify-host-upgrade-results.py" <<'PY'
 import pathlib
 import re
 import sys
@@ -148,8 +149,8 @@ PY
 
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck \
-        "${HERE}/host-upgrade.sh" \
-        "${HERE}/host-upgrade-negative.sh"
+        "${NEGATIVE_HERE}/host-upgrade.sh" \
+        "${NEGATIVE_HERE}/host-upgrade-negative.sh"
 fi
 
 printf 'host-upgrade no-Docker negative gate: PASS\n'
