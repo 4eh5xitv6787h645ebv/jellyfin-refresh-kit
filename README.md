@@ -14,6 +14,7 @@ RefreshKit.cs             2109 lines — the server companion for C# plugins:
 - **Script collection (KefinTweaks-style, no server code)?** → `jellyfin-refresh-kit.js`, ideally in bootstrap mode.
 - **C# plugin?** → `RefreshKit.cs` for the shell + asset layers, and optionally the JS kit for open-tab convergence.
 - **Several plugins each shipping the kit on one server?** → they compose: see **Multi-instance** below.
+- **Behind nginx, Caddy, Traefik, HAProxy or Cloudflare?** → all verified working with stock configs: see **[Reverse proxies & CDNs](#reverse-proxies--cdns)**.
 
 ---
 
@@ -889,6 +890,28 @@ a sibling's `300` reads `not_idle` and says who is responsible instead of
 reading `null` while nothing happens. With nothing pending both shared fields
 are `null` rather than a hypothetical. `wouldBlockNow` and `idleWindowMs` keep
 the instance-local view: what would block *me*.
+
+## Reverse proxies & CDNs
+
+Verified behind the setups people actually run — the official jellyfin.org nginx
+config, Nginx Proxy Manager, Caddy, Traefik, HAProxy, and a subpath
+(`BaseUrl=/jellyfin`) vhost. All of them pass the shell's `rk-` ETag and
+`If-None-Match`/`If-Match` through untouched, keep gzip and brotli intact, leave
+the anonymous version endpoint reachable, and let one update produce exactly one
+smart reload. Websockets are unaffected. Stock configs; nothing to add.
+
+**One misconfiguration breaks it**, and it is worth knowing by name: an nginx
+`proxy_cache` that also sets `proxy_ignore_headers Cache-Control`. That pins both
+the app shell *and* the `no-store` version endpoint, so clients cannot get the
+new build and cannot be told one exists — and the tab can end up reload-looping
+between the stale shell and the endpoint. The fix is to drop `Cache-Control`
+from that line. Cloudflare's defaults are fine (HTML is uncached); a
+**"Cache Everything"** rule is the same failure and needs the same bypass.
+
+Full matrix, the exact remedy lines, the Cloudflare and subpath notes:
+**[`plugin/README.md` → Reverse proxies & CDNs](plugin/README.md#reverse-proxies--cdns)**.
+The rig that produced them rebuilds itself from nothing:
+**[`e2e/proxy/`](e2e/proxy/README.md)**.
 
 ## License
 
