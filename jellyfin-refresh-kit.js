@@ -887,7 +887,18 @@
     function claimSingularGlobal(w) {
         var alreadyMarked = safe(function () { return w[SINGULAR_CLAIM_KEY] === true; }, false) === true;
         if (alreadyMarked) return false;
-        var marked = safe(function () {
+        // ASK BEFORE MARKING (2.3.0). defineProperty on a non-extensible object
+        // — frozen, sealed, preventExtensions'd — THROWS, and safe() turns every
+        // such throw into a `suppressed error:` console.debug line. Freezing a
+        // config object you publish on `window` is the ordinary defensive habit
+        // this fallback exists to support, so the WeakSet path below is the
+        // INTENDED route for those objects, not an error path: take it silently.
+        // (Exotic hosts with no Object.isExtensible fall through to the try —
+        // the pre-check only ever skips work that was going to throw.)
+        var extensible = safe(function () {
+            return typeof Object.isExtensible !== 'function' || Object.isExtensible(w);
+        }, true) !== false;
+        var marked = extensible && safe(function () {
             Object.defineProperty(w, SINGULAR_CLAIM_KEY, {
                 value: true,
                 enumerable: false,
@@ -2913,6 +2924,17 @@
                 safe(function () { claimRecovery(BOOT_SEED_MARKER); });
             }
 
+            // Decide the flap refusal BEFORE announcing (2.3.0). The full
+            // explanation below is once-gated on purpose — it is a paragraph —
+            // but the one-line "update available" announcement is NOT: a tab
+            // sitting behind a flapping endpoint keeps meeting new candidate
+            // identities and logs that line for each of them. Before 2.3.0 the
+            // line carried no hint that the kit had latched, so a support log
+            // read as "the kit sees updates and does nothing", forever, with
+            // the single warning explaining why scrolled far out of view.
+            // Same fact, same line, every time.
+            var flapRefused = cfg.mode === 'auto' && hasLeftVersion(name, version);
+
             var firstAnnouncement = version !== notifiedVersion;
             if (firstAnnouncement) {
                 notifiedVersion = version;
@@ -2922,7 +2944,12 @@
                 // for eternity — those polls re-test the gate directly instead.
                 blockedRetries = 0;
                 safe(function () {
-                    console.log(LOG, TAG, 'update available: ' + baselineVersion + ' → ' + version);
+                    console.log(LOG, TAG, 'update available: ' + baselineVersion + ' → ' + version +
+                        (flapRefused
+                            ? ' — auto-reload REFUSED: this tab has already reloaded AWAY FROM ' +
+                              version + ', so the version source is flapping, not releasing ' +
+                              '(see the one "version FLAP" warning for the full explanation)'
+                            : ''));
                 });
                 if (cfg.onUpdateAvailable) {
                     safe(function () { cfg.onUpdateAvailable(version, baselineVersion); });
@@ -2936,10 +2963,16 @@
             // Has this tab already reloaded AWAY FROM the version it is now
             // being asked to go back to? Then the endpoint is oscillating and
             // reloading again just walks back — over two identities or twenty.
-            if (hasLeftVersion(name, version)) {
+            if (flapRefused) {
+                // ALWAYS current (2.3.0). This used to live inside the
+                // once-only warning block, so state() kept reporting the FIRST
+                // refused pair while later versions were being refused for the
+                // same reason — a snapshot that named a transition the kit was
+                // no longer talking about. The paragraph below stays once-only;
+                // the diagnostic field tracks the latest refusal.
+                flapDisarmedFor = baselineVersion + ' ⇄ ' + version;
                 if (!warnedFlap) {
                     warnedFlap = true;
-                    flapDisarmedFor = baselineVersion + ' ⇄ ' + version;
                     safe(function () {
                         var went = flipDestinationFrom(name, version);
                         console.warn(LOG, TAG, 'version FLAP: this tab already reloaded away from ' +
