@@ -384,3 +384,60 @@ instances, one open admin tab, Jellyfin Enhanced as the plugin under test):
 Phase C is the decisive one: under the old rule B's publish would have re-armed a
 five-minute window and C would have waited it out. Zero page errors across all
 three phases, and one reload per phase — never two.
+
+## Reverse proxies & CDNs — kit 2.4.0 + standalone plugin 1.0.0.0 (Jellyfin 10.11.11)
+
+One throwaway 10.11.11 origin (the standalone plugin + Jellyfin Enhanced 12.1.0.0,
+a real serve-time injector), seven proxies in front of it, one port each. Rig:
+[`e2e/proxy/`](e2e/proxy/README.md) — `./run.sh all` rebuilds the whole thing from
+nothing. Legs per setup: an 18-assertion curl freshness matrix, a websocket
+upgrade check, generation propagation timing, and a puppeteer run that logs in,
+touches a plugin binary and requires exactly one reload.
+
+| Setup | Matrix | Propagation | Browser E2E | Websocket | Evidence |
+|---|---|---|---|---|---|
+| No proxy (baseline) | **18/18** | 5 s | **PASS** | PASS | `ETag: "rk-ddc665b9…"`, `If-None-Match → 304`, bad `If-Match → 412`, gzip and br each one `Content-Encoding` and their own representation ETag |
+| nginx, official jellyfin.org docs config | **18/18** | 5 s | **PASS** | PASS | identical header set through `location /` and the docs' `location = /web/ → /web/index.html` rewrite; `kit.js?v=2p-77e58f59e87f1452` after the bump |
+| Nginx Proxy Manager style | **18/18** | 5 s | **PASS** | PASS | NPM's "Cache Assets" block (`immutable`, 1 y) never matches `.html`, and the `?rkv=`/`?v=` stamps make the JS it *does* match safe to freeze |
+| Caddy 2 (`reverse_proxy` two-liner) | **17/17** | 5 s | **PASS** | PASS | Go transport asks upstream for gzip and decodes it, so an identity response carries the gzip representation's ETag; `Vary: Accept-Encoding` preserved, `304` still returned |
+| Traefik v3.5 | **17/17** | 5 s | **PASS** | PASS | same Go-transport behaviour as Caddy; file provider (v3's docker provider negotiates API 1.24, refused by Docker Engine 28) |
+| HAProxy 2.9 | **18/18** | 5 s | **PASS** | PASS | plain `mode http` backend, `timeout tunnel 1h`; conditionals and both codings pass through byte-for-byte |
+| nginx subpath, `location /jellyfin` + `BaseUrl=/jellyfin` | **18/18** | ✓ | **PASS** | PASS | the injected tag is relative (`src="../RefreshKit/kit.js?v=…"`, `data-version-url="../RefreshKit/Generation"`) so it resolves under any prefix with nothing to rewrite; post-reload stamp `/jellyfin/RefreshKit/kit.js?v=2p-e4fb80b94d4fd14d` |
+| **nginx `proxy_cache` + `proxy_ignore_headers Cache-Control`** | **12/15 FAIL** | **never** | **FAIL — 2 reloads** | PASS | shell pinned at `2p-2d97f20279f50075` across two origin bumps; the `no-store` `/RefreshKit/Generation.txt` pinned at `1p-2a25c5859e324865`; ETag stripped from the cached entry |
+| nginx `proxy_cache` honouring `Cache-Control` | 14/18 | 5 s | — | PASS | fresh (`no-cache` is respected, nothing is stored) but nginx strips `If-None-Match`/`If-Match` upstream whenever caching is on for the location: client `304`→`200`, `412`→`200` |
+| nginx `proxy_cache` + remedy 1 only | 14/18 | 5 s | — | PASS | `proxy_ignore_headers Set-Cookie X-Accel-Expires;` — freshness restored, conditionals still lost |
+| nginx `proxy_cache` + remedy 1 **and** the `proxy_cache off` exemption | **18/18** | 5 s | **PASS** | PASS | `location = /web/`, `location = /web/index.html`, `location /RefreshKit/` each `proxy_cache off` → full parity with no proxy |
+
+### The adversarial case, in order
+
+1. Prime the naive cache; it serves the shell stamped `2p-2d97f20279f50075`.
+2. `touch` a plugin binary. Origin generation moves to `1p-5bb1bb155b35267f`,
+   then again to `1p-3fb374ceeb89ca0a`.
+3. The naive proxy still serves the *original* stamp and still reports the
+   *original* generation. Both halves of the update loop are frozen at once: no
+   new shell, and no way to learn one exists.
+4. Browser leg through the same proxy: **two** reloads, not one — the reloaded
+   tab was handed the cached shell, found its boot version still behind the
+   endpoint, and armed again. Bounded only by the client's reload budget.
+5. Delete `Cache-Control` from `proxy_ignore_headers` → the next bump propagates
+   in 5 s, shell and endpoint together.
+6. Add `proxy_cache off` for `/web/`, `/web/index.html` and `/RefreshKit/` →
+   18/18, and one bump gives exactly one reload again.
+
+### Two findings that are not the proxy's fault
+
+* **A serve-time injector running OUTSIDE this plugin's middleware replaces the
+  shell's response headers**, taking the `rk-` ETag with them. With Jellyfin
+  Enhanced installed, *every* row above — including "no proxy" — serves
+  `/web/` with no validator; parking it restores the ETag on the same origin,
+  same request. This is the documented ordering caveat, re-measured; mechanisms 2
+  and 3 are unaffected, which is why every reload column stays green. The matrix
+  leg therefore parks third-party injectors automatically.
+* **`password_entry` outlives the login form.** Jellyfin 10.11 keeps the login
+  view in the DOM after sign-in (`class="… hide"`) with the typed password still
+  in `#txtManualPassword` (observed: `len 11`, `offsetParent null`). The 2.4.0
+  `password_entry` gate counts any password field holding a value regardless of
+  visibility, so a tab that signed in by typing refuses every auto-reload for the
+  life of that document — `blockReason: "password_entry"` held for the full 70 s
+  observation window with an update pending. `jellyfin-refresh-kit.js:2462`
+  (`hasTypedPassword`), refusal at `:2632`.
