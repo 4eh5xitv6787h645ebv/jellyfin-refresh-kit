@@ -1,421 +1,437 @@
-# jellyfin-refresh-kit
+# Jellyfin Refresh Kit
 
-Jellyfin's web client caches plugin JavaScript hard. When a plugin ships a new
-version, browsers keep running the old one — sometimes for days — until someone
-presses <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>. This repository fixes
-that, from two directions:
+Jellyfin Refresh Kit prevents Jellyfin web clients from getting stuck on stale plugin JavaScript and CSS after plugins change.
 
-* **the server** makes sure a page load actually returns new bytes (a
-  revalidating app shell, version-addressed asset URLs, cache-busting stamps on
-  other plugins' script tags);
-* **the browser** makes sure a page load happens at all — a tab left open for
-  two days notices that the server moved and reloads itself, but only at a
-  moment where a reload costs the user nothing.
+For server admins, install the standalone plugin once and it handles the common cache-staleness path across the server. For plugin authors, the repository also provides small reusable JavaScript and C# helpers for plugins that need direct control over assets they create at runtime.
 
-You can consume it in either of two ways.
+The goal is simple: **users should not need to hard-refresh Jellyfin just to receive the current plugin UI.**
 
-| | **Standalone plugin** | **Single-file drop-in** |
-|---|---|---|
-| For | server admins | plugin / script-collection authors |
-| You install | one plugin, once | `jellyfin-refresh-kit.js` (+ optionally `RefreshKit.cs`) inside your own plugin |
-| It covers | every plugin on the server, none of which need to know it exists | your plugin, including assets it creates at runtime |
-| Get started | [Standalone plugin](#standalone-plugin-for-server-admins) | [Single-file drop-in](#single-file-drop-in-for-plugin-authors) |
+## Choose how you want to use it
 
-The two are designed to run together: a server with the standalone plugin
-installed and a plugin that ships its own copy of the kit will cooperate on one
-page rather than fight over it.
+| | Standalone plugin | Drop-in integration |
+| --- | --- | --- |
+| Best for | Jellyfin server admins | Plugin and script authors |
+| Install | One Jellyfin plugin | `jellyfin-refresh-kit.js`, optionally with `RefreshKit.cs` |
+| Covers | The common stale-cache path for plugins across the server | Your plugin, including assets it creates dynamically |
+| Start here | [Standalone plugin](#standalone-plugin) | [For plugin authors](#for-plugin-authors) |
 
-* Licence: [MIT](LICENSE)
-* Compatibility evidence: [COMPATIBILITY.md](COMPATIBILITY.md)
-* Deeper plugin-specific documentation: [plugin/README.md](plugin/README.md)
+Both approaches can coexist on the same Jellyfin page. A plugin can use its own Refresh Kit integration while the standalone plugin handles server-wide change detection and static plugin tags.
+
+- **License:** [MIT](LICENSE)
+- **Compatibility evidence:** [COMPATIBILITY.md](COMPATIBILITY.md)
+- **Detailed standalone-plugin notes:** [plugin/README.md](plugin/README.md)
 
 ---
 
-## What goes stale, and what can fix it
+## Why stale plugin code happens
 
-There are three independent layers of staleness, and they need different tools:
+There are three different places stale code can survive, and each needs a different fix:
 
-1. **The app shell** — `index.html` and every `<script>` statically written
-   into it. Only the server can fix this. The kit's C# half serves the shell
-   through a revalidating middleware with a real ETag, and stamps unversioned
-   tags so their URLs change when their content does.
-2. **Sub-assets** — the scripts and stylesheets a plugin creates at runtime
-   (`document.createElement('script')`, dynamic `import()`, CSS `url()`). The
-   client runtime rewrites those URLs to carry `?v=<current version>`, so a new
-   release is a new URL and can never come out of a stale cache entry.
-3. **Open tabs** — a tab nobody has reloaded never re-requests anything. The
-   client runtime polls a small version endpoint and, when the version changes,
-   performs a *safe* auto-reload.
+1. **The app shell** — Jellyfin's `index.html` and the scripts/stylesheets referenced directly from it. The server needs to return a correctly revalidating page.
+2. **Runtime-created assets** — scripts, stylesheets, `fetch()` URLs, dynamic imports, and CSS assets created after the page has loaded. The plugin that creates those URLs needs to version them.
+3. **Already-open tabs** — a browser tab that never reloads never asks the server for the new page or assets. It needs to detect a plugin change and reload at a safe time.
 
-The standalone plugin covers layers 1 and 3 for every plugin on the server.
-Layer 2 belongs to whoever created the asset, which is why plugin authors have
-the drop-in path.
+The standalone plugin handles the app shell and open-tab refreshes server-wide, and cache-busts eligible plugin scripts/stylesheets already present in the shell. The drop-in runtime gives plugin authors control over runtime-created assets as well.
 
 ---
 
-# Standalone plugin (for server admins)
+# Standalone plugin
 
-Install **one** plugin and cache/hard-refresh behaviour is fixed for all your
-other plugins. None of them need a code change, and none of them need to know
-it is there.
+Install one plugin and Refresh Kit watches the plugin environment for changes. Other plugins do not need to know it is installed.
 
 ## Requirements
 
-* Jellyfin **10.11.x** (built against `Jellyfin.Controller` 10.11.11, `net9.0`
-  — the framework the 10.11 server runs).
-* No other dependencies. Reverse proxies and subpath/`BaseUrl` deployments are
-  supported; see [Reverse proxies and CDNs](#reverse-proxies-and-cdns).
+- Jellyfin **10.11.x**
+- Permission to install plugins and restart the Jellyfin server
 
-## Install
+The standalone plugin targets `net9.0` and is built against Jellyfin `10.11.11` packages.
 
-**Plugin repository (recommended)**
+## Installation
 
-1. Dashboard → **Plugins** → **Repositories** → **+**
-2. Repository name: `Jellyfin Refresh Kit`
-   Repository URL:
-   `https://raw.githubusercontent.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/main/manifest.json`
-3. **Catalog** → **General** → *Jellyfin Refresh Kit* → **Install**
+### Plugin repository — recommended
+
+1. Open **Dashboard → Plugins → Repositories**.
+2. Add a repository named `Jellyfin Refresh Kit`.
+3. Use this repository URL:
+
+   ```text
+   https://raw.githubusercontent.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/main/manifest.json
+   ```
+
+4. Open **Catalog → General → Jellyfin Refresh Kit** and install it.
+5. Restart Jellyfin.
+
+### Manual installation
+
+1. Download `jellyfin-refresh-kit_<version>.zip` from [GitHub Releases](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases).
+2. Create a versioned plugin folder inside Jellyfin's `plugins` directory, for example:
+
+   ```text
+   /config/plugins/Jellyfin Refresh Kit_1.0.0.0/
+   ```
+
+3. Extract the archive into that folder. It should contain:
+
+   ```text
+   Jellyfin.Plugin.RefreshKit.dll
+   meta.json
+   ```
+
 4. Restart Jellyfin.
 
-**Manual folder install**
+### Verify the install
 
-1. Download `jellyfin-refresh-kit_<version>.zip` from the
-   [releases](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases).
-2. Unzip it into a folder named `Jellyfin Refresh Kit_<version>` inside your
-   Jellyfin config's `plugins` directory — e.g.
-   `/config/plugins/Jellyfin Refresh Kit_1.0.0.0/`, containing
-   `Jellyfin.Plugin.RefreshKit.dll` and `meta.json`. The `Name_version` folder
-   layout is what the plugin loader expects; a folder without it is ignored.
-3. Restart Jellyfin.
+After startup:
 
-**Verify:** Dashboard → Plugins shows *Jellyfin Refresh Kit — Active*, and
-`GET /RefreshKit/Generation` returns JSON.
+- **Dashboard → Plugins** should show **Jellyfin Refresh Kit** as active.
+- `GET /RefreshKit/Generation` should return JSON.
 
-## What it does
+## What the standalone plugin does
 
-**1 — `index.html` is served fresh.** The plugin puts the refresh kit's
-middleware in front of the web app shell. Every `/web/index.html` response
-carries a strong, body-derived ETag (`"rk-…"`), answers `If-None-Match` with a
-real `304` and `If-Match` with a `412`, preserves the host's
-`Cache-Control`/`Vary` and content coding, handles `HEAD`, and **fails open** —
-on any unexpected condition it serves the host's original bytes rather than
-breaking your Jellyfin.
+### 1. Serves `index.html` with proper revalidation
 
-**2 — other plugins' script tags get a cache-busting stamp.** While it holds
-the shell, the middleware appends `?rkv=<generation>` to `<script src>` and
-`<link rel="stylesheet" href>` tags that carry no version of their own. It is
-deliberately conservative: inline scripts, non-stylesheet links, cross-origin
-URLs, tags that already carry a version parameter, jellyfin-web's own opaque
-query convention and content-hashed filenames are all left untouched. Stamping
-is idempotent — repeated passes converge instead of accumulating.
+Refresh Kit places middleware in front of Jellyfin's web app shell and processes `index.html` before it reaches the browser.
 
-**3 — every plugin is watched, and open tabs reload safely.** An endpoint
-reports one short **generation** token derived from *all* installed plugins:
-each plugin's id, version and status from its `meta.json`, the newest write time
-across its binaries and client assets, and the newest write time of its
-plugin-configuration XML. Install, upgrade, uninstall, enable, disable, an
-in-place binary swap, an edited script or a saved settings page all move it. The
-embedded client runtime polls that generation and, when it changes, reloads open
-tabs — safely (see below). One value does four jobs at once — the injected
-tag's `?v=`, its `data-boot-version` seed, what the version endpoint reports,
-and the `?rkv=` stamp — so they cannot drift apart.
+The resulting response uses a strong body-derived `rk-` ETag and supports normal HTTP conditional requests, including:
 
-### Settings changes count as updates
+- `If-None-Match` → `304 Not Modified` when appropriate
+- `If-Match` → `412 Precondition Failed` when appropriate
+- `HEAD` requests
+- identity, gzip, and Brotli representations
+- Jellyfin's existing cache and `Vary` behaviour
 
-Plugins render config-driven UI at page load, so an admin enabling a feature
-leaves every open tab showing UI built from the old settings. The plugin
-therefore watches each plugin's **configuration XML** (the file the dashboard
-writes when an admin saves) — and deliberately *not* the plugin's private data
-directory, which holds per-user preferences and runtime caches. Watching that
-would reload every client on the server because one user changed a personal
-setting.
+The middleware is **fail-open**. If it cannot safely process a response, Jellyfin's original bytes are returned instead of breaking the web client.
 
-The signal is bounded so it cannot become a reload treadmill:
+### 2. Cache-busts eligible plugin scripts and stylesheets
 
-* **Debounced** — a new timestamp must stand still for 10 s, so a settings page
-  that saves three times as you click produces one bump.
-* **Cooled down on the leading edge** — a change arriving while no window is
-  open publishes at once (your single save is live within seconds) and opens a
-  window of *Settings-change cooldown* length. Only changes arriving *inside*
-  that window are held, and they coalesce into one publish when it expires.
-  Nothing is dropped.
-* **Excludable** — turn config watching off globally, or list individual
-  plugins to ignore.
+While processing the app shell, Refresh Kit looks for other plugins' same-origin:
 
-Version and binary changes bypass both the debounce and the cooldown: a new
-binary is unambiguous and rare.
+- `<script src="…">`
+- `<link rel="stylesheet" href="…">`
 
-### Safe reloads
+When an eligible URL does not already carry its own version identity, Refresh Kit adds:
 
-A reload that interrupts something is worse than a stale tab, so the client
-runtime refuses to reload unless the moment is genuinely free. In order, the
-first refusal winning:
+```text
+?rkv=<generation>
+```
 
-| Gate | Refuses while |
-|---|---|
-| `hidden` | the tab has been hidden for less than the settle grace (a hidden tab is *unwatched*, not *safe* — every gate below still applies afterwards) |
-| `playback_route` | the video route is open |
-| `fullscreen_media` | media is fullscreen |
-| `dialog` | a dialog is open (overridden by Jellyfin's own screensaver, which is proof the user is gone) |
-| `media_element` | a real playback session exists anywhere on the page (a parked or ambient backdrop video is not a session) |
-| `active_editor` | a text field has focus |
-| `password_entry` | any password field on the page holds a value |
-| `not_idle` | the user has interacted more recently than the required idle time |
+When the monitored plugin state changes, the generation changes and the browser sees a new URL instead of reusing a stale cached copy.
 
-On top of the gates: reloads are spent against a **budget** (max reloads per
-rolling 60 s window, shared across every tab), a version must be observed twice
-before it arms a reload, and a tab refuses to reload back to a version it has
-already left — so a flapping version source (a rolling deploy, round-robin
-nodes disagreeing about the build) cannot loop a tab. If the tab is hidden and
-has settled, the reload happens in that invisible moment instead of in the
-user's face a second later.
+The stamper is deliberately conservative. It leaves these alone:
+
+- inline scripts
+- non-stylesheet `<link>` elements
+- cross-origin and protocol-relative URLs
+- URLs that already carry a recognised version/cache-busting parameter
+- Jellyfin's opaque query identities
+- content-hashed filenames
+- Refresh Kit's own injected tag
+
+Stamping is idempotent: repeated processing does not accumulate duplicate `rkv` parameters, and unrelated query parameters and fragments are preserved.
+
+### 3. Detects plugin changes and refreshes open tabs safely
+
+Refresh Kit exposes one server-wide **generation** derived from the installed plugin state. The embedded browser runtime polls that generation and reacts when it changes.
+
+A generation can move when a plugin is:
+
+- installed or removed
+- upgraded
+- enabled or disabled
+- replaced in place without a version-number change
+- changed in a monitored client asset
+- reconfigured, when configuration watching is enabled
+
+The same generation is used for the injected runtime URL, its boot identity, the generation endpoint, and third-party `rkv` stamps. That keeps the server and browser on one shared cache identity.
+
+## What is included in the generation?
+
+For each installed plugin, Refresh Kit considers the state that can represent a user-visible plugin change, including:
+
+- plugin ID
+- plugin version
+- plugin status
+- plugin binaries
+- client assets such as `.js`, `.mjs`, `.css`, `.map`, and `.html`
+- the plugin's Jellyfin configuration XML when configuration watching is enabled
+
+General runtime data such as databases, logs, and private data directories are not treated as client-code changes.
+
+Directory scanning is bounded so a plugin with a large tree cannot cause an unlimited filesystem walk.
+
+### Settings changes
+
+Plugin settings can affect UI that is built when the page loads, so configuration changes are watched by default.
+
+Refresh Kit watches Jellyfin's plugin configuration XML rather than a plugin's private data directory. This avoids treating per-user preferences and runtime cache churn as server-wide UI changes.
+
+Configuration signals are controlled in three ways:
+
+- **Debounce:** a changed timestamp must remain stable for 10 seconds before publication.
+- **Per-plugin cooldown:** the first change publishes promptly; further changes during the configured window are coalesced into one later update.
+- **Exclusions:** individual plugins can be ignored for configuration-change tracking.
+
+Version and binary changes are not held behind the settings cooldown.
+
+## Safe automatic reloads
+
+A reload should never interrupt something more important than receiving fresh plugin code. The browser runtime therefore blocks automatic reloads while the page is not in a safe state.
+
+| Gate | Reload is blocked while… |
+| --- | --- |
+| Hidden-tab settle | the tab has not satisfied the hidden-tab settle rules |
+| Playback route | a Jellyfin video route is open |
+| Fullscreen media | media is fullscreen or in picture-in-picture |
+| Dialog | an active dialog/action sheet is open |
+| Media session | real media playback is active on the page |
+| Active editor | a text-editing field has focus |
+| Password entry | a password field on the page still contains a value |
+| Not idle | the configured user-idle period has not elapsed |
+
+Refresh Kit also uses:
+
+- repeated observation before arming an update
+- a rolling reload budget shared by the page
+- state that prevents a tab from repeatedly reloading back to a generation it has already left
+- hidden-tab handling so an eligible reload can happen while the tab is out of the user's way
+
+If a reload is currently unsafe, the update remains pending until a safe opportunity appears.
 
 ## Admin settings
 
-Dashboard → Plugins → **Jellyfin Refresh Kit**. Every switch is a kill switch:
-you can turn off any part of the plugin without uninstalling it.
+Open **Dashboard → Plugins → Jellyfin Refresh Kit**.
 
-| Setting | Default | Meaning |
-|---|---|---|
-| Serve index.html through the refresh kit | on | Master switch. Off = the plugin is inert; host bytes pass through untouched. |
-| Cache-bust other plugins' script tags | on | The `?rkv=` stamping pass. |
-| Reload open tabs after a plugin update | on | Off switches the client runtime to `notify` mode: it logs the update instead of reloading. |
-| Treat plugin settings changes as updates | on | Off falls back to version/binary-change detection only. |
-| Settings-change cooldown (minutes, per plugin) | 5 | Length of the leading-edge burst window. 0 disables it; the 10 s debounce still applies. |
-| Ignore settings changes from these plugins | empty | One per line: plugin name, install folder, GUID or assembly name. |
-| Poll interval (seconds) | 60 | Clamped 15–3600 by the client runtime. |
-| Required idle time (seconds) | 5 | Clamped 0–300. |
-| Max reloads per minute | 3 | Clamped 1–100. |
-| Developer mode | off | Serves the client runtime `no-store` instead of `immutable`. |
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| Serve index.html through the refresh kit | On | Master switch. When off, the middleware passes Jellyfin's shell through unchanged. |
+| Cache-bust other plugins' script tags | On | Adds the current generation to eligible plugin scripts and stylesheets in the shell. |
+| Reload open tabs after a plugin update | On | Performs safe automatic reloads. When off, update detection remains available without automatic reloads. |
+| Treat plugin settings changes as updates | On | Includes plugin configuration XML changes in generation tracking. |
+| Settings-change cooldown | 5 min | Coalesces repeated configuration changes from the same plugin. `0` disables the cooldown; debounce still applies. |
+| Ignore settings changes from these plugins | Empty | One entry per line. Accepts plugin name, install folder, GUID, or assembly name. |
+| Poll interval | 60 sec | How often visible tabs check the generation. Client range: 15–3600 seconds. |
+| Required idle time | 5 sec | Minimum user inactivity before an automatic reload. Client range: 0–300 seconds. |
+| Max reloads per minute | 3 | Rolling safety budget for automatic reloads. Client range: 1–100. |
+| Developer mode | Off | Serves the embedded browser runtime with `no-store` instead of immutable caching. |
 
-The default exclusion list is empty on purpose: of the plugins tested live, none
-write churn into the watched configuration XML. Add one if you observe the
-generation moving while nobody is changing settings —
-`GET /RefreshKit/Diagnostics` shows exactly which plugin contributed which
-timestamp.
+### Excluding noisy configuration files
 
-## Endpoints
+If a plugin updates its normal configuration XML frequently even when an administrator is not changing settings, add it to **Ignore settings changes from these plugins**.
 
-| Route | Auth | Purpose |
-|---|---|---|
-| `GET /RefreshKit/Generation` | anonymous | `{ Version, BuildId, CacheKey }`, `CacheKey` = the generation. Served `no-store`. |
-| `GET /RefreshKit/Generation.txt` | anonymous | The bare generation, `text/plain`. |
-| `GET /RefreshKit/kit.js` | anonymous | The embedded client runtime, `immutable` (its `src` carries `?v=<generation>`). |
-| `GET /RefreshKit/Diagnostics` | admin | Per-plugin id / version / status / asset ticks / config ticks behind the current generation. |
+The admin diagnostics endpoint shows the inputs behind the current generation and can help identify the plugin whose timestamps are moving.
 
-The first three are anonymous deliberately: the login screen is a real page of
-the web client, it is where a stale cache most often bites, and a tab can sit on
-it for days. They disclose nothing a logged-out visitor cannot already see — an
-opaque token and a public MIT-licensed script.
+## HTTP endpoints
 
-## Reverse proxies and CDNs
+| Endpoint | Access | Purpose |
+| --- | --- | --- |
+| `GET /RefreshKit/Generation` | Anonymous | Returns `{ Version, BuildId, CacheKey }`; `CacheKey` contains the current generation. |
+| `GET /RefreshKit/Generation.txt` | Anonymous | Returns the current generation as plain text. |
+| `GET /RefreshKit/kit.js` | Anonymous | Serves the embedded browser runtime. |
+| `GET /RefreshKit/Diagnostics` | Admin | Returns the current generation and per-plugin inputs used to build it. |
 
-The plugin was validated behind the proxies people actually deploy — one
-throwaway 10.11.11 origin, one proxy per port, an 18-assertion freshness matrix
-plus a websocket check and a browser end-to-end run per setup. **nginx (official
-Jellyfin docs config), Nginx Proxy Manager style, Caddy, Traefik v3, HAProxy and
-an nginx subpath deployment all pass with no configuration at all**, as does no
-proxy. Cloudflare's defaults are safe, because HTML is not cached by default.
-Subpath/`BaseUrl` works untouched: the injected tags use relative URLs.
+The generation and runtime endpoints are intentionally available before login so a stale Jellyfin login page can also detect a plugin change.
 
-The one configuration that breaks it is a caching proxy told to ignore the
-origin's cache directives:
+## Reverse proxies, CDNs, and BaseUrl
+
+Normal reverse-proxy configurations should not need Refresh Kit-specific changes. The repository includes E2E coverage for direct Jellyfin access, nginx, Nginx Proxy Manager-style nginx, Caddy, Traefik, HAProxy, and subpath deployments.
+
+For correct freshness, proxies and CDNs should:
+
+- respect origin `Cache-Control` directives
+- forward conditional request headers such as `If-None-Match` and `If-Match`
+- avoid caching `/RefreshKit/Generation`
+- preserve content encoding correctly, or re-encode with matching response headers
+
+### Avoid forced caching that ignores Jellyfin's headers
+
+A proxy that caches Jellyfin while explicitly ignoring origin cache directives can pin both the app shell and generation endpoint.
+
+For nginx, avoid configurations such as:
 
 ```nginx
 proxy_cache jfcache;
-proxy_ignore_headers Cache-Control Expires;   # ← this line
+proxy_ignore_headers Cache-Control Expires;
 ```
 
-That pins both the shell *and* the `no-store` generation endpoint, so the client
-can neither get a new page nor be told one exists — and it turns one reload into
-two. The remedy is to delete `Cache-Control` (and `Expires`) from
-`proxy_ignore_headers`, and ideally to exempt `/web/` and `/RefreshKit/` from
-the cache entirely. The exact nginx snippets, the Cloudflare equivalent, and the
-full per-proxy matrix are in
-[plugin/README.md](plugin/README.md#reverse-proxies--cdns); the measurements
-behind them are in [COMPATIBILITY.md](COMPATIBILITY.md) and reproducible with
-the rig in [e2e/proxy/](e2e/proxy/README.md).
+Remove the directive that ignores `Cache-Control`/`Expires`, or exempt Jellyfin's web shell and Refresh Kit endpoints from the proxy cache.
 
-## Limitations
+The detailed proxy matrix, failure cases, and reproducible test rig are documented in [plugin/README.md](plugin/README.md) and [e2e/proxy/README.md](e2e/proxy/README.md).
 
-* **Ordering.** The stamping pass can only see tags already in the response when
-  it runs. Plugin startup filters compose in the host's plugin load order, which
-  no plugin controls, so tags injected by a middleware that runs *outside* this
-  one are not stamped — and such a middleware may also replace the shell's
-  response headers, costing you the `rk-` ETag. Nothing breaks: those plugins
-  keep whatever cache behaviour they had, and open tabs still get onto the new
-  build. Details in
-  [plugin/README.md](plugin/README.md#-the-ordering-caveat--read-this).
-* **Runtime-created sub-assets are not covered.** A plugin that builds asset
-  URLs at runtime needs to adopt the kit itself — see
-  [Single-file drop-in](#single-file-drop-in-for-plugin-authors).
-* **Cross-origin assets are never stamped.** A plugin loading its code from a
-  CDN cannot be helped from the server; a CDN's own `@latest` resolution TTL is
-  invisible to both server and browser. Pin a version or self-host.
-* **The generation is server-wide.** Any plugin changing reloads tabs once —
-  which is the point (unchanged plugins cost the reload nothing but cache hits),
-  but a busy admin session can produce several reloads, bounded by the reload
-  budget and the cooldown.
-* **A hidden tab polls at the browser's mercy.** Background timers are throttled
-  and frozen tabs run none at all; the worst case is that the reload waits until
-  the tab is shown again.
+### Jellyfin BaseUrl / subpaths
+
+Jellyfin `BaseUrl` deployments such as `/jellyfin` are supported. Injected resources use relative URLs so they resolve under the configured Jellyfin prefix.
 
 ## Troubleshooting
 
-* **Tabs never reload.** Open the console and run
-  `JellyfinRefreshKit.state()`. `shared.blockReason` names the gate that is
-  refusing. `password_entry` is the common surprise: Jellyfin 10.11 keeps the
-  login view in the DOM after sign-in with the typed password still in it, so a
-  tab that signed in by typing refuses auto-reloads for the life of that
-  document. A navigation clears it.
-* **Nothing is stamped / the shell has no `rk-` ETag.** Another plugin's
-  injection middleware is running outside this one — see the ordering
-  limitation above. Check the shell's response headers.
-* **Reloads happen too often.** Something is moving the generation. Check
-  `GET /RefreshKit/Diagnostics` (admin) for the plugin whose timestamps keep
-  changing, and either add it to the exclusion list or raise the cooldown.
-* **Stale pages behind a proxy.** Check for `proxy_cache` in front of Jellyfin
-  and apply the remedy above; `curl -I` the shell and `/RefreshKit/Generation`
-  through the proxy and compare against the origin.
+### Open tabs do not reload
+
+In the browser console, run:
+
+```javascript
+JellyfinRefreshKit.state()
+```
+
+The shared state includes the current reload `blockReason`, which identifies the safety gate preventing the reload.
+
+A common case is `password_entry`: if a login password remains in a retained password input, Refresh Kit will not automatically reload that document while the value is present.
+
+### The generation keeps changing
+
+Open the admin-only diagnostics endpoint:
+
+```text
+GET /RefreshKit/Diagnostics
+```
+
+Check which plugin's binary, asset, or configuration timestamp is moving. If a plugin's configuration XML is intentionally noisy, add it to the configuration-watch exclusion list or adjust the cooldown.
+
+### Plugin tags are not stamped
+
+Middleware ordering determines which serve-time tags are visible to Refresh Kit. A tag inserted after Refresh Kit's response transformation cannot be stamped by it.
+
+Check the served `index.html` and response headers. The plugin that owns an unstamped runtime or later-injected asset can adopt Refresh Kit directly if it needs stronger control over its own cache identity.
+
+### Pages are stale only behind a proxy
+
+Compare `/web/index.html` and `/RefreshKit/Generation` through the proxy with the Jellyfin origin. Forced proxy caching or ignored origin cache directives are the usual cause.
+
+## Standalone-plugin limitations
+
+Refresh Kit closes the common stale-plugin path, but it cannot control every way another plugin may load code.
+
+- **Runtime-created assets remain the owning plugin's responsibility.** Dynamic imports, `fetch()`, JavaScript-created resources, CSS `url()`, and similar URLs do not exist in `index.html` for the standalone stamper to rewrite.
+- **Middleware ordering matters.** Refresh Kit can only stamp tags already present when its HTML transform runs. A later/outer middleware can add tags it never sees or replace response headers afterward.
+- **Cross-origin assets are not rewritten.** Refresh Kit does not alter third-party CDN URLs or their cache semantics.
+- **Generation is server-wide.** A monitored change to any plugin can make eligible open Jellyfin tabs reload once.
+- **Broken intermediary caching still wins.** A proxy or CDN configured to ignore origin cache directives can serve stale content regardless of the origin's behaviour.
+- **Background tabs are subject to browser timer throttling/freezing.** Detection can be delayed until the browser allows the tab to run again.
 
 ---
 
-# Single-file drop-in (for plugin authors)
+# For plugin authors
 
-Copy the files into your own plugin. There is no package, no build step and no
-dependency to add.
+The repository contains two reusable files for plugins that need direct cache/version control:
 
-| File | What it gives you |
-|---|---|
-| [`jellyfin-refresh-kit.js`](jellyfin-refresh-kit.js) | Client runtime: versioned sub-asset URLs, version polling, safe auto-reload, optional bootstrap loading. Works for any plugin or script collection, including pure-JS ones with no C# at all. |
-| [`RefreshKit.cs`](RefreshKit.cs) | Server half for C# plugins: request-time `<script>` injection into `index.html` with full HTTP caching semantics, a content-derived build identity, and cache-correct script serving. Optional, but it is what makes a reloaded tab actually receive new bytes. |
+| File | Purpose |
+| --- | --- |
+| [`jellyfin-refresh-kit.js`](jellyfin-refresh-kit.js) | Dependency-free client runtime for versioned runtime assets, version polling, safe reloads, bootstrap loading, and diagnostics. |
+| [`RefreshKit.cs`](RefreshKit.cs) | Self-contained C# helper for cache-correct `index.html` injection, script URLs, strong ETags, conditional requests, and optional version endpoints. |
 
-Multiple plugins may each ship their own copy: the copies register with a single
-page-level manager, each configured by its own tag, and the newest copy on the
-page manages it. Always ship the current file rather than an old one.
+You can use the JavaScript runtime by itself, or pair it with `RefreshKit.cs` when your Jellyfin plugin can provide the server-side integration.
 
 ## Client runtime: `jellyfin-refresh-kit.js`
 
-### Classic adoption
+The runtime has no package dependency and no build step. Serve it from your plugin and configure it from its own `<script>` tag or from a JavaScript config object.
 
-Serve the file from your plugin's static folder and give it one `<script>` tag:
+### Basic integration
 
 ```html
-<script src="/web/MyCollection/jellyfin-refresh-kit.js"
-        data-name="MyCollection"
-        data-version-url="/web/MyCollection/version.json"
+<script src="/web/MyPlugin/jellyfin-refresh-kit.js"
+        data-name="MyPlugin"
+        data-version-url="/web/MyPlugin/version.json"
         data-version-json-field="version"
-        data-asset-patterns="/MyCollection/">
+        data-asset-patterns="/MyPlugin/">
 </script>
 ```
 
-Every script/stylesheet your code creates whose URL matches `assetPatterns` now
-goes out as `…?v=<your version>`, and the tab reloads itself safely when
-`version.json` changes.
+Matching scripts/stylesheets created after the kit starts receive the resolved version in their URL, and the tab can detect when the version endpoint changes.
 
-### Bootstrap mode (recommended)
+### Bootstrap mode — recommended when the kit should load your entry files
 
-In classic mode your own entry files are still static, unversioned tags in
-`index.html`, and every page load races the version fetch. Bootstrap mode
-removes both problems: `index.html` carries one tag — the kit — and the kit
-loads your entry files itself, after your version resolves.
+If your entry scripts themselves would otherwise be static unversioned tags, let Refresh Kit load them after the current version resolves:
 
 ```html
-<script src="/web/MyCollection/jellyfin-refresh-kit.js"
-        data-name="MyCollection"
-        data-version-url="/web/MyCollection/version.json"
+<script src="/web/MyPlugin/jellyfin-refresh-kit.js"
+        data-name="MyPlugin"
+        data-version-url="/web/MyPlugin/version.json"
         data-version-json-field="version"
-        data-asset-patterns="/MyCollection/"
-        data-entry-scripts="/web/MyCollection/config.js,/web/MyCollection/injector.js">
+        data-asset-patterns="/MyPlugin/"
+        data-entry-scripts="/web/MyPlugin/config.js,/web/MyPlugin/injector.js">
 </script>
 ```
 
-Rules the entry loader follows, in priority order:
+Bootstrap mode:
 
-* never load an entry before the version resolves — but never let a dead version
-  endpoint cost the user their plugin: the first fetch is raced against
-  `entryTimeoutMs`, after which entries load unversioned with one warning
-  (availability beats freshness);
-* strict order within an instance, so a config script is guaranteed to have run
-  before the injector that reads it;
-* an entry that 404s or throws is logged and skipped — one bad file must not
-  take the page down;
-* `.css` entries become `<link rel="stylesheet">`, everything else `<script>`.
+- waits for the initial version before loading entries
+- preserves entry order
+- versions the entry URLs
+- treats `.css` entries as stylesheets
+- logs and skips a failed entry instead of taking down the page
+- falls back to unversioned entries if the initial version lookup exceeds `entryTimeoutMs`
 
-The only file left unversioned is the kit itself, which is why it is small and
-deliberately stable. If you want the loader fresh too, that is a server job:
-send `Cache-Control: no-cache` for that one file.
+That timeout keeps a broken version endpoint from preventing the plugin itself from loading.
 
-### Configuration
+## JavaScript configuration
 
-Options are set as `data-*` attributes on the kit's own `<script>` tag (the
-kebab-case form of the option name), or as JavaScript objects on `window` —
-`window.JellyfinRefreshKitConfigs = { "MyCollection": { … } }` keyed by instance
-name, defined before the kit's tag. Priority per instance: keyed entry >
-`window.JellyfinRefreshKitConfig` > `data-*` > defaults.
+Options can be supplied as `data-*` attributes or through JavaScript configuration objects.
 
-| Option / attribute | Default | Meaning |
-|---|---|---|
-| `name` / `data-name` | derived from `versionUrl` | Instance name. Appears in logs and is the key for the keyed window config. |
-| `versionUrl` / `data-version-url` | — | Endpoint returning the current version. Required for polling. |
-| `versionJsonField` / `data-version-json-field` | — | Parse the response as JSON and read this field. |
-| `bootVersion` / `data-boot-version` | — | Identity of the build that served *this* document. Seeds the baseline so an update landing between page-serve and the first poll is detected instead of absorbed. Must name the same identity the version endpoint reports. |
-| `pollSeconds` / `data-poll-seconds` | 60 | Poll interval while visible. Clamped 15–3600. |
-| `idleSeconds` / `data-idle-seconds` | 5 | Required user-idle time before a reload. Clamped 0–300. |
-| `assetPatterns` / `data-asset-patterns` | none | Comma-separated substrings (regexes via the config object). Matching script/link URLs get `?v=`. |
-| `entryScripts` / `data-entry-scripts` | none | Bootstrap mode. Comma-separated, order significant. |
-| `entryTimeoutMs` / `data-entry-timeout-ms` | 3000 | Max wait for the first version fetch before entries load unversioned. Clamped 250–30000. |
-| `mode` / `data-mode` | `auto` | `auto` reloads, `notify` only fires the callback, `off` still versions URLs. |
-| `reloadBudget` / `data-reload-budget` | 3 | Max reloads per 60 s window. The page uses the **minimum** across instances. |
-| `hiddenReload` / `data-hidden-reload` | true | Allow the reload to happen while the tab is hidden. Any instance setting it false switches the whole page back to visible-only reloads. |
-| `hiddenSettleSeconds` / `data-hidden-settle-seconds` | 25 | How long the tab must have been hidden first. The page uses the **maximum** across instances. |
-| `getVersion` | — | Config-object only. A `() => Promise<string>` that replaces `versionUrl` entirely. |
-| `onUpdateAvailable` | — | Config-object only. Called once per detected version change. |
+For multiple instances, use:
 
-Where instances disagree, the page honours the most conservative ask: the
-strictest idle requirement, the smallest reload budget, the longest hidden
-settle.
+```javascript
+window.JellyfinRefreshKitConfigs = {
+    MyPlugin: {
+        versionUrl: '/web/MyPlugin/version.json',
+        versionJsonField: 'version',
+        assetPatterns: ['/MyPlugin/']
+    }
+};
+```
 
-### Public API
+Important options:
 
-`window.JellyfinRefreshKit` is the page manager:
+| Option | Default | Purpose |
+| --- | ---: | --- |
+| `name` | Derived | Instance identity used in logs, diagnostics, and keyed configuration. |
+| `versionUrl` | — | Endpoint that reports the current version. |
+| `versionJsonField` | — | JSON property containing the version when the endpoint returns JSON. |
+| `bootVersion` | — | Build identity that produced the current document; should represent the same identity as the version endpoint. |
+| `pollSeconds` | 60 | Visible-tab polling interval, clamped to 15–3600 seconds. |
+| `idleSeconds` | 5 | Required idle time before automatic reload, clamped to 0–300 seconds. |
+| `assetPatterns` | None | URL patterns whose dynamically-created assets should receive versioning. |
+| `entryScripts` | None | Ordered entry URLs for bootstrap mode. |
+| `entryTimeoutMs` | 3000 | Maximum initial version wait before bootstrap entries fall back to unversioned loading. |
+| `mode` | `auto` | `auto` reloads, `notify` reports updates without reloading, `off` leaves URL versioning active without update polling behaviour. |
+| `reloadBudget` | 3 | Maximum reloads per rolling 60-second window. |
+| `hiddenReload` | `true` | Allows an otherwise-safe pending reload while the tab is hidden. |
+| `hiddenSettleSeconds` | 25 | Required hidden period before a hidden-tab reload is considered. |
+| `getVersion` | — | Config-object callback that can replace `versionUrl`. |
+| `onUpdateAvailable` | — | Callback invoked when an update is detected. |
+
+When several kit instances share one page, reload safety resolves conservatively: stricter idle/hidden requirements and smaller reload budgets win where shared behaviour must be chosen.
+
+## JavaScript API
+
+`window.JellyfinRefreshKit` exposes the page-level manager.
 
 | Member | Purpose |
-|---|---|
-| `get(name)` | The named instance's handle (`version`, `latestVersion`, `versionedUrl`, `checkNow`, `state`), or `null`. |
-| `instances()` | Registered instance names, in registration order. |
-| `versionedUrl(url, force)` | Version a URL built outside `createElement` — `fetch()`, dynamic `import()`, CSS `url()`. |
-| `checkNow()` | Force an immediate version check on every instance. |
-| `state()` | Full diagnostic snapshot: per-instance versions and config, plus shared reload state including `blockReason`. Start here in a support log. |
+| --- | --- |
+| `get(name)` | Returns the named instance handle, including its versions, `versionedUrl`, `checkNow`, and `state`. |
+| `instances()` | Returns registered instance names in registration order. |
+| `versionedUrl(url, force)` | Versions a URL created outside the normal script/link interception path, such as `fetch()` or a dynamic import URL. |
+| `checkNow()` | Immediately checks all registered version sources. |
+| `state()` | Returns diagnostic state for instances and the shared reload engine. |
 
-Every entry point is wrapped so a throw inside the kit cannot escape into
-Jellyfin's own code.
+Use `state()` as the first diagnostic when collecting a support log for reload behaviour.
 
-## Server half: `RefreshKit.cs`
+## Server helper: `RefreshKit.cs`
 
-Drop the file into your plugin project and register it:
+`RefreshKit.cs` can be copied directly into a C# Jellyfin plugin and registered through its service registrator.
 
 ```csharp
 using JellyfinRefreshKit;
 
 serviceCollection.AddRefreshKit(new RefreshKitOptions
 {
-    PluginName  = "My Plugin",          // tag identity + scrub key
-    BasePath    = "MyPlugin",           // your controller's [Route]
+    PluginName = "My Plugin",
+    BasePath = "MyPlugin",
     ScriptPaths = new[] { "script" },
-    DevMode     = () => Plugin.Instance?.Configuration.DevMode == true,
+    DevMode = () => Plugin.Instance?.Configuration.DevMode == true,
 });
 ```
 
-Every `index.html` now carries exactly one tag of yours:
+The helper injects your script tag into `index.html` with a cache identity in the URL and with a `data-boot-version` representing the build that produced the page.
 
-```html
-<script plugin="My Plugin" version="1.2.3-638…" data-boot-version="1.2.3-638…"
-        dev="false" build="ab12…" src="../MyPlugin/script?v=1.2.3-638…" defer></script>
-```
-
-In the endpoint that serves your script, one call gives you
-`public, max-age=31536000, immutable` in production and `no-store` in dev mode:
+In your script endpoint, apply the matching cache headers:
 
 ```csharp
 [HttpGet("script")]
@@ -427,8 +443,9 @@ public ActionResult GetScript()
 }
 ```
 
-Optionally expose a version endpoint for the JS kit to poll. It is opt-in
-because two plugins embedding this file would otherwise claim the same route:
+### Optional version endpoint
+
+If the JavaScript runtime should poll the same identity used by the server helper, expose a plugin-specific route by subclassing `RefreshKitVersionControllerBase`:
 
 ```csharp
 [ApiController]
@@ -441,81 +458,49 @@ public class MyVersionController : RefreshKitVersionControllerBase
 }
 ```
 
-…and point the kit at it:
+Then configure the injected kit tag to read the returned `CacheKey`:
 
 ```csharp
-ExtraAttributes = _ => "data-version-url=\"../MyPlugin/RefreshVersion\" "
-                     + "data-version-json-field=\"CacheKey\"",
+ExtraAttributes = _ =>
+    "data-version-url=\"../MyPlugin/RefreshVersion\" "
+    + "data-version-json-field=\"CacheKey\"";
 ```
 
-`CacheKey` is the right field because it is exactly what the injected tag stamps
-into `data-boot-version` — the seed and the polled value then name the same
-identity.
+Using the same cache identity for the page's boot version and the polled version avoids treating unrelated values as comparable builds.
 
-### `RefreshKitOptions`
+## `RefreshKitOptions`
 
-| Option | Required | Meaning |
-|---|---|---|
-| `PluginName` | yes | Tag identity. Every injected tag carries `plugin="<PluginName>"`, and the scrub regex removes exactly those, so two plugins never scrub each other. Pick it once — changing it orphans the old tag. |
-| `BasePath` | yes | The route segment your controller serves under. Injected srcs are `../{BasePath}/{scriptPath}?v={cacheKey}`, relative on purpose so they keep working behind a base-url prefix. |
-| `ScriptPaths` | yes | Ordered script paths. **This list is the execution order** (every tag is `defer`). If you also serve `jellyfin-refresh-kit.js`, it must be the **first** entry — anything running before it creates sub-assets unversioned. |
-| `DevMode` | no | Live flag stamped into the tag as `dev="true"` / `dev="false"` and read by `ApplyScriptCacheHeaders`. |
-| `VersionProvider` | no | Overrides the assembly-derived identity, e.g. to make one aggregate value drive everything. |
-| `ExtraAttributes` | no | Extra attributes per script path — how the JS kit's `data-*` config is emitted. |
-| `Enabled` | no | Live kill switch: when false the middleware passes the host's bytes through untouched. |
+| Option | Required | Purpose |
+| --- | --- | --- |
+| `PluginName` | Yes | Stable identity used by the injected tag and the helper's own-tag scrub logic. |
+| `BasePath` | Yes | Controller route segment used to build relative script URLs. |
+| `ScriptPaths` | Yes | Ordered script paths. Because injected tags use `defer`, this is also execution order. |
+| `DevMode` | No | Live flag used by script-cache handling and stamped into the tag. |
+| `VersionProvider` | No | Replaces the assembly-derived cache identity with a custom one. |
+| `ExtraAttributes` | No | Adds plugin-owned attributes to emitted script tags, including JS-kit configuration. |
+| `Enabled` | No | Live kill switch for the middleware. |
 
-Static helpers: `RefreshKit.BuildId`, `RefreshKit.CacheKey`, `RefreshKit.Version`,
-`ApplyScriptCacheHeaders`, `ApplyNoStore`, `BuildScriptTags`,
-`OwnScriptTagRegex`, `ReplaceOwnedScriptTags`.
+If `jellyfin-refresh-kit.js` is one of the injected scripts, put it **before** scripts that create runtime assets so its interception is active first.
 
-Design guarantees worth knowing: the file references no plugin-specific types,
-the middleware is thread-safe with a bounded cache, and every error path
-**fails open** — it sits in front of the app shell and must never be the reason
-Jellyfin fails to load. Two plugins can each embed the file; identical namespaces
-in different assemblies are distinct types with distinct statics, so each gets
-its own middleware, cache and scrub identity.
+## Drop-in limitations
 
-## Limitations of the drop-in path
-
-* **Classic mode races the version fetch on every load.** Anything your
-  bootstrap creates synchronously at parse time goes out unversioned. Bootstrap
-  mode removes the race; `bootVersion` narrows it.
-* **The kit's own tag is the one URL nobody can version from inside.** Something
-  has to be the loader. Keep it stable, or serve it `no-cache`.
-* **Bootstrap mode adds one round trip** before entries load, bounded by
-  `entryTimeoutMs`.
-* **Overlapping `assetPatterns` are resolved by registration order** (document
-  order of the kit tags), with one warning. Keep patterns scoped to your own
-  folder.
-* **A flapping version source cannot be made stable from the client.** Serve one
-  identity per release across all nodes.
-* **A CDN's `@latest` resolution TTL is invisible to JavaScript** — the stale
-  file *is* the correct response for that URL. Pin a version or self-host.
-* **The kit cannot add `ETag` or `Cache-Control` headers.** That needs the
-  server half.
+- A plugin using non-bootstrap/classic loading can still have an initial race before the version resolves. Bootstrap mode avoids that for its entry files.
+- The kit cannot version its own loader URL from inside itself; serve that file with an appropriate cache policy or through the C# helper.
+- Bootstrap mode adds the initial version lookup before entry files load, bounded by `entryTimeoutMs`.
+- Keep `assetPatterns` scoped to your own plugin. Overlapping patterns between independent instances are resolved deterministically but should be avoided.
+- All nodes behind a load balancer should expose one stable identity for the same deployed build.
+- A CDN's own `latest`/resolution cache cannot be fixed by client-side versioning if the CDN maps the requested URL to stale content.
+- JavaScript cannot add response `ETag` or `Cache-Control` headers; use the server helper when those guarantees are required.
 
 ---
 
 # Compatibility
 
-Full, per-plugin evidence lives in [COMPATIBILITY.md](COMPATIBILITY.md); nothing
-appears there without a passing run. In summary:
+The standalone plugin is built for **Jellyfin 10.11.x**. The reusable `RefreshKit.cs` integration is also exercised separately against Jellyfin 12 development/release-candidate environments in this repository's compatibility work.
 
-* **Around 130 community plugin builds** validated on live Jellyfin 10.11.11
-  servers across four sweeps — a 34-plugin breadth sweep, a 103-build ecosystem
-  completion sweep (102 third-party plugins Active at once), and kitchen-sink
-  environments of 8 and 22 concurrent plugins with up to five independent
-  `index.html` rewriters running simultaneously. Verdicts are `coexists`
-  (functional with the kit present, its own URLs untouched, network-level
-  non-interference proven) and `adoptable`.
-* **Reverse proxies and CDNs**: nginx (official docs config), Nginx Proxy
-  Manager style, Caddy, Traefik v3, HAProxy, an nginx subpath deployment and no
-  proxy all pass the full freshness matrix; the failure mode and its one-line
-  remedy are the caching-proxy rows.
-* **`RefreshKit.cs` on Jellyfin 12.0-rc3** — verified against a clean-room
-  demo plugin (idempotent injection, stale-tag scrub, `rk-` ETag with
-  per-encoding 304/412, gzip/br, immutable scripts, dev-mode live flip). The
-  standalone plugin itself targets 10.11.x.
+The project includes compatibility testing across a broad set of community plugins and common reverse-proxy configurations. The detailed environments, tested plugin builds, verdicts, edge cases, and reproducible evidence live in [COMPATIBILITY.md](COMPATIBILITY.md).
+
+Keeping the evidence in that file allows this README to describe the supported behaviour without turning into a test ledger.
 
 ---
 
@@ -523,145 +508,131 @@ appears there without a passing run. In summary:
 
 ## Repository layout
 
-```
-jellyfin-refresh-kit.js                       the client runtime (single source of truth)
-RefreshKit.cs                                 the C# half, for single-file adoption
-manifest.json                                 plugin-repository manifest
-COMPATIBILITY.md                              evidence log
-plugin/
-    build.sh                                  build → zip + meta.json + md5
-    README.md                                 deeper standalone-plugin documentation
-    Jellyfin.Plugin.RefreshKit/
-        Jellyfin.Plugin.RefreshKit.csproj     net9.0, Jellyfin.Controller 10.11.11
-        Plugin.cs                             plugin identity, embedded runtime
-        PluginServiceRegistrator.cs           wires all three mechanisms
-        PluginGenerationProvider.cs           the generation aggregator
-        ThirdPartyTagStamper.cs               the ?rkv= stamping rules
-        RefreshKit.cs                         vendored from the repository root
-        Controllers/RefreshKitController.cs   generation / kit.js / diagnostics
-        Configuration/                        settings + dashboard page
-    Jellyfin.Plugin.RefreshKit.Tests/         xunit suite
-e2e/proxy/                                    reverse-proxy / CDN validation rig
+```text
+.
+├── README.md
+├── LICENSE
+├── manifest.json
+├── COMPATIBILITY.md
+├── jellyfin-refresh-kit.js
+├── RefreshKit.cs
+├── plugin/
+│   ├── README.md
+│   ├── build.sh
+│   ├── Jellyfin.Plugin.RefreshKit/
+│   │   ├── Jellyfin.Plugin.RefreshKit.csproj
+│   │   ├── Plugin.cs
+│   │   ├── PluginServiceRegistrator.cs
+│   │   ├── PluginGenerationProvider.cs
+│   │   ├── ThirdPartyTagStamper.cs
+│   │   ├── RefreshKit.cs
+│   │   ├── Controllers/
+│   │   └── Configuration/
+│   └── Jellyfin.Plugin.RefreshKit.Tests/
+└── e2e/
+    └── proxy/
 ```
 
-## Build
+Key files:
+
+- `jellyfin-refresh-kit.js` — canonical browser runtime used by drop-in consumers and embedded into the standalone plugin at build time.
+- `RefreshKit.cs` — reusable C# integration helper.
+- `manifest.json` — Jellyfin plugin-repository manifest.
+- `plugin/Jellyfin.Plugin.RefreshKit/` — installable standalone plugin.
+- `PluginGenerationProvider.cs` — computes the server-wide plugin generation.
+- `ThirdPartyTagStamper.cs` — cache-busts eligible script and stylesheet tags.
+- `plugin/Jellyfin.Plugin.RefreshKit.Tests/` — xUnit tests for generation and stamping behaviour.
+- `e2e/proxy/` — disposable Docker-based proxy, caching, websocket, subpath, and browser test rig.
+
+## Build the standalone plugin
+
+The plugin version is defined in:
+
+```text
+plugin/Jellyfin.Plugin.RefreshKit/Jellyfin.Plugin.RefreshKit.csproj
+```
+
+Build the marketplace package with:
 
 ```bash
-export DOTNET_ROOT=$HOME/.dotnet
-bash plugin/build.sh                  # or: --update-manifest
+export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}"
+bash plugin/build.sh
 ```
 
-Produces `plugin/build/jellyfin-refresh-kit_<version>.zip` (DLL + `meta.json`)
-plus an unzipped `plugin/build/stage/` you can drop straight into
-`/config/plugins/Jellyfin Refresh Kit_<version>/`, and prints the zip's MD5.
-With `--update-manifest` it writes that checksum and timestamp into the root
-`manifest.json`. Attach the zip to a GitHub release tagged `v<version>` so the
-manifest's `sourceUrl` resolves.
+The build creates:
 
-The version lives in exactly one place — `<Version>` in the csproj. `build.sh`,
-`meta.json` and the manifest update all read it from there.
+```text
+plugin/build/jellyfin-refresh-kit_<version>.zip
+plugin/build/stage/
+```
 
-## Test
+It also prints the package MD5 used by Jellyfin's repository manifest.
+
+To update the corresponding checksum and timestamp in `manifest.json`:
 
 ```bash
-export DOTNET_ROOT=$HOME/.dotnet
-$DOTNET_ROOT/dotnet test plugin/Jellyfin.Plugin.RefreshKit.Tests/Jellyfin.Plugin.RefreshKit.Tests.csproj
+bash plugin/build.sh --update-manifest
 ```
 
-49 xunit tests covering the two pieces of logic with real edge cases: the
-generation aggregator (enable/disable detection, in-place DLL replacement,
-client-asset vs runtime-data files, bounded directory walks, torn `meta.json`
-rewrites) and the third-party tag stamper (which tags are stamped, which are
-skipped, idempotency, byte-exact preservation of everything else).
+## Run tests
 
-## End-to-end: the proxy rig
+```bash
+export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}"
+$DOTNET_ROOT/dotnet test \
+  plugin/Jellyfin.Plugin.RefreshKit.Tests/Jellyfin.Plugin.RefreshKit.Tests.csproj
+```
 
-[`e2e/proxy/`](e2e/proxy/README.md) builds its own throwaway world — its own
-Jellyfin origin, volumes and network, plus eleven proxy containers — and never
-touches a pre-existing Jellyfin container.
+The xUnit suite covers the generation provider and tag stamper, including:
+
+- install/enable/disable state changes
+- same-version binary replacement
+- client-asset changes
+- bounded directory traversal
+- malformed or transient metadata
+- configuration-change behaviour
+- eligible and ineligible script/style tags
+- idempotent stamping
+- existing version identities
+- query-string and fragment preservation
+
+## Run the proxy/browser E2E rig
+
+The E2E environment lives in `e2e/proxy/` and uses disposable Docker resources rather than an existing Jellyfin installation.
 
 ```bash
 cd e2e/proxy
-export NODE_PATH=$HOME/.nvm/versions/node/v22.20.0/lib/node_modules   # puppeteer + ws
-./run.sh up        # rig + wizard + both plugins + admin token
-./run.sh matrix    # 18-assertion curl freshness matrix, every proxy
-./run.sh ws        # websocket regression check, every proxy
-./run.sh cache     # misconfigured-cache demo and both remedies
-./run.sh e2e       # puppeteer: login → bump → exactly one smart reload
-./run.sh subpath   # BaseUrl=/jellyfin, test, restore
-./run.sh all       # the lot, in order (~25 minutes)
-./run.sh down      # destroy everything
+./run.sh up
+./run.sh matrix
+./run.sh ws
+./run.sh cache
+./run.sh e2e
+./run.sh subpath
+./run.sh down
 ```
 
-Requirements: Docker with the compose plugin, `node` with `puppeteer` and `ws`
-resolvable, `python3`, and the .NET SDK only if `plugin/build/stage/` is missing
-(the rig then builds the plugin for you). Run it for any change that touches the
-middleware, the injected tag, or anything that could affect a proxied response.
+Run the complete suite with:
 
-## Architecture notes
+```bash
+./run.sh all
+```
 
-* **One copy of the client runtime.** The csproj embeds
-  `../../jellyfin-refresh-kit.js` from the repository root as an embedded
-  resource at compile time, and the controller serves it from there. There is
-  deliberately no committed duplicate inside the plugin.
-* **`RefreshKit.cs` is vendored, not linked.**
-  `plugin/Jellyfin.Plugin.RefreshKit/RefreshKit.cs` is the root file with
-  exactly three differences, each marked `STANDALONE-PLUGIN ADAPTATION`: the
-  namespace, an added `RefreshKitOptions.HtmlPostProcess` hook, and its call
-  site. Those hooks do not exist upstream and the root file belongs to the
-  single-file adoption path. Re-sync after changing the root file with the `sed`
-  recipe in the vendored file's header, then re-apply the two hooks.
-* **The generation is the version.** The plugin overrides `VersionProvider` with
-  the aggregate generation, so the injected `?v=`, the `data-boot-version` seed,
-  the version endpoint's `CacheKey` and the `?rkv=` stamp are one value that
-  cannot drift — and a generation change also invalidates the middleware's
-  cached representation of the shell.
-* **The plugin's kit instance declares no `assetPatterns` and no
-  `entryScripts`.** On a page where an adopting plugin ships its own copy, the
-  first-registered matching instance wins URL versioning, and a greedy pattern
-  here would silently take over that plugin's versioning. Layer 2 stays the
-  adopter's business.
-* **The client runtime is written to survive anything.** Interception happens at
-  URL *assignment* time (wrapping `document.createElement` and installing
-  per-instance accessors), not via `MutationObserver` — an observer sees the
-  element after insertion, when the fetch has usually already started. Nothing
-  is ever installed on `Element.prototype`.
-* **Cross-copy compatibility is a frozen contract.** The registration contract
-  documented in the runtime's header (`__registerInstance`, `__contractVersion`,
-  `__claimSingularGlobal`, `__handoffTo`) is strictly additive: a caller
-  speaking an older revision must keep working against every future manager.
-  Add clauses; never change one.
+See [e2e/proxy/README.md](e2e/proxy/README.md) for prerequisites and the exact proxy/test matrix.
 
-## Style constraints
+## Architecture and contribution rules
 
-* **`jellyfin-refresh-kit.js` has no build step and no dependencies**, and it
-  must stay that way — it has to be pasteable into a JS-injector textarea or
-  served straight from a plugin folder. Write conservative ES5-syntax vanilla
-  JavaScript (`var`, function expressions; no arrow functions, template
-  literals, classes or `let`/`const`); there is no transpiler to save you.
-  Keep the file one self-contained IIFE, keep every observable entry point
-  wrapped so a throw cannot escape into the host page, and document behaviour in
-  the header block — it is the reference the README summarises.
-* **`RefreshKit.cs` must remain self-contained and fail-open.** No
-  plugin-specific types, no assumption of a writable web root, and any
-  unexpected condition serves the host's original bytes.
-* **C# in the plugin project** targets `net9.0` with nullable enabled.
+A few constraints are intentional and should be preserved when changing the project:
 
-## Contributing
-
-* Work on a branch; keep commits incremental.
-* Add or update xunit tests for any change to the generation provider or the tag
-  stamper — that is where the subtle rules live.
-* Run the proxy rig for anything touching the middleware or the served shell.
-* Update the docs that the change makes wrong: this README for user- or
-  developer-visible behaviour, [plugin/README.md](plugin/README.md) for
-  standalone-plugin detail, and the runtime/`RefreshKit.cs` header blocks for
-  behaviour changes.
-* Only add rows to [COMPATIBILITY.md](COMPATIBILITY.md) that a real run proved,
-  citing the environment.
+- **One canonical JavaScript runtime.** The standalone plugin embeds the repository-root `jellyfin-refresh-kit.js`; do not add a second committed copy.
+- **Keep the browser runtime dependency-free.** It is designed to be served or copied directly without a JavaScript build pipeline.
+- **Keep `RefreshKit.cs` self-contained and fail-open.** It sits in the app-shell request path and must not make Jellyfin unavailable when an unexpected condition occurs.
+- **Do not let the standalone instance claim other plugins' runtime asset patterns.** Dynamic assets remain the adopting plugin's responsibility.
+- **Keep multi-instance behaviour conservative.** Independent plugins can embed the runtime on the same page, so shared reload behaviour must not let one instance weaken another instance's safety requirements.
+- **Add or update tests for generation/stamping changes.** These behaviours contain the subtle cache and filesystem rules.
+- **Run the proxy E2E suite for middleware, response-header, injection, or proxy-sensitive changes.**
+- **Keep documentation aligned with current behaviour.** User-visible behaviour belongs here; deeper standalone details belong in `plugin/README.md`; compatibility evidence belongs in `COMPATIBILITY.md`.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Jellyfin Refresh Kit is licensed under the [MIT License](LICENSE).
