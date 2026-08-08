@@ -615,8 +615,15 @@
      *           away; flapDisarmedFor reports the LATEST refused transition;
      *           and a frozen singular window config takes the WeakSet claim
      *           path silently instead of via a swallowed throw.
+     *   2.4.0 — INVISIBLE MOMENTS: the kit now takes the reloads a user cannot
+     *           see. `hidden` stops being an unconditional first refusal and
+     *           becomes a PERMISSION MODE — every other gate still evaluates,
+     *           so a hidden tab reloads only when nothing else objects — armed
+     *           by ONE single-shot timer per hide (hiddenSettleSeconds, default
+     *           25) instead of the 1Hz ladder, which a hidden tab must never
+     *           run. Feature flag: hiddenReload / data-hidden-reload="false".
      */
-    var KIT_VERSION = '2.3.0';
+    var KIT_VERSION = '2.4.0';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -720,6 +727,25 @@
 
     /** @type {number} Hard cap on consecutive blocked-reload retries (~10 min). */
     var MAX_BLOCKED_RETRIES = 600;
+
+    /**
+     * HIDDEN-TAB RETRY FLOOR. A hidden tab never runs the 1Hz ladder — it runs
+     * ONE single-shot timer at a time (see armHiddenRetry) — and this is the
+     * floor on that timer's delay, so an adopter configuring
+     * hiddenSettleSeconds: 0 (reload the instant the tab is hidden) still does
+     * not turn a gate it keeps failing into a busy loop in a background tab.
+     * @type {number}
+     */
+    var HIDDEN_RETRY_MIN_MS = 5000;
+
+    /**
+     * Hard cap on hidden-tab single-shot re-arms per hide, which — at the
+     * default 25s cadence — covers roughly the same ~10 minutes the visible 1Hz
+     * ladder does. Past it the hidden tab holds NO timer at all and the reload
+     * waits for the ordinary onWake catch-up, exactly as it did before 2.4.0.
+     * @type {number}
+     */
+    var MAX_HIDDEN_RETRIES = 24;
 
     /**
      * How long a <video>/<audio> element may hold the reload gate with ZERO
@@ -912,6 +938,8 @@
      * @property {'auto'|'notify'|'off'} [mode] Default 'auto'.
      * @property {(newV: string, oldV: string) => void} [onUpdateAvailable] Called once per detected version change.
      * @property {number}   [reloadBudget]      Max reloads per 60s window. Default 3. Page-level budget is the MIN among all instances.
+     * @property {boolean}  [hiddenReload]      Allow the reload to happen while the tab is HIDDEN (2.4.0). Default true. Page-level: any instance setting false switches the whole page back to pre-2.4.0 behaviour.
+     * @property {number}   [hiddenSettleSeconds] How long a tab must have been hidden before the hidden reload is attempted. Default 25, clamped 0–3600. Page-level value is the MAX among all instances.
      */
 
     /** @type {Required<Pick<RefreshKitConfig,'pollSeconds'|'idleSeconds'|'mode'|'reloadBudget'>> & RefreshKitConfig} */
@@ -928,7 +956,9 @@
         entryTimeoutMs: DEFAULT_ENTRY_TIMEOUT_MS,
         mode: 'auto',
         onUpdateAvailable: null,
-        reloadBudget: 3
+        reloadBudget: 3,
+        hiddenReload: true,
+        hiddenSettleSeconds: 25
     };
 
     /**
@@ -962,6 +992,15 @@
         if (d.idleSeconds) out.idleSeconds = Number(d.idleSeconds);
         if (d.mode) out.mode = /** @type {any} */ (d.mode);
         if (d.reloadBudget) out.reloadBudget = Number(d.reloadBudget);
+        // Boolean attribute. HTML has no false, so the OFF spellings are
+        // enumerated and anything else present reads as ON — an adopter who
+        // typed data-hidden-reload="nope" meant to switch it off, but that
+        // guess belongs in the parser, not in the engine: normalizeConfig
+        // coerces, and only these spellings produce `false`.
+        if (d.hiddenReload) {
+            out.hiddenReload = !/^(false|0|off|no)$/i.test(String(d.hiddenReload).trim());
+        }
+        if (d.hiddenSettleSeconds) out.hiddenSettleSeconds = Number(d.hiddenSettleSeconds);
         if (d.entryTimeoutMs) out.entryTimeoutMs = Number(d.entryTimeoutMs);
         if (d.entryScripts) {
             // Comma-separated, order-significant. A URL containing a literal
@@ -1524,6 +1563,11 @@
         cfg.pollSeconds = clampNumber(cfg.pollSeconds, 15, 3600, DEFAULTS.pollSeconds);
         cfg.idleSeconds = clampNumber(cfg.idleSeconds, 0, 300, DEFAULTS.idleSeconds);
         cfg.reloadBudget = clampNumber(cfg.reloadBudget, 1, 100, DEFAULTS.reloadBudget);
+        // Opt-OUT flag: anything but an explicit false leaves the 2.4.0
+        // hidden-tab reload enabled, so a config written for an older kit (or a
+        // typo'd value) never silently disables it.
+        cfg.hiddenReload = cfg.hiddenReload !== false;
+        cfg.hiddenSettleSeconds = clampNumber(cfg.hiddenSettleSeconds, 0, 3600, DEFAULTS.hiddenSettleSeconds);
         if (cfg.mode !== 'auto' && cfg.mode !== 'notify' && cfg.mode !== 'off') cfg.mode = DEFAULTS.mode;
         cfg.entryTimeoutMs = clampNumber(cfg.entryTimeoutMs, 250, 30000, DEFAULTS.entryTimeoutMs);
         if (!Array.isArray(cfg.assetPatterns)) cfg.assetPatterns = [];
@@ -1594,7 +1638,8 @@
      */
     function configsEquivalent(a, b) {
         var scalar = ['versionUrl', 'versionJsonField', 'bootVersion', 'pollSeconds', 'idleSeconds',
-            'entryTimeoutMs', 'mode', 'reloadBudget', 'getVersion', 'onUpdateAvailable'];
+            'entryTimeoutMs', 'mode', 'reloadBudget', 'getVersion', 'onUpdateAvailable',
+            'hiddenReload', 'hiddenSettleSeconds'];
         for (var i = 0; i < scalar.length; i++) {
             if (!optionsEquivalent(a[scalar[i]], b[scalar[i]])) return false;
         }
@@ -1650,6 +1695,31 @@
     var settleTimer = null;
     /** @type {number} Consecutive blocked retries, to stop an unbounded 1Hz loop. */
     var blockedRetries = 0;
+    /**
+     * When this tab became hidden, or null while it is visible. It is the clock
+     * the HIDDEN-SETTLE GRACE is measured against (2.4.0): a tab must have been
+     * hidden for hiddenSettleSeconds before the kit will reload it, so
+     * alt-tabbing away and straight back is never reloaded under.
+     *
+     * Seeded at install when the document is ALREADY hidden (a tab restored
+     * into the background, a page opened in a new background tab, or a manager
+     * handoff that happened while hidden) — without that seed such a tab has no
+     * transition to measure from and could never satisfy the grace.
+     * @type {number|null}
+     */
+    var hiddenSince = null;
+    /**
+     * The ONE single-shot timer a hidden tab is allowed to hold (2.4.0). A
+     * hidden tab must never run the 1Hz ladder — that is the promise the kit
+     * has always made about background tabs — so the ladder is replaced, while
+     * hidden, by this: armed once per hide for the settle grace, and re-armed
+     * (never stacked) at the slow hidden cadence while some OTHER gate is still
+     * refusing. Cancelled the moment the tab becomes visible again.
+     * @type {number|null}
+     */
+    var hiddenTimer = null;
+    /** @type {number} Hidden single-shot re-arms since this tab was hidden. */
+    var hiddenRetries = 0;
     /**
      * When the current zero-progress 'media_element' block started, or null when
      * there is no such streak. Measured in WALL TIME rather than counted in
@@ -2159,7 +2229,38 @@
      */
     function blockReasonFor(idleMs, skipMediaGate) {
         try {
-            if (document.visibilityState === 'hidden') return 'hidden';
+            // HIDDEN IS A PERMISSION MODE, NOT A REFUSAL (2.4.0).
+            //
+            // A hidden tab is the single best moment this kit will ever get: no
+            // scroll position to lose, no half-typed search, nothing on screen
+            // to flicker. Until 2.4.0 it was the ONE gate that refused
+            // unconditionally and first, so the kit spent every one of those
+            // moments waiting and then reloaded the tab in the user's face a
+            // second after they came back to it.
+            //
+            // So `hidden` no longer short-circuits: it imposes a SETTLE GRACE
+            // (an alt-tab to another window and straight back must never be
+            // reloaded under) and then falls through to EVERY OTHER GATE. A
+            // hidden tab playing audio still blocks on media_element; a hidden
+            // tab with an open dialog or a focused editor still blocks. Hidden
+            // buys the reload nothing except the absence of a watching user.
+            //
+            // Measured, not assumed (Jellyfin 10.11.11, Chrome headless): a
+            // reload issued while hidden completes the whole boot in the
+            // background — DOMContentLoaded 130ms, ApiClient 146ms, load 347ms,
+            // view rendered 757ms — with requestAnimationFrame never firing at
+            // all until the tab is shown, at which point the first frame lands
+            // 24ms later. The visible control took 900ms to the same point. A
+            // hidden reload is therefore not deferred work; it is work that is
+            // already finished when the user comes back.
+            if (document.visibilityState === 'hidden') {
+                if (!hiddenReloadEnabled()) return 'hidden';
+                // Defensive: hidden with no recorded transition (an exotic host
+                // that never fired visibilitychange). Treat NOW as the start of
+                // the grace rather than reloading on a clock we do not have.
+                if (hiddenSince === null) hiddenSince = Date.now();
+                if (hiddenForMs() < hiddenSettleWindowMs()) return 'hidden_settling';
+            }
 
             // Jellyfin's own video route. Even before a <video> exists, being on
             // #/video means a session is starting.
@@ -2549,14 +2650,112 @@
     }
 
     /**
+     * Is the 2.4.0 HIDDEN-TAB RELOAD permitted on this page?
+     *
+     * Page-level and CONSERVATIVE, exactly like the reload budget: one reload
+     * navigates the tab out from under every adopter on the page, so a single
+     * instance configuring `hiddenReload: false` puts the whole page back on
+     * pre-2.4.0 behaviour (hidden is an unconditional refusal; the pending
+     * reload waits for the onWake catch-up). Registry empty → the default.
+     * @returns {boolean}
+     */
+    function hiddenReloadEnabled() {
+        for (var i = 0; i < registry.length; i++) {
+            if (registry[i].cfg.hiddenReload === false) return false;
+        }
+        return DEFAULTS.hiddenReload;
+    }
+
+    /**
+     * The hidden-settle grace this page enforces: the MAX hiddenSettleSeconds
+     * among ALL registered instances (the strictest ask wins, as with
+     * idleSeconds) — all of them, not just the pending ones, because the timer
+     * is armed the moment the tab is hidden, which is routinely before any
+     * update exists to be pending.
+     * @returns {number} Milliseconds.
+     */
+    function hiddenSettleWindowMs() {
+        var seconds = DEFAULTS.hiddenSettleSeconds;
+        for (var i = 0; i < registry.length; i++) {
+            if (i === 0 || registry[i].cfg.hiddenSettleSeconds > seconds) {
+                seconds = registry[i].cfg.hiddenSettleSeconds;
+            }
+        }
+        return seconds * 1000;
+    }
+
+    /** @returns {number} How long this tab has been hidden; 0 when visible. */
+    function hiddenForMs() {
+        return hiddenSince === null ? 0 : Date.now() - hiddenSince;
+    }
+
+    /** Cancel the hidden tab's single-shot timer. */
+    function clearHiddenTimer() {
+        if (hiddenTimer !== null) { clearTimeout(hiddenTimer); hiddenTimer = null; }
+    }
+
+    /**
+     * Arm THE one timer a hidden tab may hold, replacing whatever was armed
+     * before it (never stacking). It is a single shot: it fires tryReload()
+     * once, and only a still-blocked evaluation inside that call re-arms it.
+     *
+     * @param {number} delayMs Delay, floored at HIDDEN_RETRY_MIN_MS so a
+     *   hiddenSettleSeconds: 0 adopter cannot turn a gate it keeps failing into
+     *   a busy loop in a background tab. The initial settle arm passes the
+     *   remaining grace, which is allowed to be shorter than the floor only in
+     *   the sense that it is already counted from the hide moment.
+     */
+    function armHiddenRetry(delayMs) {
+        clearHiddenTimer();
+        if (handedOff) return;
+        if (hiddenRetries >= MAX_HIDDEN_RETRIES) return;
+        hiddenRetries++;
+        var delay = typeof delayMs === 'number' && isFinite(delayMs) ? Math.max(0, delayMs) : hiddenSettleWindowMs();
+        hiddenTimer = safe(function () {
+            return setTimeout(function () {
+                hiddenTimer = null;
+                safe(tryReload);
+            }, delay);
+        }, null);
+    }
+
+    /**
+     * The tab just went hidden (or booted hidden). Start the settle clock and
+     * arm the single shot that will take the reload once the grace has passed —
+     * IF the feature is enabled. With it disabled a hidden tab holds no timer
+     * at all, which is precisely the pre-2.4.0 behaviour the flag restores.
+     */
+    function onHidden() {
+        if (hiddenSince === null) hiddenSince = Date.now();
+        hiddenRetries = 0;
+        clearHiddenTimer();
+        if (!hiddenReloadEnabled()) return;
+        armHiddenRetry(Math.max(0, hiddenSince + hiddenSettleWindowMs() - Date.now()));
+    }
+
+    /**
+     * The tab is visible again: the hidden path is over. Cancelling here is
+     * what makes "hide and come straight back" a no-op — the grace never
+     * elapsed, so no reload was ever attempted.
+     */
+    function onVisible() {
+        hiddenSince = null;
+        hiddenRetries = 0;
+        clearHiddenTimer();
+    }
+
+    /**
      * Cancel the blocked-reload retry timer AND the pair a discrete interaction
      * armed. All three exist for one purpose — "re-evaluate the reload soon" —
      * so they are cancelled together; leaving the interaction pair behind is
      * what let a hidden or already-satisfied tab keep running safety probes.
+     * The hidden tab's single shot is the fourth member of that family and goes
+     * with them; the hidden path re-arms it itself while it is still wanted.
      */
     function clearRetry() {
         if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
         clearInteractionTimers();
+        clearHiddenTimer();
     }
 
     /** Cancel the task-0 hop and the idle-window wait armed by an interaction. */
@@ -2749,10 +2948,31 @@
                 lastBlockReason = reason;
                 safe(function () { console.debug(LOG, 'reload deferred:', reason); });
             }
-            // 'hidden' needs no timer at all — visibilitychange will wake us and
-            // burning a 1Hz timer in a background tab is exactly what we promise
-            // not to do.
-            if (reason !== 'hidden') scheduleRetry();
+            // A HIDDEN TAB NEVER RUNS THE LADDER. Burning a 1Hz timer in a
+            // background tab is exactly what the kit promises not to do, and
+            // 2.4.0 does not change that promise — it changes what the hidden
+            // tab is waiting FOR:
+            //   • 'hidden' (the feature is switched off) → no timer at all;
+            //     visibilitychange wakes us, exactly as before 2.4.0.
+            //   • 'hidden_settling' → the settle shot armed by onHidden() is
+            //     already ticking towards the same deadline. Re-arming here
+            //     would push it out by a whole grace on every stray
+            //     tryReload() (an in-flight version fetch resolving after the
+            //     hide, say), so the tab that had waited 24 of its 25 seconds
+            //     would start again from zero.
+            //   • any OTHER gate (media, dialog, editor, route) → re-arm the
+            //     SINGLE SHOT at the slow hidden cadence. This is what lets the
+            //     hidden tab whose podcast finishes ten minutes from now still
+            //     take its reload while hidden, instead of holding the update
+            //     until the user comes back and then reloading in their face.
+            //     One timer, never stacked, capped at MAX_HIDDEN_RETRIES.
+            if (document.visibilityState === 'hidden') {
+                if (reason !== 'hidden' && reason !== 'hidden_settling') {
+                    armHiddenRetry(Math.max(hiddenSettleWindowMs(), HIDDEN_RETRY_MIN_MS));
+                }
+                return;
+            }
+            scheduleRetry();
             return;
         }
         lastBlockReason = null;
@@ -2980,8 +3200,14 @@
         if (document.visibilityState === 'hidden') {
             for (i = 0; i < registry.length; i++) registry[i].stopPolling();
             clearRetry();
+            // ...and then arm the ONE timer a hidden tab may hold (2.4.0): the
+            // hidden-settle shot that takes the reload while nobody is looking.
+            // clearRetry() above has just cancelled everything, including the
+            // previous hidden shot, so this can never stack.
+            onHidden();
             return;
         }
+        onVisible();
         for (i = 0; i < registry.length; i++) registry[i].wake();
         // A pending update that was blocked purely by 'hidden' can now proceed.
         if (pendingInstances().length > 0) { blockedRetries = 0; safe(tryReload); }
@@ -4022,6 +4248,8 @@
                 pollSeconds: cfg.pollSeconds,
                 idleSeconds: cfg.idleSeconds,
                 reloadBudget: cfg.reloadBudget,
+                hiddenReload: cfg.hiddenReload,
+                hiddenSettleSeconds: cfg.hiddenSettleSeconds,
                 assetPatterns: cfg.assetPatterns.map(String),
                 versionUrl: cfg.versionUrl,
                 polling: pollTimer !== null,
@@ -4603,6 +4831,13 @@
                 warnedMediaStarvation: warnedMediaStarvation,
                 mediaBlockSince: mediaBlockSince,
                 mediaBlockSignature: mediaBlockSignature,
+                // THE HIDDEN-SETTLE CLOCK (2.4.0). A tab can be handed over
+                // while hidden (a plugin injecting a newer kit copy from a
+                // background tab's poll). Without this the new manager would
+                // restart the grace from the takeover instead of from the
+                // moment the user actually left, and a tab hidden for an hour
+                // would owe another 25 seconds for no reason.
+                hiddenSince: hiddenSince,
                 // THE RELOAD LATCH. A handoff can land in the window between
                 // location.reload() and the new document committing. The latch
                 // has to travel or the new manager would pass every gate again
@@ -4726,6 +4961,9 @@
         warnedMediaStarvation = s.warnedMediaStarvation === true;
         if (typeof s.mediaBlockSince === 'number') mediaBlockSince = s.mediaBlockSince;
         if (typeof s.mediaBlockSignature === 'string') mediaBlockSignature = s.mediaBlockSignature;
+        // The hidden-settle clock travels: the user left when they left, not
+        // when this copy took the page over. The boot section arms the timer.
+        if (typeof s.hiddenSince === 'number' && isFinite(s.hiddenSince)) hiddenSince = s.hiddenSince;
         if (typeof s.reloadsSurvived === 'number' && isFinite(s.reloadsSurvived)) {
             reloadsSurvived = s.reloadsSurvived;
         }
@@ -5033,6 +5271,17 @@
                     // playback progress. At MEDIA_STARVATION_MS the parked-media
                     // starvation escape fires.
                     mediaBlockedForMs: mediaBlockedForMs(),
+                    // HIDDEN-TAB RELOAD (2.4.0). `hiddenForMs` vs
+                    // `hiddenSettleWindowMs` is the whole story of a tab that
+                    // is waiting out its grace; `hiddenTimerArmed` false while
+                    // hidden with something pending means the single shot has
+                    // run out of re-arms (MAX_HIDDEN_RETRIES) and the reload is
+                    // now waiting for the user to come back.
+                    hiddenReloadEnabled: hiddenReloadEnabled(),
+                    hiddenSettleWindowMs: hiddenSettleWindowMs(),
+                    hiddenForMs: hiddenForMs(),
+                    hiddenTimerArmed: hiddenTimer !== null,
+                    hiddenRetries: hiddenRetries,
                     effectiveReloadBudget: effectiveReloadBudget(),
                     budgetKey: BUDGET_KEY,
                     budgetWindowMs: BUDGET_WINDOW_MS
@@ -5155,4 +5404,17 @@
     // Finally: register THIS copy's own instance from its tag config, through
     // exactly the same contract path a later copy would use.
     safe(function () { api.__registerInstance(ownConfig, KIT_VERSION); });
+
+    // A DOCUMENT THAT IS ALREADY HIDDEN (2.4.0). Opened in a background tab,
+    // restored by the browser into the background, reloaded while hidden by
+    // this very feature, or handed over while hidden — in none of those cases
+    // does a visibilitychange event ever arrive, so without this the hidden
+    // path would never start and the tab would hold its update until the user
+    // came back. Runs AFTER registration so the instances' hiddenReload /
+    // hiddenSettleSeconds are the ones being honoured, and after a handoff has
+    // restored hiddenSince, so the grace is measured from when the user
+    // actually left this tab.
+    safe(function () {
+        if (document.visibilityState === 'hidden') onHidden();
+    });
 })();
