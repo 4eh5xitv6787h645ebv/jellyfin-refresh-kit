@@ -3,7 +3,7 @@
  * client-script plugins and script collections.
  *
  * MIT License
- * Copyright (c) 2026 <YOUR NAME HERE>
+ * Copyright (c) 2026 4eh5xitv6787h645ebv
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -247,7 +247,8 @@
  *       • config: a PLAIN OBJECT of tag-level options using the documented
  *         option names (name, versionUrl, versionJsonField, getVersion,
  *         pollSeconds, idleSeconds, assetPatterns, entryScripts,
- *         entryTimeoutMs, mode, onUpdateAvailable, reloadBudget, bootVersion —
+ *         entryTimeoutMs, mode, onUpdateAvailable, reloadBudget, bootVersion,
+ *         hiddenReload, hiddenSettleSeconds (2.4.0) —
  *         plus the private marker `__singularApplied`, set by a 2.1+ copy that
  *         already SETTLED window.JellyfinRefreshKitConfig for its own tag —
  *         either merging it over that tag's config or declining it under the
@@ -389,6 +390,44 @@
  * working.
  *
  * ---------------------------------------------------------------------------
+ * THE SAFETY GATE, IN ORDER (blockReasonFor)
+ * ---------------------------------------------------------------------------
+ * Cheapest-and-most-decisive first; the FIRST refusal wins, so the order is
+ * also what a `blockReason` in a support log means. Everything a 2.4.0 feature
+ * touches is marked.
+ *
+ *   1. hidden          — (2.4.0) A PERMISSION MODE, not a refusal. With
+ *                        hiddenReload disabled anywhere on the page it refuses
+ *                        outright, as before. Otherwise it refuses only until
+ *                        the tab has been hidden for hiddenSettleSeconds
+ *                        ('hidden_settling'), and then FALLS THROUGH to every
+ *                        gate below — a hidden tab is not a safe tab, it is
+ *                        merely an unwatched one.
+ *   2. playback_route  — #/video or #!/video, either spelling, with or without
+ *                        a query string. Leaving it opens the masked window
+ *                        (2.4.0), which relaxes gate 8 and nothing else.
+ *   3. fullscreen_media
+ *   4. dialog          — (2.4.0) overridable by body.screensaver-noScroll: an
+ *                        abandoned modal used to hold the gate forever.
+ *   5. media_element   — never overridden by anything in 2.4.0. Ambient
+ *                        backdrop video is exempt (2.3.0) and a frozen element
+ *                        loses the gate after ~10 minutes of zero progress.
+ *   6. active_editor   — the FOCUSED field only. Not overridden by the
+ *                        screensaver: absent or not, the user's typing is
+ *                        still there when they come back.
+ *   7. password_entry  — (2.4.0) ANY input[type=password] on the page holding a
+ *                        value, focused or not. A pure refusal: it can only
+ *                        ever stop a reload the gates above would have allowed.
+ *   8. not_idle        — idleSeconds (max across pending instances), floored at
+ *                        MIN_SETTLE_MS. (2.4.0) Drops to that floor on the
+ *                        empty routes (#/login, #/selectserver), under the
+ *                        screensaver, and inside the masked post-playback
+ *                        window.
+ *
+ * A probe that throws returns 'probe_failed' and refuses: safety unknown is
+ * safety refused.
+ *
+ * ---------------------------------------------------------------------------
  * DESIGN NOTES (why it looks like this)
  * ---------------------------------------------------------------------------
  * • Zero dependencies, one file, ES2017, no build step. It has to be pasteable
@@ -521,6 +560,39 @@
  *   (the same span the retry ladder covers); after that the kit logs one line
  *   and re-tests with the media probe suppressed. Every other gate (dialog,
  *   editor, route, fullscreen, visibility, idle) still applies.
+ * • THE HIDDEN-TAB RELOAD IS AT THE BROWSER'S MERCY, and deliberately so.
+ *   Background timers are throttled everywhere: Chrome clamps a hidden page's
+ *   timers to ~1/minute after about five minutes hidden, and a tab the browser
+ *   FREEZES (Android, desktop battery savers) runs no timers at all until it is
+ *   resumed. The kit does not fight this and cannot: the settle shot is armed
+ *   at the moment of hiding, so it lands inside the ordinary regime; a re-arm
+ *   while another gate refuses simply stretches; a poll tick that fires while
+ *   hidden takes one opportunistic attempt for free; and the page-lifecycle
+ *   `resume` event re-arms the shot on a tab that was frozen and is still
+ *   hidden. If none of that fires, the reload waits for the tab to be shown —
+ *   which is exactly what it did before 2.4.0. The worst case of this feature
+ *   is the behaviour it replaced. MEASURED (Chrome 146 headless, tab hidden for
+ *   9 minutes with the reload held by an open dialog): an independent 25s
+ *   self-rescheduling probe in the same page fired 22 times at 25000–25001ms
+ *   each — no throttling penalty at all, including past the five-minute mark —
+ *   and the kit's own hidden single-shot re-armed 18 times in the first 175s
+ *   at its configured 10s cadence, then stopped at MAX_HIDDEN_RETRIES as
+ *   designed, leaving the tab with NO timer and the reload waiting for the
+ *   user. Headless Chrome is the friendly end of the range: a phone with the
+ *   screen off is the other, and the honest answer there is the paragraph
+ *   above.
+ * • THE PASSWORD REFUSAL DOES NOT SEE SHADOW DOM. querySelectorAll does not
+ *   descend into shadow roots, so a password field inside a web component
+ *   (some third-party plugins ship those) is invisible to it. Walking every
+ *   shadow root on every retry tick is not worth its cost; Jellyfin's own login
+ *   form is light DOM, and the focused case is still covered by active_editor.
+ * • LAYER 2 IS OPT-IN BY CONFIGURATION (2.4.0). The createElement interceptor
+ *   is installed only when some registered instance declares assetPatterns or
+ *   entryScripts, because with neither there is nothing it could rewrite. Two
+ *   consequences: an instance registered LATE that declares patterns versions
+ *   only what is created after it registered (elements handed out earlier were
+ *   never versionable by it anyway), and a page whose only adopter is the
+ *   standalone plugin keeps its native document.createElement.
  * • A CDN's own "@latest" resolution TTL is invisible to JavaScript. jsDelivr
  *   caches the @latest → tag mapping for up to 24h; no amount of ?v= changes
  *   that, because the STALE FILE IS THE CORRECT RESPONSE for that URL. Pin a
@@ -615,8 +687,50 @@
      *           away; flapDisarmedFor reports the LATEST refused transition;
      *           and a frozen singular window config takes the WeakSet claim
      *           path silently instead of via a swallowed throw.
+     *   2.4.0 — INVISIBLE MOMENTS: the kit stops spending the moments a reload
+     *           would have been free and then reloading in the user's face a
+     *           second later. Four refusals are NARROWED, nothing is widened
+     *           elsewhere, and every gate not named still decides:
+     *             • `hidden` becomes a PERMISSION MODE rather than the
+     *               unconditional first refusal. After a settle grace
+     *               (hiddenSettleSeconds, default 25) every other gate still
+     *               evaluates — a hidden tab with live media, an open dialog or
+     *               a focused editor still blocks. A hidden tab still never
+     *               runs the 1Hz ladder: it holds ONE single-shot timer, armed
+     *               on visibilitychange, cancelled on show, re-armed (never
+     *               stacked) at the hidden cadence while another gate refuses,
+     *               capped at MAX_HIDDEN_RETRIES, plus one opportunistic
+     *               attempt from a poll tick that fires while hidden and a
+     *               re-arm on the page-lifecycle `resume` event for tabs the
+     *               browser froze. Opt out: hiddenReload / data-hidden-reload.
+     *             • LEAVING THE PLAYBACK ROUTE opens a 2.5s masked window in
+     *               which the IDLE requirement (only) drops to the settle
+     *               floor: the view is already being torn down and rebuilt.
+     *               The route is SAMPLED at the moments the engine is awake —
+     *               the 10.11 client navigates by pushState and fires neither
+     *               hashchange nor popstate, and patching history is not
+     *               something a guest does to someone else's page. The window
+     *               expires on a wall clock and cannot be banked.
+     *             • #/login and #/selectserver hold nothing a user can lose, so
+     *               the idle requirement drops to the settle floor there...
+     *             • ...which is safe only with the refusal that arrives with
+     *               it: any input[type=password] with a value in it blocks the
+     *               reload, on every route. 'active_editor' only ever covered
+     *               the FOCUSED field.
+     *             • Jellyfin's own screensaver (body.screensaver-noScroll) is
+     *               PROOF OF ABSENCE: it overrides the dialog gate — a modal
+     *               left open on an abandoned tab blocked the reload forever —
+     *               and satisfies idle. Media gates, active_editor and the
+     *               password refusal all still apply.
+     *           Also: the createElement interceptor is installed ONLY IF some
+     *           instance declares assetPatterns or entryScripts. With neither
+     *           (the standalone plugin's own shape) layer 2 has nothing to
+     *           rewrite, and the kit no longer replaces the page's
+     *           document.createElement — or installs per-element accessors on
+     *           every script/link the host creates — to guarantee a rewrite
+     *           that could never happen.
      */
-    var KIT_VERSION = '2.3.0';
+    var KIT_VERSION = '2.4.0';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -720,6 +834,45 @@
 
     /** @type {number} Hard cap on consecutive blocked-reload retries (~10 min). */
     var MAX_BLOCKED_RETRIES = 600;
+
+    /**
+     * HIDDEN-TAB RETRY FLOOR. A hidden tab never runs the 1Hz ladder — it runs
+     * ONE single-shot timer at a time (see armHiddenRetry) — and this is the
+     * floor on that timer's delay, so an adopter configuring
+     * hiddenSettleSeconds: 0 (reload the instant the tab is hidden) still does
+     * not turn a gate it keeps failing into a busy loop in a background tab.
+     * @type {number}
+     */
+    var HIDDEN_RETRY_MIN_MS = 5000;
+
+    /**
+     * How long the MASKED POST-PLAYBACK WINDOW stays open after the user leaves
+     * Jellyfin's video route (2.4.0). Long enough to cover the view teardown
+     * and the retry tick that notices it, short enough that it is spent on the
+     * transition it was opened for and never banked for later.
+     * @type {number}
+     */
+    var MASKED_TRANSITION_MS = 2500;
+
+    /**
+     * How old the PREVIOUS route sample may be and still count as having
+     * watched a transition. Beyond it the engine was not running (nothing was
+     * pending), so "it was a video route last time I looked" says nothing about
+     * what the user just did. Deliberately a small multiple of the 1Hz retry
+     * cadence, so ordinary background-tab timer throttling cannot invalidate a
+     * sample taken one tick ago.
+     * @type {number}
+     */
+    var MASKED_SAMPLE_MAX_AGE_MS = 5000;
+
+    /**
+     * Hard cap on hidden-tab single-shot re-arms per hide, which — at the
+     * default 25s cadence — covers roughly the same ~10 minutes the visible 1Hz
+     * ladder does. Past it the hidden tab holds NO timer at all and the reload
+     * waits for the ordinary onWake catch-up, exactly as it did before 2.4.0.
+     * @type {number}
+     */
+    var MAX_HIDDEN_RETRIES = 24;
 
     /**
      * How long a <video>/<audio> element may hold the reload gate with ZERO
@@ -912,6 +1065,8 @@
      * @property {'auto'|'notify'|'off'} [mode] Default 'auto'.
      * @property {(newV: string, oldV: string) => void} [onUpdateAvailable] Called once per detected version change.
      * @property {number}   [reloadBudget]      Max reloads per 60s window. Default 3. Page-level budget is the MIN among all instances.
+     * @property {boolean}  [hiddenReload]      Allow the reload to happen while the tab is HIDDEN (2.4.0). Default true. Page-level: any instance setting false switches the whole page back to pre-2.4.0 behaviour.
+     * @property {number}   [hiddenSettleSeconds] How long a tab must have been hidden before the hidden reload is attempted. Default 25, clamped 0–3600. Page-level value is the MAX among all instances.
      */
 
     /** @type {Required<Pick<RefreshKitConfig,'pollSeconds'|'idleSeconds'|'mode'|'reloadBudget'>> & RefreshKitConfig} */
@@ -928,7 +1083,9 @@
         entryTimeoutMs: DEFAULT_ENTRY_TIMEOUT_MS,
         mode: 'auto',
         onUpdateAvailable: null,
-        reloadBudget: 3
+        reloadBudget: 3,
+        hiddenReload: true,
+        hiddenSettleSeconds: 25
     };
 
     /**
@@ -962,6 +1119,15 @@
         if (d.idleSeconds) out.idleSeconds = Number(d.idleSeconds);
         if (d.mode) out.mode = /** @type {any} */ (d.mode);
         if (d.reloadBudget) out.reloadBudget = Number(d.reloadBudget);
+        // Boolean attribute. HTML has no false, so the OFF spellings are
+        // enumerated and anything else present reads as ON — an adopter who
+        // typed data-hidden-reload="nope" meant to switch it off, but that
+        // guess belongs in the parser, not in the engine: normalizeConfig
+        // coerces, and only these spellings produce `false`.
+        if (d.hiddenReload) {
+            out.hiddenReload = !/^(false|0|off|no)$/i.test(String(d.hiddenReload).trim());
+        }
+        if (d.hiddenSettleSeconds) out.hiddenSettleSeconds = Number(d.hiddenSettleSeconds);
         if (d.entryTimeoutMs) out.entryTimeoutMs = Number(d.entryTimeoutMs);
         if (d.entryScripts) {
             // Comma-separated, order-significant. A URL containing a literal
@@ -1524,6 +1690,11 @@
         cfg.pollSeconds = clampNumber(cfg.pollSeconds, 15, 3600, DEFAULTS.pollSeconds);
         cfg.idleSeconds = clampNumber(cfg.idleSeconds, 0, 300, DEFAULTS.idleSeconds);
         cfg.reloadBudget = clampNumber(cfg.reloadBudget, 1, 100, DEFAULTS.reloadBudget);
+        // Opt-OUT flag: anything but an explicit false leaves the 2.4.0
+        // hidden-tab reload enabled, so a config written for an older kit (or a
+        // typo'd value) never silently disables it.
+        cfg.hiddenReload = cfg.hiddenReload !== false;
+        cfg.hiddenSettleSeconds = clampNumber(cfg.hiddenSettleSeconds, 0, 3600, DEFAULTS.hiddenSettleSeconds);
         if (cfg.mode !== 'auto' && cfg.mode !== 'notify' && cfg.mode !== 'off') cfg.mode = DEFAULTS.mode;
         cfg.entryTimeoutMs = clampNumber(cfg.entryTimeoutMs, 250, 30000, DEFAULTS.entryTimeoutMs);
         if (!Array.isArray(cfg.assetPatterns)) cfg.assetPatterns = [];
@@ -1594,7 +1765,8 @@
      */
     function configsEquivalent(a, b) {
         var scalar = ['versionUrl', 'versionJsonField', 'bootVersion', 'pollSeconds', 'idleSeconds',
-            'entryTimeoutMs', 'mode', 'reloadBudget', 'getVersion', 'onUpdateAvailable'];
+            'entryTimeoutMs', 'mode', 'reloadBudget', 'getVersion', 'onUpdateAvailable',
+            'hiddenReload', 'hiddenSettleSeconds'];
         for (var i = 0; i < scalar.length; i++) {
             if (!optionsEquivalent(a[scalar[i]], b[scalar[i]])) return false;
         }
@@ -1650,6 +1822,48 @@
     var settleTimer = null;
     /** @type {number} Consecutive blocked retries, to stop an unbounded 1Hz loop. */
     var blockedRetries = 0;
+    /**
+     * When this tab became hidden, or null while it is visible. It is the clock
+     * the HIDDEN-SETTLE GRACE is measured against (2.4.0): a tab must have been
+     * hidden for hiddenSettleSeconds before the kit will reload it, so
+     * alt-tabbing away and straight back is never reloaded under.
+     *
+     * Seeded at install when the document is ALREADY hidden (a tab restored
+     * into the background, a page opened in a new background tab, or a manager
+     * handoff that happened while hidden) — without that seed such a tab has no
+     * transition to measure from and could never satisfy the grace.
+     * @type {number|null}
+     */
+    var hiddenSince = null;
+    /**
+     * The ONE single-shot timer a hidden tab is allowed to hold (2.4.0). A
+     * hidden tab must never run the 1Hz ladder — that is the promise the kit
+     * has always made about background tabs — so the ladder is replaced, while
+     * hidden, by this: armed once per hide for the settle grace, and re-armed
+     * (never stacked) at the slow hidden cadence while some OTHER gate is still
+     * refusing. Cancelled the moment the tab becomes visible again.
+     * @type {number|null}
+     */
+    var hiddenTimer = null;
+    /** @type {number} Hidden single-shot re-arms since this tab was hidden. */
+    var hiddenRetries = 0;
+    /**
+     * The last location.hash the engine SAW, and when it saw it (2.4.0). Not a
+     * navigation history — a pair of readings taken at moments the engine was
+     * already awake, which is all that is needed to notice the one transition
+     * the kit acts on: leaving the video route. See sampleRoute().
+     * @type {string|null}
+     */
+    var lastSeenHash = null;
+    /** @type {number} When lastSeenHash was read. */
+    var lastSeenHashAt = 0;
+    /**
+     * Wall-clock expiry of the masked post-playback window. A timestamp rather
+     * than a boolean precisely so it cannot be banked: nothing has to remember
+     * to spend or clear it.
+     * @type {number}
+     */
+    var maskedTransitionUntil = 0;
     /**
      * When the current zero-progress 'media_element' block started, or null when
      * there is no such streak. Measured in WALL TIME rather than counted in
@@ -2048,6 +2262,46 @@
         interceptorInstalled = true;
     }
 
+    /**
+     * Install the createElement interceptor ONLY IF SOMETHING ON THIS PAGE CAN
+     * USE IT (2.4.0).
+     *
+     * Layer 2 is a URL rewrite driven entirely by `assetPatterns`: with no
+     * instance declaring any, versionUrlForPage() matches nothing and returns
+     * every URL untouched. Installing the wrapper anyway meant replacing
+     * `document.createElement` for the whole document — and installing a pair
+     * of per-element accessors on every <script> and <link> ANY code on the
+     * page creates, Jellyfin's own client included — to guarantee a rewrite
+     * that could never happen.
+     *
+     * That is not a hypothetical configuration: it is exactly how the
+     * standalone plugin adopts the kit (a version endpoint, no patterns, no
+     * entries — it exists to detect updates and reload, not to version another
+     * collection's assets). The least invasive kit is the one that installs
+     * nothing it cannot use.
+     *
+     * Called before every instance's start(), so:
+     *   • the ordinary page installs the hook in the same synchronous turn the
+     *     kit tag runs in, exactly as an unconditional install did;
+     *   • an instance registered LATE that declares patterns still gets
+     *     interception from that moment on — elements created BEFORE it
+     *     registered were never versionable by it anyway;
+     *   • a manager handoff re-decides under the new manager's rules as its
+     *     transferred instances are adopted.
+     * `entryScripts` counts as well as `assetPatterns`: a bootstrap chain
+     * exists to run code that creates sub-assets, and that is the code the
+     * wrapper is there for.
+     */
+    function ensureCreateElementHook() {
+        if (interceptorInstalled) return;
+        for (var i = 0; i < registry.length; i++) {
+            if (registry[i].cfg.assetPatterns.length > 0 || registry[i].cfg.entryScripts.length > 0) {
+                safe(installCreateElementHook);
+                return;
+            }
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Shared safety gate
     // ─────────────────────────────────────────────────────────────────────────
@@ -2148,6 +2402,133 @@
     }
 
     /**
+     * Is this hash Jellyfin's own video route?
+     *
+     * BOTH ROUTER SPELLINGS, and prefix-matched on purpose: the 10.11 client
+     * navigates to "#/video?id=…&serverId=…", older/alternative shells use the
+     * "#!/video" form, and a route always carries its query string. Anchoring
+     * at 0 is what keeps it from matching a route that merely mentions video.
+     * @param {string} hash
+     * @returns {boolean}
+     */
+    function isPlaybackRoute(hash) {
+        var h = String(hash || '');
+        return h.indexOf('#/video') === 0 || h.indexOf('#!/video') === 0;
+    }
+
+    /**
+     * Is this hash one of Jellyfin's EMPTY ROUTES — the login screen and the
+     * server picker?
+     *
+     * They are the two views in the whole client that hold nothing to lose: no
+     * scroll position, no list state, no half-finished action, nothing but a
+     * form the user has usually not touched yet. Reloading one is, from the
+     * user's side, indistinguishable from the page they are already looking at.
+     *
+     * Both router spellings and a trailing query string are tolerated, exactly
+     * as isPlaybackRoute does — "#/login.html?serverid=…" is what the 10.11
+     * client actually puts in the bar, and a route matcher that missed it would
+     * quietly never fire.
+     * @param {string} hash
+     * @returns {boolean}
+     */
+    function isEmptyRoute(hash) {
+        return /^#!?\/(login|selectserver)(\.html)?([?/#]|$)/i.test(String(hash || ''));
+    }
+
+    /**
+     * Is there a PASSWORD FIELD ON THIS PAGE WITH SOMETHING TYPED IN IT?
+     *
+     * The 'active_editor' gate only covers the field that currently has FOCUS,
+     * which is exactly the wrong shape for a password: a user types their
+     * password, clicks away or tabs to the "remember me" checkbox, and the
+     * field is now unfocused, non-empty, and — before 2.4.0 — invisible to
+     * every gate the kit had. Wiping it costs the user the one thing on the
+     * page that is genuinely expensive to retype, and it is not recoverable
+     * from browser autofill the way a username is.
+     *
+     * It matters most on precisely the route 2.4.0 just relaxed (login), which
+     * is why the two arrived together — but it applies EVERYWHERE, because a
+     * password field with a value in it means the same thing on any page.
+     *
+     * KNOWN LIMITATION: querySelectorAll does not descend into shadow roots, so
+     * a password field inside a web component's shadow DOM (some third-party
+     * plugins ship those) is not seen. Walking every shadow root on every retry
+     * tick is not worth its cost here; Jellyfin's own login form is light DOM,
+     * and the other gates (active_editor while it is focused, idle while it is
+     * being typed into) still cover the ordinary case.
+     * @returns {boolean}
+     */
+    function hasTypedPassword() {
+        var fields = document.querySelectorAll('input[type="password"]');
+        for (var i = 0; i < fields.length; i++) {
+            var value = fields[i].value;
+            if (typeof value === 'string' && value.length > 0) return true;
+        }
+        return false;
+    }
+
+    /**
+     * SAMPLE THE ROUTE, and notice the one transition worth acting on: the user
+     * LEAVING playback.
+     *
+     * Why sampling and not a listener: the 10.11 web client navigates with
+     * history.pushState, which fires NEITHER hashchange NOR popstate. A kit
+     * that listened for those events would simply never hear an in-app
+     * navigation, and the alternative — patching history.pushState — is the
+     * kind of global surgery this kit refuses to do on someone else's page. So
+     * the route is READ at the moments the engine is already awake: every retry
+     * tick and every interaction settle. No new listeners, no new timers.
+     *
+     * THE MOMENT: the instant a user comes out of the player, the screen is
+     * already being torn down and rebuilt — the poster wall is repainting, the
+     * player chrome is unmounting. A reload landing inside that redraw is
+     * invisible in a way it can never be on a settled page. It is also the
+     * single likeliest moment for a stale-code page to be sitting on a pending
+     * update, because the whole time playback ran, 'playback_route' was
+     * refusing it.
+     *
+     * So leaving playback opens a SHORT-LIVED window (MASKED_TRANSITION_MS) in
+     * which the reload's IDLE requirement — and only the idle requirement —
+     * drops to the settle floor. Every other gate still decides: video teardown
+     * is asynchronous, so a lingering <video> keeps blocking on media_element,
+     * and a dialog opened on the way out still blocks.
+     *
+     * IT CANNOT BE BANKED. The window expires on a wall clock rather than
+     * waiting to be spent, so an update arriving ten minutes after the user
+     * left the player gets the ordinary idle rules, not a relaxation earned
+     * long ago.
+     *
+     * A STALE PREVIOUS SAMPLE ARMS NOTHING. Between two samples more than
+     * MASKED_SAMPLE_MAX_AGE_MS apart the kit did not watch anything — the
+     * engine was asleep, because nothing was pending — and "the hash used to be
+     * a video route the last time I looked, an hour ago" is not evidence that
+     * the user just left the player.
+     */
+    function sampleRoute() {
+        var hash = safe(function () { return String(location.hash || ''); }, '') || '';
+        var now = Date.now();
+        var prev = lastSeenHash;
+        var prevAt = lastSeenHashAt;
+        lastSeenHash = hash;
+        lastSeenHashAt = now;
+        if (prev === null || prev === hash) return;
+        if ((now - prevAt) > MASKED_SAMPLE_MAX_AGE_MS) return;
+        if (!isPlaybackRoute(prev) || isPlaybackRoute(hash)) return;
+        maskedTransitionUntil = now + MASKED_TRANSITION_MS;
+        safe(function () {
+            console.debug(LOG, 'left the playback route (' + prev + ' → ' + hash + ') — a reload for the ' +
+                'next ' + (MASKED_TRANSITION_MS / 1000) + 's is masked by the view change, so the idle ' +
+                'requirement drops to the settle floor. Every other gate still applies.');
+        });
+    }
+
+    /** @returns {boolean} Is the masked post-playback window open right now? */
+    function maskedTransitionActive() {
+        return Date.now() < maskedTransitionUntil;
+    }
+
+    /**
      * @param {number} idleMs The idle window that must have elapsed (already
      *   floored at MIN_SETTLE_MS by the caller).
      * @param {boolean} [skipMediaGate] Ignore the <video>/<audio> probe. Set
@@ -2159,23 +2540,78 @@
      */
     function blockReasonFor(idleMs, skipMediaGate) {
         try {
-            if (document.visibilityState === 'hidden') return 'hidden';
+            // HIDDEN IS A PERMISSION MODE, NOT A REFUSAL (2.4.0).
+            //
+            // A hidden tab is the single best moment this kit will ever get: no
+            // scroll position to lose, no half-typed search, nothing on screen
+            // to flicker. Until 2.4.0 it was the ONE gate that refused
+            // unconditionally and first, so the kit spent every one of those
+            // moments waiting and then reloaded the tab in the user's face a
+            // second after they came back to it.
+            //
+            // So `hidden` no longer short-circuits: it imposes a SETTLE GRACE
+            // (an alt-tab to another window and straight back must never be
+            // reloaded under) and then falls through to EVERY OTHER GATE. A
+            // hidden tab playing audio still blocks on media_element; a hidden
+            // tab with an open dialog or a focused editor still blocks. Hidden
+            // buys the reload nothing except the absence of a watching user.
+            //
+            // Measured, not assumed (Jellyfin 10.11.11, Chrome headless): a
+            // reload issued while hidden completes the whole boot in the
+            // background — DOMContentLoaded 130ms, ApiClient 146ms, load 347ms,
+            // view rendered 757ms — with requestAnimationFrame never firing at
+            // all until the tab is shown, at which point the first frame lands
+            // 24ms later. The visible control took 900ms to the same point. A
+            // hidden reload is therefore not deferred work; it is work that is
+            // already finished when the user comes back.
+            if (document.visibilityState === 'hidden') {
+                if (!hiddenReloadEnabled()) return 'hidden';
+                // Defensive: hidden with no recorded transition (an exotic host
+                // that never fired visibilitychange). Treat NOW as the start of
+                // the grace rather than reloading on a clock we do not have.
+                if (hiddenSince === null) hiddenSince = Date.now();
+                if (hiddenForMs() < hiddenSettleWindowMs()) return 'hidden_settling';
+            }
 
             // Jellyfin's own video route. Even before a <video> exists, being on
             // #/video means a session is starting.
             var hash = String(location.hash || '');
-            if (hash.indexOf('#/video') === 0 || hash.indexOf('#!/video') === 0) return 'playback_route';
+            if (isPlaybackRoute(hash)) return 'playback_route';
 
             if (document.fullscreenElement || document.pictureInPictureElement) return 'fullscreen_media';
 
+            // PROOF OF ABSENCE (2.4.0). Jellyfin's own screensaver puts
+            // `screensaver-noScroll` on <body> when it takes the screen, which
+            // it only does after ITS idle timeout has expired with nothing
+            // playing. That is not the kit guessing the user might be away —
+            // it is the application itself having concluded they are, and
+            // having covered the page with something the user cannot be
+            // reading anyway.
+            //
+            // It buys exactly two things: the DIALOG gate can be overridden,
+            // and the idle requirement drops to the settle floor. The dialog
+            // override is the point of the feature — a modal left open on an
+            // abandoned tab (a details sheet, a "playback error" toast) blocks
+            // the reload FOREVER, and "forever" is not a hypothetical when the
+            // tab is going to sit there overnight.
+            //
+            // What it deliberately does NOT override: every media gate (a
+            // screensaver can be up while audio plays in the same tab),
+            // 'active_editor' and 'password_entry'. Absent or not, the user's
+            // typing is still in that field when they come back.
+            var screensaver = !!(document.body && document.body.classList &&
+                document.body.classList.contains('screensaver-noScroll'));
+
             // Open modal/dialog: the user is mid-task and probably mid-write.
-            var dialogs = document.querySelectorAll(
-                '.dialog.opened, .actionSheet.opened, [role="dialog"], [aria-modal="true"]'
-            );
-            for (var i = 0; i < dialogs.length; i++) {
-                // A closed-but-retained dialog stays in the DOM inside an
-                // aria-hidden/hidden subtree; only visible ones block.
-                if (!dialogs[i].closest('[aria-hidden="true"], [hidden]')) return 'dialog';
+            if (!screensaver) {
+                var dialogs = document.querySelectorAll(
+                    '.dialog.opened, .actionSheet.opened, [role="dialog"], [aria-modal="true"]'
+                );
+                for (var i = 0; i < dialogs.length; i++) {
+                    // A closed-but-retained dialog stays in the DOM inside an
+                    // aria-hidden/hidden subtree; only visible ones block.
+                    if (!dialogs[i].closest('[aria-hidden="true"], [hidden]')) return 'dialog';
+                }
             }
 
             if (!skipMediaGate) {
@@ -2189,6 +2625,26 @@
             if (active && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName || ''))) {
                 return 'active_editor';
             }
+
+            // A TYPED-BUT-UNFOCUSED PASSWORD (2.4.0). One refusal, never a
+            // relaxation: it can only ever stop a reload the other gates were
+            // about to allow. See hasTypedPassword().
+            if (hasTypedPassword()) return 'password_entry';
+
+            // EMPTY ROUTES (2.4.0): the login screen and the server picker hold
+            // nothing the user can lose, so the idle requirement — the gate
+            // that exists to protect work in progress — drops to the settle
+            // floor there. Everything above still applies, including the
+            // password refusal directly above this, which is what makes
+            // relaxing the login route safe at all.
+            if (isEmptyRoute(hash)) idleMs = Math.min(idleMs, MIN_SETTLE_MS);
+
+            // A screensaver IS the idle proof, and a better one than this kit's
+            // own clock: Jellyfin only shows it after minutes of nothing. It
+            // still leaves the settle floor in place, because "do not reload in
+            // the same task as an event we just saw" is a different promise
+            // from "the user is idle", and it costs one second.
+            if (screensaver) idleMs = Math.min(idleMs, MIN_SETTLE_MS);
 
             if ((Date.now() - lastInteractionAt) < idleMs) return 'not_idle';
             return null;
@@ -2549,14 +3005,112 @@
     }
 
     /**
+     * Is the 2.4.0 HIDDEN-TAB RELOAD permitted on this page?
+     *
+     * Page-level and CONSERVATIVE, exactly like the reload budget: one reload
+     * navigates the tab out from under every adopter on the page, so a single
+     * instance configuring `hiddenReload: false` puts the whole page back on
+     * pre-2.4.0 behaviour (hidden is an unconditional refusal; the pending
+     * reload waits for the onWake catch-up). Registry empty → the default.
+     * @returns {boolean}
+     */
+    function hiddenReloadEnabled() {
+        for (var i = 0; i < registry.length; i++) {
+            if (registry[i].cfg.hiddenReload === false) return false;
+        }
+        return DEFAULTS.hiddenReload;
+    }
+
+    /**
+     * The hidden-settle grace this page enforces: the MAX hiddenSettleSeconds
+     * among ALL registered instances (the strictest ask wins, as with
+     * idleSeconds) — all of them, not just the pending ones, because the timer
+     * is armed the moment the tab is hidden, which is routinely before any
+     * update exists to be pending.
+     * @returns {number} Milliseconds.
+     */
+    function hiddenSettleWindowMs() {
+        var seconds = DEFAULTS.hiddenSettleSeconds;
+        for (var i = 0; i < registry.length; i++) {
+            if (i === 0 || registry[i].cfg.hiddenSettleSeconds > seconds) {
+                seconds = registry[i].cfg.hiddenSettleSeconds;
+            }
+        }
+        return seconds * 1000;
+    }
+
+    /** @returns {number} How long this tab has been hidden; 0 when visible. */
+    function hiddenForMs() {
+        return hiddenSince === null ? 0 : Date.now() - hiddenSince;
+    }
+
+    /** Cancel the hidden tab's single-shot timer. */
+    function clearHiddenTimer() {
+        if (hiddenTimer !== null) { clearTimeout(hiddenTimer); hiddenTimer = null; }
+    }
+
+    /**
+     * Arm THE one timer a hidden tab may hold, replacing whatever was armed
+     * before it (never stacking). It is a single shot: it fires tryReload()
+     * once, and only a still-blocked evaluation inside that call re-arms it.
+     *
+     * @param {number} delayMs Delay, floored at HIDDEN_RETRY_MIN_MS so a
+     *   hiddenSettleSeconds: 0 adopter cannot turn a gate it keeps failing into
+     *   a busy loop in a background tab. The initial settle arm passes the
+     *   remaining grace, which is allowed to be shorter than the floor only in
+     *   the sense that it is already counted from the hide moment.
+     */
+    function armHiddenRetry(delayMs) {
+        clearHiddenTimer();
+        if (handedOff) return;
+        if (hiddenRetries >= MAX_HIDDEN_RETRIES) return;
+        hiddenRetries++;
+        var delay = typeof delayMs === 'number' && isFinite(delayMs) ? Math.max(0, delayMs) : hiddenSettleWindowMs();
+        hiddenTimer = safe(function () {
+            return setTimeout(function () {
+                hiddenTimer = null;
+                safe(tryReload);
+            }, delay);
+        }, null);
+    }
+
+    /**
+     * The tab just went hidden (or booted hidden). Start the settle clock and
+     * arm the single shot that will take the reload once the grace has passed —
+     * IF the feature is enabled. With it disabled a hidden tab holds no timer
+     * at all, which is precisely the pre-2.4.0 behaviour the flag restores.
+     */
+    function onHidden() {
+        if (hiddenSince === null) hiddenSince = Date.now();
+        hiddenRetries = 0;
+        clearHiddenTimer();
+        if (!hiddenReloadEnabled()) return;
+        armHiddenRetry(Math.max(0, hiddenSince + hiddenSettleWindowMs() - Date.now()));
+    }
+
+    /**
+     * The tab is visible again: the hidden path is over. Cancelling here is
+     * what makes "hide and come straight back" a no-op — the grace never
+     * elapsed, so no reload was ever attempted.
+     */
+    function onVisible() {
+        hiddenSince = null;
+        hiddenRetries = 0;
+        clearHiddenTimer();
+    }
+
+    /**
      * Cancel the blocked-reload retry timer AND the pair a discrete interaction
      * armed. All three exist for one purpose — "re-evaluate the reload soon" —
      * so they are cancelled together; leaving the interaction pair behind is
      * what let a hidden or already-satisfied tab keep running safety probes.
+     * The hidden tab's single shot is the fourth member of that family and goes
+     * with them; the hidden path re-arms it itself while it is still wanted.
      */
     function clearRetry() {
         if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
         clearInteractionTimers();
+        clearHiddenTimer();
     }
 
     /** Cancel the task-0 hop and the idle-window wait armed by an interaction. */
@@ -2679,6 +3233,12 @@
         // one-navigation-one-slot latch exists to prevent.
         if (handedOff) return;
 
+        // Read the route before anything else decides. This is one of exactly
+        // two places the kit samples it (the other is onDiscreteInteraction),
+        // and it covers the retry tick and the interaction settle — the two
+        // moments the engine is awake anyway. See sampleRoute().
+        safe(sampleRoute);
+
         // The navigation is already committed; this document is on its way out.
         // Anything that arms between here and unload is served by the reload
         // that is already in flight, so it must not reserve a second slot of
@@ -2708,7 +3268,15 @@
         var pending = pendingInstances();
         if (pending.length === 0) return;
 
-        var idleWindow = effectiveIdleWindowMs(pending);
+        // MASKED POST-PLAYBACK WINDOW (2.4.0): coming out of the player, the
+        // view is already being torn down and rebuilt, so the idle requirement
+        // — the gate that exists to keep a reload from landing on a page the
+        // user is looking at — drops to the settle floor for a couple of
+        // seconds. ONLY the idle requirement: `reason` below is still the full
+        // gate chain, and a <video> that has not finished tearing down yet
+        // still blocks on media_element.
+        var masked = maskedTransitionActive();
+        var idleWindow = masked ? MIN_SETTLE_MS : effectiveIdleWindowMs(pending);
         var reason = blockReasonFor(idleWindow);
 
         // PARKED-MEDIA STARVATION ESCAPE. hasLiveMedia() already refuses to
@@ -2749,10 +3317,31 @@
                 lastBlockReason = reason;
                 safe(function () { console.debug(LOG, 'reload deferred:', reason); });
             }
-            // 'hidden' needs no timer at all — visibilitychange will wake us and
-            // burning a 1Hz timer in a background tab is exactly what we promise
-            // not to do.
-            if (reason !== 'hidden') scheduleRetry();
+            // A HIDDEN TAB NEVER RUNS THE LADDER. Burning a 1Hz timer in a
+            // background tab is exactly what the kit promises not to do, and
+            // 2.4.0 does not change that promise — it changes what the hidden
+            // tab is waiting FOR:
+            //   • 'hidden' (the feature is switched off) → no timer at all;
+            //     visibilitychange wakes us, exactly as before 2.4.0.
+            //   • 'hidden_settling' → the settle shot armed by onHidden() is
+            //     already ticking towards the same deadline. Re-arming here
+            //     would push it out by a whole grace on every stray
+            //     tryReload() (an in-flight version fetch resolving after the
+            //     hide, say), so the tab that had waited 24 of its 25 seconds
+            //     would start again from zero.
+            //   • any OTHER gate (media, dialog, editor, route) → re-arm the
+            //     SINGLE SHOT at the slow hidden cadence. This is what lets the
+            //     hidden tab whose podcast finishes ten minutes from now still
+            //     take its reload while hidden, instead of holding the update
+            //     until the user comes back and then reloading in their face.
+            //     One timer, never stacked, capped at MAX_HIDDEN_RETRIES.
+            if (document.visibilityState === 'hidden') {
+                if (reason !== 'hidden' && reason !== 'hidden_settling') {
+                    armHiddenRetry(Math.max(hiddenSettleWindowMs(), HIDDEN_RETRY_MIN_MS));
+                }
+                return;
+            }
+            scheduleRetry();
             return;
         }
         lastBlockReason = null;
@@ -2948,9 +3537,24 @@
         blockedRetries = 0;
         settleHopTimer = setTimeout(function () {
             settleHopTimer = null;
-            // Wait out the remaining idle window from THIS interaction.
-            var remaining = Math.max(0,
-                lastInteractionAt + effectiveIdleWindowMs(pendingInstances()) - Date.now());
+            // THE SECOND (AND LAST) ROUTE SAMPLING POINT, and it belongs HERE
+            // rather than in the event handler above: the click that leaves the
+            // player is a discrete interaction, and at the moment it is
+            // observed the host has not navigated yet — the task-0 hop exists
+            // precisely so its handler has run. Sampling before it would read
+            // the OLD hash, arm nothing, and then cancel the 1Hz ladder that
+            // would otherwise have noticed the transition a second later,
+            // making the interaction that left the player the one thing that
+            // could stop the masked window from ever opening.
+            safe(sampleRoute);
+            // Wait out the remaining idle window from THIS interaction — or,
+            // inside the masked post-playback window, only the settle floor,
+            // which is the same relaxation tryReload() applies. Without it the
+            // interaction that LEFT the player would itself impose the full
+            // idle wait the mask exists to lift.
+            var remaining = Math.max(0, lastInteractionAt +
+                (maskedTransitionActive() ? MIN_SETTLE_MS : effectiveIdleWindowMs(pendingInstances())) -
+                Date.now());
             settleTimer = setTimeout(function () {
                 settleTimer = null;
                 safe(tryReload);
@@ -2980,8 +3584,14 @@
         if (document.visibilityState === 'hidden') {
             for (i = 0; i < registry.length; i++) registry[i].stopPolling();
             clearRetry();
+            // ...and then arm the ONE timer a hidden tab may hold (2.4.0): the
+            // hidden-settle shot that takes the reload while nobody is looking.
+            // clearRetry() above has just cancelled everything, including the
+            // previous hidden shot, so this can never stack.
+            onHidden();
             return;
         }
+        onVisible();
         for (i = 0; i < registry.length; i++) registry[i].wake();
         // A pending update that was blocked purely by 'hidden' can now proceed.
         if (pendingInstances().length > 0) { blockedRetries = 0; safe(tryReload); }
@@ -3639,6 +4249,16 @@
                 // requests on top of each other.
                 safe(startPolling);
                 safe(function () { poll(); });
+                // OPPORTUNISTIC HIDDEN ATTEMPT (2.4.0). A poll tick that fires
+                // while the document is hidden is a timer that the browser DID
+                // decide to run in a background tab — so it is a free second
+                // chance at the hidden reload, and it costs no new timer. It
+                // matters on a host where `visibilitychange` never arrives (so
+                // nothing armed the hidden shot and nothing stopped this loop)
+                // and in the window between the tab being hidden and the
+                // visibility handler running. It is only ever an ATTEMPT: every
+                // gate, including the hidden-settle grace, still decides.
+                if (document.visibilityState === 'hidden') safe(tryReload);
             }, cfg.pollSeconds * 1000);
         }
 
@@ -4022,6 +4642,8 @@
                 pollSeconds: cfg.pollSeconds,
                 idleSeconds: cfg.idleSeconds,
                 reloadBudget: cfg.reloadBudget,
+                hiddenReload: cfg.hiddenReload,
+                hiddenSettleSeconds: cfg.hiddenSettleSeconds,
                 assetPatterns: cfg.assetPatterns.map(String),
                 versionUrl: cfg.versionUrl,
                 polling: pollTimer !== null,
@@ -4344,6 +4966,9 @@
         // earlier audit pass said so before this copy existed.
         if (keyedConfigKey && warnedLateKeys[keyedConfigKey]) delete warnedLateKeys[keyedConfigKey];
         scheduleKeyedConfigAudit();
+        // BEFORE start(): a bootstrap chain begins there, and the sub-assets its
+        // entries create must meet an installed interceptor.
+        ensureCreateElementHook();
         inst.start();
         return inst.handle;
     }
@@ -4603,6 +5228,13 @@
                 warnedMediaStarvation: warnedMediaStarvation,
                 mediaBlockSince: mediaBlockSince,
                 mediaBlockSignature: mediaBlockSignature,
+                // THE HIDDEN-SETTLE CLOCK (2.4.0). A tab can be handed over
+                // while hidden (a plugin injecting a newer kit copy from a
+                // background tab's poll). Without this the new manager would
+                // restart the grace from the takeover instead of from the
+                // moment the user actually left, and a tab hidden for an hour
+                // would owe another 25 seconds for no reason.
+                hiddenSince: hiddenSince,
                 // THE RELOAD LATCH. A handoff can land in the window between
                 // location.reload() and the new document committing. The latch
                 // has to travel or the new manager would pass every gate again
@@ -4681,6 +5313,9 @@
         inst.anonymous = rec.anonymous === true;
         registry.push(inst);
         byName[rec.name] = inst;
+        // Same rule for an instance arriving by handoff: the NEW manager
+        // installs its wrapper only if something it now owns can use it.
+        ensureCreateElementHook();
         inst.start();
         return inst;
     }
@@ -4726,6 +5361,9 @@
         warnedMediaStarvation = s.warnedMediaStarvation === true;
         if (typeof s.mediaBlockSince === 'number') mediaBlockSince = s.mediaBlockSince;
         if (typeof s.mediaBlockSignature === 'string') mediaBlockSignature = s.mediaBlockSignature;
+        // The hidden-settle clock travels: the user left when they left, not
+        // when this copy took the page over. The boot section arms the timer.
+        if (typeof s.hiddenSince === 'number' && isFinite(s.hiddenSince)) hiddenSince = s.hiddenSince;
         if (typeof s.reloadsSurvived === 'number' && isFinite(s.reloadsSurvived)) {
             reloadsSurvived = s.reloadsSurvived;
         }
@@ -5033,6 +5671,22 @@
                     // playback progress. At MEDIA_STARVATION_MS the parked-media
                     // starvation escape fires.
                     mediaBlockedForMs: mediaBlockedForMs(),
+                    // HIDDEN-TAB RELOAD (2.4.0). `hiddenForMs` vs
+                    // `hiddenSettleWindowMs` is the whole story of a tab that
+                    // is waiting out its grace; `hiddenTimerArmed` false while
+                    // hidden with something pending means the single shot has
+                    // run out of re-arms (MAX_HIDDEN_RETRIES) and the reload is
+                    // now waiting for the user to come back.
+                    hiddenReloadEnabled: hiddenReloadEnabled(),
+                    hiddenSettleWindowMs: hiddenSettleWindowMs(),
+                    hiddenForMs: hiddenForMs(),
+                    hiddenTimerArmed: hiddenTimer !== null,
+                    hiddenRetries: hiddenRetries,
+                    // MASKED POST-PLAYBACK WINDOW (2.4.0): >0 means the user
+                    // just left the video route and the idle requirement is
+                    // relaxed to the settle floor for that many more ms.
+                    maskedTransitionMsLeft: Math.max(0, maskedTransitionUntil - Date.now()),
+                    lastSeenRoute: lastSeenHash,
                     effectiveReloadBudget: effectiveReloadBudget(),
                     budgetKey: BUDGET_KEY,
                     budgetWindowMs: BUDGET_WINDOW_MS
@@ -5073,10 +5727,14 @@
         }
     }
 
-    // Install the createElement hook FIRST and synchronously. Any sub-script the
-    // host bootstrap creates before this point is unversioned forever, so the
-    // kit's <script> tag must come before the bootstrap's in the document.
-    safe(installCreateElementHook);
+    // The createElement hook is installed by the first registration that can
+    // USE it (ensureCreateElementHook), which happens a few statements below in
+    // this same synchronous turn — no host code runs in between. It is still
+    // true that any sub-script the host bootstrap creates before that point is
+    // unversioned forever, so the kit's <script> tag must come before the
+    // bootstrap's in the document; what changed in 2.4.0 is that a page whose
+    // adopters declare no assetPatterns and no entryScripts (the standalone
+    // plugin's own shape) never has its document.createElement replaced at all.
 
     safe(function () {
         // Capture phase, passive: we only observe. Capture means we see the event
@@ -5097,6 +5755,20 @@
         addPageListener(document, 'visibilitychange', wakeListener, false);
         addPageListener(window, 'focus', wakeListener, false);
         addPageListener(window, 'pageshow', wakeListener, false);
+        // PAGE LIFECYCLE 'resume' (2.4.0): the browser FROZE this background
+        // tab — Chrome on Android and desktop battery-saver both do — and has
+        // now un-frozen it while it is STILL HIDDEN. Every timer the tab held
+        // was stopped for the duration, including the hidden single shot, so
+        // this is the one moment it can be put back. It is not a wake (the tab
+        // is still hidden, so polling must stay stopped); onHidden() re-arms
+        // against the ORIGINAL hiddenSince, so a tab frozen for an hour finds
+        // its grace long expired and takes the reload immediately.
+        addPageListener(document, 'resume', function () {
+            safe(function () {
+                if (handedOff) return;
+                if (document.visibilityState === 'hidden') onHidden();
+            });
+        }, false);
     });
 
     /**
@@ -5155,4 +5827,17 @@
     // Finally: register THIS copy's own instance from its tag config, through
     // exactly the same contract path a later copy would use.
     safe(function () { api.__registerInstance(ownConfig, KIT_VERSION); });
+
+    // A DOCUMENT THAT IS ALREADY HIDDEN (2.4.0). Opened in a background tab,
+    // restored by the browser into the background, reloaded while hidden by
+    // this very feature, or handed over while hidden — in none of those cases
+    // does a visibilitychange event ever arrive, so without this the hidden
+    // path would never start and the tab would hold its update until the user
+    // came back. Runs AFTER registration so the instances' hiddenReload /
+    // hiddenSettleSeconds are the ones being honoured, and after a handoff has
+    // restored hiddenSince, so the grace is measured from when the user
+    // actually left this tab.
+    safe(function () {
+        if (document.visibilityState === 'hidden') onHidden();
+    });
 })();
