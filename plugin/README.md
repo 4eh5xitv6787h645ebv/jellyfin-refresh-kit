@@ -52,6 +52,9 @@ coexist on one page by design.
    `Jellyfin.Plugin.RefreshKit.dll` and `meta.json`.
    The `Name_version` folder layout is what the server's plugin loader expects;
    a folder without it is ignored.
+   On a native install there is no `/config`: the loader reads
+   `<datadir>/plugins/`, i.e. whatever `--datadir` points at (default
+   `/var/lib/jellyfin/plugins/` for the packaged service). Same folder layout.
 3. Restart Jellyfin.
 
 Verify: Dashboard → Plugins shows **Jellyfin Refresh Kit — Active**, and
@@ -59,6 +62,14 @@ Verify: Dashboard → Plugins shows **Jellyfin Refresh Kit — Active**, and
 
 **Requirements:** Jellyfin **10.11.x** (built against `Jellyfin.Controller`
 10.11.11, `net9.0`, which is what the 10.11 server runs).
+
+**Verified on:** root Docker, non-root Docker (`--user 1000:1000`), and a native
+non-root Linux install from the generic tarball (unprivileged user, custom
+`--datadir`, no `/config` on the box — the loader reads `<datadir>/plugins/`).
+Windows is **expected-compatible but unverified**: no Windows host was available,
+so it has a source-level portability audit instead of a run. Evidence for all
+four, including the Windows audit, is in
+[COMPATIBILITY.md](../COMPATIBILITY.md#installation-types--native-non-root-linux-non-root-docker-windows-standalone-plugin-1000-jellyfin-101111).
 
 ---
 

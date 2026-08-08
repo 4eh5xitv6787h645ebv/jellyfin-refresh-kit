@@ -441,3 +441,107 @@ touches a plugin binary and requires exactly one reload.
   life of that document — `blockReason: "password_entry"` held for the full 70 s
   observation window with an update pending. `jellyfin-refresh-kit.js:2462`
   (`hasTypedPassword`), refusal at `:2632`.
+
+## Installation types — native non-root Linux, non-root Docker, Windows (standalone plugin 1.0.0.0, Jellyfin 10.11.11)
+
+Everything above was measured on the same kind of host: the official Docker
+image, running as root, with config at `/config`. That is one installation type
+out of several, and the plugin touches the filesystem — it walks the plugins
+directory to build the generation — so "works there" is not the same as "works
+anywhere". Two other install types were reproduced end to end, and the third,
+Windows, was audited at the source level because this environment cannot run it.
+
+### Native non-root Linux (generic `amd64` tarball, port 8130)
+
+`jellyfin_10.11.11-amd64.tar.xz` from `repo.jellyfin.org`, extracted into a
+scratch directory and started **entirely as an unprivileged user** (uid 1000, no
+`sudo`, no service manager) with `--datadir`/`--configdir`/`--cachedir`/`--webdir`
+pointing inside that directory. No `/config` anywhere on the box.
+
+* The server's plugin loader looks in **`<datadir>/plugins/`** — the same
+  `Name_version` folder layout, just not at `/config`:
+  `Loaded assembly Jellyfin.Plugin.RefreshKit, Version=1.0.0.0 … from
+  …/native-jf/data/plugins/Jellyfin Refresh Kit_1.0.0.0/Jellyfin.Plugin.RefreshKit.dll`.
+  The plugin derives its own plugins path from `Assembly.Location`, so it needs
+  no configuration to find it.
+* Dashboard → Plugins: **Jellyfin Refresh Kit 1.0.0.0 — Active**.
+* `GET /RefreshKit/Generation` → `200`,
+  `{"Version":"1.0.0.0","BuildId":"96dde118…","CacheKey":"1p-ff64c681b3280b7d"}`.
+* `GET /web/index.html` → `200` with `ETag: "rk-e1e370…"` and
+  `Cache-Control: no-cache`; the same ETag replayed as `If-None-Match` → **304**;
+  a stale `"rk-deadbeef"` → **200**. `/web/` and `/web/index.html` agree on the
+  validator, and the ETag is stable across repeated requests (three GETs, one
+  value; byte-identical shells).
+* Browser (headless Chrome, signed in as `rk_admin`): the shell carries
+  `<script src="../RefreshKit/kit.js?v=1p-ff64c681b3280b7d">`, and
+  `window.JellyfinRefreshKit.instances()` returns **1** — `name:
+  "RefreshKitPlugin"`, `kitVersion: "2.4.0"`, `mode: "auto"`, boot version equal
+  to the endpoint's.
+* `touch`ing the plugin DLL bumped the generation
+  (`1p-ff64c681b3280b7d` → `1p-3fb4a2000688b104`) and the open tab performed
+  **exactly one** navigation, after which the kit was alive again on the same
+  URL.
+
+The point this proves is not that a tarball works. It is that the plugin makes
+**no `/config` assumption, needs no root, and needs no writable web root** — the
+shell is rewritten in the response, not on disk, so a read-only `jellyfin-web`
+owned by another user is fine.
+
+### Non-root Docker (`--user 1000:1000`, port 8131)
+
+`jellyfin/jellyfin:10.11.11` with `--user 1000:1000` and a host bind mount owned
+by that uid. Plugin dropped into `/config/plugins/Jellyfin Refresh Kit_1.0.0.0/`
+from the host side.
+
+* `Loaded plugin: Jellyfin Refresh Kit 1.0.0.0`; Dashboard status **Active**.
+* `GET /RefreshKit/Generation` → `200`, `CacheKey: 1p-3e82a2e7e561e530` — a
+  different value from the native host, as it must be: the fingerprint includes
+  each plugin's binary timestamp.
+* `GET /web/index.html` → `200` with `ETag: "rk-47524f…"`; replay → **304**.
+* Browser: one kit instance registered; `touch` on the DLL bumped
+  `1p-3e82a2e7e561e530` → `1p-02d4ab737bb40b27` and produced **exactly one**
+  reload.
+
+Dropping root changes nothing, because nothing in the plugin writes outside the
+paths the server already handed it — it only *reads* the plugins directory.
+
+### Windows — source audit, not a run
+
+No Windows host was available, so this is an audit of `plugin/*.cs` and
+`RefreshKit.cs` rather than a measurement, and it is recorded as such.
+
+* **Paths.** No filesystem path is ever built by string concatenation; every one
+  goes through `Path.Combine`/`Path.Get*`. The remaining `'/'` literals are URL
+  paths (`../{base}/{script}`), which are correct on every OS.
+* **Case.** Every comparison that could bite on a case-insensitive filesystem is
+  already `OrdinalIgnoreCase` — `.dll`, client-asset extensions, the
+  `configurations` folder name, `</body>`, `text/html`, the index URL path. The
+  `Ordinal` comparisons are on non-path data (hex cache keys, GUIDs, literal
+  markup) or are deliberate deterministic sorts.
+* **File locking — the interesting one.** Windows locks a loaded assembly against
+  *write and delete*, not against reads. The generation walk never opens another
+  plugin's DLL at all: it stats them (`FileInfo.LastWriteTimeUtc`, `Length`).
+  The one place a DLL is opened is `File.OpenRead(assembly.Location)` on the
+  plugin's *own* binary to derive `BuildId`, which asks for read access
+  compatible with the CLR's own mapping, and is wrapped in `try`/`catch` with a
+  `ModuleVersionId` fallback that remains a valid per-build identity.
+* **`meta.json` reads** are wrapped and fall back to the previous snapshot, so a
+  transient Windows sharing violation cannot poison the generation. The narrow
+  gap is the *first* read of a folder with no prior snapshot: it degrades to an
+  empty snapshot, and the next scan produces one spurious bump — self-correcting,
+  one reload, bounded by the client's reload budget.
+* **No `FileSystemWatcher`**, by design: the scan is request-driven and TTL-cached
+  (5 s), and the client polls (`PollSeconds` 60). Nothing depends on inotify.
+* **Hashing** uses a literal `'\n'` separator and `InvariantCulture` throughout,
+  so a CRLF checkout changes the ETag's *value* and nothing else. All clocks are
+  UTC. No `chmod`, no `Environment.NewLine`, no culture-sensitive `ToLower()`, no
+  process or uid assumptions.
+
+One real fix came out of the audit: `ScanPlugins` drained
+`Directory.EnumerateDirectories` lazily *outside* its `try`, so an error raised
+from `MoveNext` — a folder vanishing mid-walk, or a Windows sharing violation
+during an install — would escape a `Generation` property documented never to
+throw. The enumeration is now materialised inside the `try`.
+
+**Status: expected-compatible, unverified.** Nothing found would break on
+Windows, but nobody has run it there.

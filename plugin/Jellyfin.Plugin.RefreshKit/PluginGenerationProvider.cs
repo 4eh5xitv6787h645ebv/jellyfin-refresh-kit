@@ -247,10 +247,17 @@ namespace Jellyfin.Plugin.RefreshKit
 
             var configurationsPath = ResolveConfigurationsPath(pluginsPath);
             var results = new List<PluginFingerprint>();
-            IEnumerable<string> directories;
+            IReadOnlyList<string> directories;
             try
             {
-                directories = Directory.EnumerateDirectories(pluginsPath);
+                // Drained here, inside the try, and not lazily by the loop below.
+                // EnumerateDirectories only opens the handle; the errors that
+                // matter — the folder vanishing mid-walk, a sharing violation on
+                // Windows while an installer writes — surface from MoveNext. A
+                // lazy enumerator would raise those inside the foreach, where
+                // nothing catches them, and the exception would escape a
+                // Generation property documented never to throw.
+                directories = Directory.EnumerateDirectories(pluginsPath).ToList();
             }
             catch
             {
