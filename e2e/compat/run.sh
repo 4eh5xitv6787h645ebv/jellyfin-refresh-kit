@@ -4,7 +4,8 @@
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/common.sh
+# The path is resolved from this file, not the caller's working directory.
+# shellcheck disable=SC1091
 source "${HERE}/lib/common.sh"
 cd "${RK_COMPAT_REPO_ROOT}"
 

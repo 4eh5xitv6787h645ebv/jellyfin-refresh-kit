@@ -4,7 +4,8 @@
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=common.sh
+# The path is resolved from this file, not the caller's working directory.
+# shellcheck disable=SC1091
 source "${HERE}/common.sh"
 compat_pin_build_snapshot
 
@@ -64,9 +65,9 @@ except Exception:
 }
 
 wizard_request() {
-    local label="$1" attempt
+    local label="$1"
     shift
-    for attempt in $(seq 1 25); do
+    for _ in {1..25}; do
         if curl --fail --silent --show-error --connect-timeout 2 --max-time 12 "$@"; then
             return 0
         fi
@@ -76,14 +77,14 @@ wizard_request() {
 }
 
 authenticate() {
-    local payload response token attempt
+    local payload response token
     payload="$(python3 - "${RK_COMPAT_USER}" "${RK_COMPAT_PASSWORD}" <<'PY'
 import json
 import sys
 print(json.dumps({"Username": sys.argv[1], "Pw": sys.argv[2]}, separators=(",", ":")))
 PY
 )"
-    for attempt in $(seq 1 90); do
+    for _ in {1..90}; do
         response="$(curl --silent --show-error --connect-timeout 2 --max-time 8 \
             -X POST "${ORIGIN}/Users/AuthenticateByName" \
             -H 'Content-Type: application/json' \
@@ -132,9 +133,9 @@ PY
 }
 
 wait_for_stable_generation() {
-    local output="$1" previous='' current='' stable=0 attempt temporary
+    local output="$1" previous='' current='' stable=0 temporary
     temporary="${WORK}/generation-stability.json"
-    for attempt in $(seq 1 24); do
+    for _ in {1..24}; do
         curl --fail --silent --show-error -o "${temporary}" "${ORIGIN}/RefreshKit/Generation"
         current="$(json_field CacheKey < "${temporary}")"
         if [ -n "${previous}" ] && [ "${current}" = "${previous}" ]; then

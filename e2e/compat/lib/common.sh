@@ -3,6 +3,9 @@
 # Shared paths and safety checks for the isolated compatibility harness.
 # Source this file; do not execute it directly.
 
+# Values in this file are consumed by either run.sh or runtime.sh after source.
+# shellcheck disable=SC2034
+
 set -euo pipefail
 
 RK_COMPAT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
