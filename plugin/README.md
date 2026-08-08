@@ -1,9 +1,28 @@
 # Jellyfin Refresh Kit — the standalone plugin
 
-Install **this one plugin** and stale-cache / hard-refresh problems are fixed for
-**all your other plugins**. None of them need to know it exists, none of them
-need a code change, and you never have to tell a user "press Ctrl+Shift+R"
-again.
+Install **this one plugin** and it watches every plugin on the server for you.
+No other plugin needs to know it exists, and none of them need a code change.
+It does three things:
+
+* **serves a fresh app shell** — `index.html` goes out through a revalidating
+  middleware with a real ETag, so the page itself can never be stuck;
+* **cache-busts other plugins' `<script>` and stylesheet tags** that sit in that
+  shell and carry no version of their own;
+* **notices when any plugin changes** — installed, upgraded, enabled, disabled,
+  reconfigured — and reloads open tabs *safely*: never during playback, never
+  over a dialog, never while you are typing.
+
+**What it does not do:** it cannot version assets a plugin creates at *runtime*
+(a dynamic `import()`, a `fetch`, a CSS `url()`), and it cannot stamp tags
+injected by a middleware that runs outside this one. Those two limits are real,
+and they are spelled out in [the ordering caveat](#-the-ordering-caveat--read-this)
+and [Known limitations](#known-limitations) below. A plugin that needs runtime
+sub-assets versioned should adopt the kit directly — see
+[Relationship to single-file adoption](#relationship-to-single-file-adoption).
+
+So: for the common case — a plugin ships a `.js`, the shell references it, the
+browser caches it forever — installing this fixes it, and you stop telling users
+"press Ctrl+Shift+R".
 
 It is the packaged form of this repository. The single-file adoption path
 (`jellyfin-refresh-kit.js` + `RefreshKit.cs` copied into your own plugin) is
@@ -126,9 +145,19 @@ the plugins directory:
 
 * the plugin **id** and **version** from its `meta.json` — install / uninstall /
   upgrade;
-* the **newest DLL write-ticks** in its folder — a same-version binary replaced
-  in place (the dev case that version-only busting silently misses);
+* its **status** from the same file — Jellyfin rewrites `"status"` in place when
+  an admin enables or disables a plugin, and *nothing else moves*: same folder,
+  same version, byte-identical binaries with untouched timestamps. Without this
+  field a disable was invisible;
+* the **newest write-ticks** across its binaries **and its client assets**
+  (`.js`, `.mjs`, `.css`, `.map`, `.html`) — a same-version binary replaced in
+  place, or a script edited without the DLL moving at all. Runtime data files
+  (`.json`, `.db`, logs) are deliberately excluded: they churn on their own
+  schedule with nothing user-visible behind them;
 * the **newest write-time of its plugin-configuration XML** — see below.
+
+The scan is bounded per folder (files *and* directories visited), so a plugin
+shipping a large asset tree cannot turn it into a stat storm.
 
 One value does four jobs — the injected tag's `?v=`, its `data-boot-version`
 seed, what the version endpoint reports as `CacheKey`, and the `?rkv=` stamp — so
@@ -210,7 +239,7 @@ Dashboard → Plugins → **Jellyfin Refresh Kit**.
 | `GET /RefreshKit/Generation` | anonymous | `{ Version, BuildId, CacheKey }`, `CacheKey` = generation. `no-store`. |
 | `GET /RefreshKit/Generation.txt` | anonymous | The bare generation, `text/plain`. |
 | `GET /RefreshKit/kit.js` | anonymous | The embedded `jellyfin-refresh-kit.js`, `immutable` (the injected `src` carries `?v=<generation>`). |
-| `GET /RefreshKit/Diagnostics` | admin | Per-plugin id / version / DLL ticks / config ticks behind the current generation. |
+| `GET /RefreshKit/Diagnostics` | admin | Per-plugin id / version / status / asset ticks / config ticks behind the current generation. |
 
 The first three are anonymous **on purpose**: the login screen is a real page of
 the web client, it is where a stale cache most often bites, and a tab can sit on

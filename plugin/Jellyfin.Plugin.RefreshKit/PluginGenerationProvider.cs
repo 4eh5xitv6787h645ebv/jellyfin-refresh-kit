@@ -7,6 +7,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Jellyfin.Plugin.RefreshKit.Tests")]
+
 namespace Jellyfin.Plugin.RefreshKit
 {
     /// <summary>
@@ -17,21 +19,28 @@ namespace Jellyfin.Plugin.RefreshKit
     /// plugin changes. It is the whole point of the standalone plugin: other
     /// plugins do not (and must not have to) publish a version endpoint, so this
     /// plugin derives one identity covering all of them, from what the server
-    /// already knows — for every folder under <c>PluginsPath</c>: the plugin id
-    /// and version out of its <c>meta.json</c>, plus the NEWEST DLL write-ticks
-    /// anywhere in that folder.
+    /// already knows — for every folder under <c>PluginsPath</c>: the plugin id,
+    /// version and status out of its <c>meta.json</c>, plus the NEWEST write-ticks
+    /// across the binaries and client assets in that folder.
     /// </para>
     ///
-    /// <para>WHY THOSE THREE INPUTS</para>
+    /// <para>WHY THOSE INPUTS</para>
     /// <list type="bullet">
     /// <item><description><b>id</b> — installing or removing a plugin changes the
     /// set even when nothing else moves.</description></item>
     /// <item><description><b>version</b> — a marketplace upgrade lands in a NEW
     /// folder (<c>Name_1.2.3.0</c>), so the version moves with it.</description></item>
-    /// <item><description><b>newest DLL ticks</b> — the case version alone misses:
-    /// a same-version binary replaced in place (a dev copying a DLL over, a
-    /// re-published build). This is exactly why RefreshKit.CacheKey carries the
-    /// DLL ticks for its own assembly.</description></item>
+    /// <item><description><b>status</b> — the <c>meta.json</c> field Jellyfin
+    /// rewrites when an admin ENABLES or DISABLES a plugin. Measured on 10.11.11:
+    /// a disable flips <c>"status": "Active"</c> to <c>"Disabled"</c> in place and
+    /// changes NOTHING else — same folder, same version, byte-identical binaries
+    /// with untouched timestamps. Without this field a disable was invisible and
+    /// every open tab kept running the disabled plugin's code.</description></item>
+    /// <item><description><b>newest binary/client-asset ticks</b> — the case
+    /// version alone misses: a same-version binary replaced in place (a dev
+    /// copying a DLL over, a re-published build), or a <c>.js</c>/<c>.css</c>
+    /// edited without the DLL moving at all. This is exactly why
+    /// RefreshKit.CacheKey carries the DLL ticks for its own assembly.</description></item>
     /// <item><description><b>newest CONFIGURATION ticks</b> — the case the binary
     /// misses entirely, and the one users hit most often: an admin enables a
     /// custom tab in a plugin's settings, or flips any option that the plugin
@@ -105,6 +114,27 @@ namespace Jellyfin.Plugin.RefreshKit
         /// </summary>
         private const int MaxFilesPerPlugin = 4000;
 
+        /// <summary>
+        /// Hard cap on DIRECTORIES descended per plugin folder. The file cap
+        /// alone does not bound a recursive enumeration: the walk still visits
+        /// every directory looking for matches, so a deep tree costs a full
+        /// traversal every <see cref="CacheTtlSeconds"/> seconds however few
+        /// files match. Both budgets are enforced in
+        /// <see cref="ScanFolderAssets"/>.
+        /// </summary>
+        private const int MaxDirectoriesPerPlugin = 512;
+
+        /// <summary>
+        /// Extensions whose write time is folded into the generation alongside
+        /// the plugin's assemblies: the files a browser actually executes or
+        /// renders. Deliberately a short, fixed list — a plugin's runtime data
+        /// files must not move the generation.
+        /// </summary>
+        private static readonly string[] ClientAssetExtensions =
+        {
+            ".js", ".mjs", ".css", ".map", ".html",
+        };
+
         /// <summary>Jellyfin's plugin-configuration folder, a sibling of the plugin folders.</summary>
         private const string ConfigurationsFolderName = "configurations";
 
@@ -121,6 +151,14 @@ namespace Jellyfin.Plugin.RefreshKit
         private readonly object _lock = new object();
         private readonly Dictionary<string, ConfigSignal> _configSignals =
             new Dictionary<string, ConfigSignal>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Last successfully parsed <c>meta.json</c> per plugin folder, so a read
+        /// that lands mid-rewrite reuses the previous answer instead of looking
+        /// like an uninstall. See <see cref="ReadMeta"/>.
+        /// </summary>
+        private readonly Dictionary<string, MetaSnapshot> _metaSnapshots =
+            new Dictionary<string, MetaSnapshot>(StringComparer.Ordinal);
 
         private string _cached = string.Empty;
         private IReadOnlyList<PluginFingerprint> _cachedDetails = Array.Empty<PluginFingerprint>();
@@ -238,22 +276,23 @@ namespace Jellyfin.Plugin.RefreshKit
                 {
                     // One unreadable plugin folder must not blind the aggregate
                     // to the other twenty. Record its name so it still counts.
-                    results.Add(new PluginFingerprint(Path.GetFileName(directory), string.Empty, string.Empty, 0, 0));
+                    results.Add(new PluginFingerprint(
+                        Path.GetFileName(directory), string.Empty, string.Empty, string.Empty, 0, 0));
                 }
             }
 
-            PruneConfigSignals(results);
+            PrunePerPluginState(results);
             return results;
         }
 
         /// <summary>
-        /// Drops debounce/cooldown state for plugins that no longer exist, so an
-        /// uninstall-reinstall cycle starts clean and the dictionary cannot grow
-        /// without bound over a long uptime.
+        /// Drops debounce/cooldown state and cached manifests for plugins that no
+        /// longer exist, so an uninstall-reinstall cycle starts clean and neither
+        /// dictionary can grow without bound over a long uptime.
         /// </summary>
-        private void PruneConfigSignals(IReadOnlyList<PluginFingerprint> results)
+        private void PrunePerPluginState(IReadOnlyList<PluginFingerprint> results)
         {
-            if (_configSignals.Count == 0)
+            if (_configSignals.Count == 0 && _metaSnapshots.Count == 0)
             {
                 return;
             }
@@ -263,59 +302,214 @@ namespace Jellyfin.Plugin.RefreshKit
             {
                 _configSignals.Remove(stale);
             }
+
+            foreach (var stale in _metaSnapshots.Keys.Where(k => !live.Contains(k)).ToList())
+            {
+                _metaSnapshots.Remove(stale);
+            }
         }
 
-        private PluginFingerprint Fingerprint(string directory, string configurationsPath, DateTime now)
+        internal PluginFingerprint Fingerprint(string directory, string configurationsPath, DateTime now)
         {
             var folder = Path.GetFileName(directory);
-            var id = string.Empty;
-            var version = string.Empty;
+            var meta = ReadMeta(directory, folder);
 
+            var assets = ScanFolderAssets(directory);
+            var rawConfigTicks = ObserveConfigurationTicks(configurationsPath, assets.AssemblyNames);
+            var publishedConfigTicks = PublishConfigTicks(folder, meta.Id, assets.AssemblyNames, rawConfigTicks, now);
+
+            return new PluginFingerprint(
+                folder, meta.Id, meta.Version, meta.Status, assets.NewestTicks, publishedConfigTicks);
+        }
+
+        /// <summary>
+        /// Reads the identity fields out of a plugin's <c>meta.json</c>.
+        ///
+        /// <para>
+        /// Unlike the configuration watcher — which only ever reads a TIMESTAMP,
+        /// and whose debounce already requires the same timestamp twice, ten
+        /// seconds apart, before it can publish — this reads CONTENT, and
+        /// Jellyfin rewrites this file in place (measured: enabling or disabling
+        /// a plugin rewrites it whole). A scan that lands mid-rewrite therefore
+        /// really can see truncated JSON.
+        /// </para>
+        ///
+        /// <para>
+        /// Letting that fall through to empty strings would be the worst possible
+        /// answer: id, version AND status would all blank at once, which looks
+        /// exactly like the plugin being replaced by a different one. The
+        /// generation would bump, every client on the server would reload, and
+        /// the next scan five seconds later would bump it back — two server-wide
+        /// reloads for a file nobody changed. So the last GOOD read is reused
+        /// instead, and a torn read becomes a no-op.
+        /// </para>
+        /// </summary>
+        private MetaSnapshot ReadMeta(string directory, string folder)
+        {
             var metaPath = Path.Combine(directory, "meta.json");
-            if (File.Exists(metaPath))
+            if (!File.Exists(metaPath))
             {
-                try
-                {
-                    using var document = JsonDocument.Parse(File.ReadAllBytes(metaPath));
-                    id = ReadStringProperty(document.RootElement, "guid");
-                    version = ReadStringProperty(document.RootElement, "version");
-                }
-                catch
-                {
-                    // A hand-edited or truncated meta.json falls back to the
-                    // folder name, which already encodes "Name_1.2.3.0".
-                }
+                return MetaSnapshot.Empty;
             }
 
-            long newestTicks = 0;
-            var seen = 0;
-            var assemblyNames = new List<string>();
-            foreach (var file in Directory.EnumerateFiles(directory, "*.dll", SearchOption.AllDirectories))
+            try
             {
-                if (++seen > MaxFilesPerPlugin)
-                {
-                    break;
-                }
+                using var document = JsonDocument.Parse(File.ReadAllBytes(metaPath));
+                var snapshot = new MetaSnapshot(
+                    ReadStringProperty(document.RootElement, "guid"),
+                    ReadStringProperty(document.RootElement, "version"),
+                    ReadStringProperty(document.RootElement, "status"));
+                _metaSnapshots[folder] = snapshot;
+                return snapshot;
+            }
+            catch
+            {
+                // Torn mid-rewrite, or hand-edited into invalid JSON. Either way
+                // the previous answer is closer to the truth than "gone".
+                return _metaSnapshots.TryGetValue(folder, out var previous)
+                    ? previous
+                    : MetaSnapshot.Empty;
+            }
+        }
 
-                assemblyNames.Add(Path.GetFileNameWithoutExtension(file));
+        /// <summary>The identity fields one <c>meta.json</c> contributes.</summary>
+        private readonly struct MetaSnapshot
+        {
+            public static readonly MetaSnapshot Empty =
+                new MetaSnapshot(string.Empty, string.Empty, string.Empty);
+
+            public MetaSnapshot(string id, string version, string status)
+            {
+                Id = id;
+                Version = version;
+                Status = status;
+            }
+
+            public string Id { get; }
+
+            public string Version { get; }
+
+            public string Status { get; }
+        }
+
+        /// <summary>
+        /// One BOUNDED walk of a plugin folder, collecting the newest write time
+        /// across the files that can change what a browser runs, plus the
+        /// assembly names used to locate the plugin's configuration XML.
+        ///
+        /// <para>WHY THE WALK IS HAND-ROLLED</para>
+        /// <para>
+        /// <c>Directory.EnumerateFiles(dir, "*.dll", AllDirectories)</c> reads as
+        /// if the file cap bounded it, but the cap can only count files the
+        /// enumerator YIELDS — the traversal itself still descends every
+        /// directory in the tree looking for matches. A plugin shipping a large
+        /// asset tree (or caching into its own folder) therefore turned a scan
+        /// that runs every <see cref="CacheTtlSeconds"/> seconds into a full-tree
+        /// walk. Both the directories visited and the files examined are budgeted
+        /// here, so the per-scan cost is bounded no matter what is on disk.
+        /// </para>
+        ///
+        /// <para>WHY MORE THAN DLLs</para>
+        /// <para>
+        /// A plugin's client code is its <c>.js</c>/<c>.css</c>, and those change
+        /// without the DLL changing — a developer editing a script in place, or a
+        /// rebuild that preserves the binary's timestamp. Watching a small, fixed
+        /// set of CLIENT-ASSET extensions alongside the binary costs nothing
+        /// extra (it is the same traversal, a wider filter) and closes the case
+        /// where the page changed but the generation did not. Data files a plugin
+        /// writes at runtime (<c>.json</c>, <c>.db</c>, logs) are deliberately
+        /// NOT included: they move on their own schedule with no user-visible
+        /// change, which is exactly the noise this signal must not carry.
+        /// </para>
+        /// </summary>
+        private static FolderAssets ScanFolderAssets(string directory)
+        {
+            long newestTicks = 0;
+            var assemblyNames = new List<string>();
+            var filesSeen = 0;
+            var directoriesSeen = 0;
+
+            var pending = new Stack<string>();
+            pending.Push(directory);
+
+            while (pending.Count > 0 && directoriesSeen < MaxDirectoriesPerPlugin && filesSeen < MaxFilesPerPlugin)
+            {
+                var current = pending.Pop();
+                directoriesSeen++;
+
                 try
                 {
-                    var ticks = new FileInfo(file).LastWriteTimeUtc.Ticks;
-                    if (ticks > newestTicks)
+                    foreach (var file in Directory.EnumerateFiles(current))
                     {
-                        newestTicks = ticks;
+                        if (++filesSeen > MaxFilesPerPlugin)
+                        {
+                            break;
+                        }
+
+                        var extension = Path.GetExtension(file);
+                        var isAssembly = extension.Equals(".dll", StringComparison.OrdinalIgnoreCase);
+                        if (isAssembly)
+                        {
+                            assemblyNames.Add(Path.GetFileNameWithoutExtension(file));
+                        }
+                        else if (!IsClientAsset(extension))
+                        {
+                            continue;
+                        }
+
+                        try
+                        {
+                            var ticks = new FileInfo(file).LastWriteTimeUtc.Ticks;
+                            if (ticks > newestTicks)
+                            {
+                                newestTicks = ticks;
+                            }
+                        }
+                        catch
+                        {
+                            // Skip a file that vanished mid-scan (an upgrade in flight).
+                        }
+                    }
+
+                    foreach (var subdirectory in Directory.EnumerateDirectories(current))
+                    {
+                        pending.Push(subdirectory);
                     }
                 }
                 catch
                 {
-                    // Skip a file that vanished mid-scan (an upgrade in flight).
+                    // An unreadable subdirectory must not abandon the folder.
                 }
             }
 
-            var rawConfigTicks = ObserveConfigurationTicks(configurationsPath, assemblyNames);
-            var publishedConfigTicks = PublishConfigTicks(folder, id, assemblyNames, rawConfigTicks, now);
+            return new FolderAssets(newestTicks, assemblyNames);
+        }
 
-            return new PluginFingerprint(folder, id, version, newestTicks, publishedConfigTicks);
+        private static bool IsClientAsset(string extension)
+        {
+            foreach (var candidate in ClientAssetExtensions)
+            {
+                if (extension.Equals(candidate, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>What one bounded folder walk found.</summary>
+        private readonly struct FolderAssets
+        {
+            public FolderAssets(long newestTicks, List<string> assemblyNames)
+            {
+                NewestTicks = newestTicks;
+                AssemblyNames = assemblyNames;
+            }
+
+            public long NewestTicks { get; }
+
+            public List<string> AssemblyNames { get; }
         }
 
         /// <summary>
@@ -609,11 +803,18 @@ namespace Jellyfin.Plugin.RefreshKit
     /// <summary>One installed plugin's contribution to the generation.</summary>
     public sealed class PluginFingerprint
     {
-        public PluginFingerprint(string folder, string id, string version, long newestDllTicks, long newestConfigTicks)
+        public PluginFingerprint(
+            string folder,
+            string id,
+            string version,
+            string status,
+            long newestDllTicks,
+            long newestConfigTicks)
         {
             Folder = folder;
             Id = id;
             Version = version;
+            Status = status;
             NewestDllTicks = newestDllTicks;
             NewestConfigTicks = newestConfigTicks;
         }
@@ -624,6 +825,21 @@ namespace Jellyfin.Plugin.RefreshKit
 
         public string Version { get; }
 
+        /// <summary>
+        /// The plugin's <c>status</c> from <c>meta.json</c> ("Active",
+        /// "Disabled", "Malfunctioned", …). Jellyfin rewrites this field in
+        /// place when an admin enables or disables a plugin — nothing else on
+        /// disk moves, so without it a disable is invisible to the generation.
+        /// Verified on 10.11.11: disabling flips exactly this field and leaves
+        /// the folder name, version and every binary timestamp untouched.
+        /// </summary>
+        public string Status { get; }
+
+        /// <summary>
+        /// Newest write time across this plugin's assemblies AND its client
+        /// assets (.js/.mjs/.css/.map/.html) — see
+        /// <see cref="PluginGenerationProvider"/> for why both.
+        /// </summary>
         public long NewestDllTicks { get; }
 
         /// <summary>
@@ -634,10 +850,11 @@ namespace Jellyfin.Plugin.RefreshKit
 
         internal string ToMaterial() => string.Format(
             CultureInfo.InvariantCulture,
-            "{0}|{1}|{2}|{3}|{4}",
+            "{0}|{1}|{2}|{3}|{4}|{5}",
             Folder,
             Id,
             Version,
+            Status,
             NewestDllTicks,
             NewestConfigTicks);
     }

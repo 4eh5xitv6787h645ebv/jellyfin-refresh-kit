@@ -81,6 +81,7 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
                         d.Folder,
                         d.Id,
                         d.Version,
+                        d.Status,
                         d.NewestDllTicks,
                         d.NewestConfigTicks,
                     })

@@ -50,6 +50,38 @@ namespace Jellyfin.Plugin.RefreshKit
     /// preserved: only the characters INSIDE the src/href value are replaced.</description></item>
     /// </list>
     ///
+    /// <para>WHY A TOKENIZER AND NOT A REGEX</para>
+    /// <para>
+    /// The obvious implementation — <c>&lt;(script|link)\b[^&gt;]*&gt;</c> over the
+    /// whole document — is wrong in three ways that a real page hits, all three
+    /// reproduced as unit tests in
+    /// <c>Jellyfin.Plugin.RefreshKit.Tests/ThirdPartyTagStamperTests.cs</c>:
+    /// </para>
+    /// <list type="number">
+    /// <item><description>It matches tag-like text INSIDE an inline script body.
+    /// <c>var a = "&lt;script src='/x.js'&gt;";</c> is JavaScript source, not a
+    /// tag, and rewriting it CORRUPTS the script — the one thing this class
+    /// promises never to touch.</description></item>
+    /// <item><description><c>[^&gt;]*</c> stops at the first <c>&gt;</c> even when
+    /// it is inside a quoted attribute value, so
+    /// <c>&lt;script data-json="a&gt;b" src="/real.js"&gt;</c> is cut short and the
+    /// real <c>src</c> is never seen.</description></item>
+    /// <item><description>Finding the attribute with a second regex over the tag
+    /// text matches <c>src</c> inside ANOTHER attribute's quoted value, so
+    /// <c>&lt;script data-template=" src='/fake.js'" src="/real.js"&gt;</c>
+    /// stamped the decoy and missed the real one.</description></item>
+    /// </list>
+    /// <para>
+    /// So the document is walked by a small state machine instead: it skips
+    /// comments, doctypes and processing instructions, skips the CONTENTS of raw
+    /// text elements (<c>script</c>, <c>style</c>, <c>textarea</c>, <c>title</c>)
+    /// entirely, finds a tag's end by parsing its attributes rather than hunting
+    /// for <c>&gt;</c>, and reads attribute values from that parse. Only real
+    /// opening tags in ordinary markup are ever stamped. When nothing is stamped
+    /// the ORIGINAL string instance is returned, so a page the kit does not
+    /// change is byte-identical by construction.
+    /// </para>
+    ///
     /// <para>ORDERING CAVEAT — read this before believing the stamps are complete</para>
     /// <para>
     /// This runs inside the refresh kit's index.html middleware, which is
@@ -94,9 +126,14 @@ namespace Jellyfin.Plugin.RefreshKit
             "cb", "cachebust", "cachebuster", "nocache", "_", StampParameter,
         };
 
-        private static readonly Regex TagRegex = new Regex(
-            "<(script|link)\\b[^>]*>",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+        /// <summary>
+        /// Elements whose CONTENT is not markup. Everything between the opening
+        /// and closing tag of one of these is skipped wholesale: a
+        /// <c>&lt;script&gt;</c> body is JavaScript, and a <c>&lt;title&gt;</c> or
+        /// <c>&lt;textarea&gt;</c> body is literal text, so tag-like strings in
+        /// there are not tags and must never be rewritten.
+        /// </summary>
+        private static readonly string[] RawTextElements = { "script", "style", "textarea", "title" };
 
         private static readonly Regex SchemeRegex = new Regex(
             "^[a-zA-Z][a-zA-Z0-9+.\\-]*:",
@@ -129,8 +166,7 @@ namespace Jellyfin.Plugin.RefreshKit
 
             try
             {
-                var safeGeneration = Uri.EscapeDataString(generation);
-                return TagRegex.Replace(html, match => StampTag(match.Value, safeGeneration, ownTagMarker));
+                return Walk(html, Uri.EscapeDataString(generation), ownTagMarker);
             }
             catch
             {
@@ -138,65 +174,367 @@ namespace Jellyfin.Plugin.RefreshKit
             }
         }
 
-        private static string StampTag(string tag, string generation, string? ownTagMarker)
+        /// <summary>
+        /// The state machine. Copies the document to a builder verbatim, dropping
+        /// into <see cref="StampTag"/> only for opening <c>script</c>/<c>link</c>
+        /// tags found in ordinary markup — never inside comments, doctypes,
+        /// processing instructions or raw text element bodies.
+        /// </summary>
+        private static string Walk(string html, string generation, string? ownTagMarker)
         {
-            if (!string.IsNullOrEmpty(ownTagMarker)
-                && tag.IndexOf(ownTagMarker, StringComparison.OrdinalIgnoreCase) >= 0)
+            var builder = new StringBuilder(html.Length + 64);
+            var index = 0;
+            var changed = false;
+
+            while (index < html.Length)
             {
-                return tag;
+                var open = html.IndexOf('<', index);
+                if (open < 0)
+                {
+                    builder.Append(html, index, html.Length - index);
+                    break;
+                }
+
+                builder.Append(html, index, open - index);
+
+                // "<!--…-->" — a comment. Its contents are not markup; a
+                // commented-out <script src> is not a tag the browser will fetch,
+                // so stamping it would rewrite bytes for no benefit.
+                if (StartsWith(html, open, "<!--"))
+                {
+                    var close = html.IndexOf("-->", open + 4, StringComparison.Ordinal);
+                    var end = close < 0 ? html.Length : close + 3;
+                    builder.Append(html, open, end - open);
+                    index = end;
+                    continue;
+                }
+
+                // "<!doctype…>", "<![CDATA[…]]>", "<?…?>" and every closing tag:
+                // nothing here is ever stamped, so copy through to the '>'.
+                if (open + 1 < html.Length
+                    && (html[open + 1] == '!' || html[open + 1] == '?' || html[open + 1] == '/'))
+                {
+                    var close = html.IndexOf('>', open + 1);
+                    var end = close < 0 ? html.Length : close + 1;
+                    builder.Append(html, open, end - open);
+                    index = end;
+                    continue;
+                }
+
+                // A '<' not followed by a letter is literal text ("a < b").
+                if (open + 1 >= html.Length || !IsAsciiLetter(html[open + 1]))
+                {
+                    builder.Append('<');
+                    index = open + 1;
+                    continue;
+                }
+
+                var nameEnd = open + 1;
+                while (nameEnd < html.Length && IsNameCharacter(html[nameEnd]))
+                {
+                    nameEnd++;
+                }
+
+                var name = html.Substring(open + 1, nameEnd - open - 1);
+                if (!TryParseAttributes(html, nameEnd, out var attributes, out var tagEnd))
+                {
+                    // An unterminated tag: the rest of the document is not
+                    // parseable markup, so hand it back untouched.
+                    builder.Append(html, open, html.Length - open);
+                    index = html.Length;
+                    break;
+                }
+
+                if (StampTag(html, open, tagEnd, name, attributes, generation, ownTagMarker, builder))
+                {
+                    changed = true;
+                }
+
+                index = tagEnd + 1;
+
+                if (IsRawTextElement(name))
+                {
+                    // Skip the body wholesale — it is script/style source or
+                    // literal text, never markup.
+                    var close = IndexOfClosingTag(html, index, name);
+                    var end = close < 0 ? html.Length : close;
+                    builder.Append(html, index, end - index);
+                    index = end;
+                }
             }
 
-            var isLink = tag.StartsWith("<link", StringComparison.OrdinalIgnoreCase);
-            if (isLink && !IsStylesheet(tag))
-            {
-                return tag;
-            }
-
-            var attribute = isLink ? "href" : "src";
-            if (!TryFindAttributeValue(tag, attribute, out var start, out var length))
-            {
-                // An inline <script> (no src) or a <link> without href.
-                return tag;
-            }
-
-            var original = tag.Substring(start, length);
-            var stamped = StampUrl(original, generation);
-            if (stamped == null)
-            {
-                return tag;
-            }
-
-            return string.Concat(tag.AsSpan(0, start), stamped, tag.AsSpan(start + length));
-        }
-
-        private static bool IsStylesheet(string tag)
-        {
-            return TryFindAttributeValue(tag, "rel", out var start, out var length)
-                && tag.Substring(start, length).IndexOf("stylesheet", StringComparison.OrdinalIgnoreCase) >= 0;
+            // Byte-preservation is a promise, not an accident: when no URL moved,
+            // hand back the very same instance the caller passed in.
+            return changed ? builder.ToString() : html;
         }
 
         /// <summary>
-        /// Locates the VALUE span of an attribute inside a single tag, handling
-        /// double-quoted, single-quoted and unquoted values. Returning a span
-        /// (rather than a rewritten tag) is what keeps attribute order and
-        /// formatting byte-identical.
+        /// Appends one opening tag to <paramref name="builder"/>, stamping its
+        /// URL if every conservatism rule allows it. Returns true when the tag
+        /// was changed. The tag is emitted by copying the original characters
+        /// around the URL span, which is what keeps attribute order, quoting and
+        /// whitespace byte-identical.
         /// </summary>
-        private static bool TryFindAttributeValue(string tag, string name, out int start, out int length)
+        private static bool StampTag(
+            string html,
+            int tagStart,
+            int tagEnd,
+            string name,
+            List<TagAttribute> attributes,
+            string generation,
+            string? ownTagMarker,
+            StringBuilder builder)
         {
-            start = 0;
-            length = 0;
-            var pattern = "[\\s\"']" + Regex.Escape(name)
-                + "\\s*=\\s*(?:\"(?<v>[^\"]*)\"|'(?<v>[^']*)'|(?<v>[^\\s\"'>]+))";
-            var match = Regex.Match(tag, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            if (!match.Success)
+            var length = tagEnd - tagStart + 1;
+            var isLink = name.Equals("link", StringComparison.OrdinalIgnoreCase);
+            var isScript = name.Equals("script", StringComparison.OrdinalIgnoreCase);
+
+            if (!isLink && !isScript)
             {
+                builder.Append(html, tagStart, length);
                 return false;
             }
 
-            var group = match.Groups["v"];
-            start = group.Index;
-            length = group.Length;
+            if (!string.IsNullOrEmpty(ownTagMarker)
+                && html.IndexOf(ownTagMarker, tagStart, length, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                builder.Append(html, tagStart, length);
+                return false;
+            }
+
+            if (isLink && !IsStylesheet(html, attributes))
+            {
+                builder.Append(html, tagStart, length);
+                return false;
+            }
+
+            if (!TryGetAttribute(attributes, isLink ? "href" : "src", out var url))
+            {
+                // An inline <script> (no src) or a <link> without href.
+                builder.Append(html, tagStart, length);
+                return false;
+            }
+
+            var stamped = StampUrl(html.Substring(url.ValueStart, url.ValueLength), generation);
+            if (stamped == null)
+            {
+                builder.Append(html, tagStart, length);
+                return false;
+            }
+
+            builder.Append(html, tagStart, url.ValueStart - tagStart);
+            builder.Append(stamped);
+            builder.Append(html, url.ValueStart + url.ValueLength, tagEnd + 1 - url.ValueStart - url.ValueLength);
             return true;
+        }
+
+        private static bool IsStylesheet(string html, List<TagAttribute> attributes)
+        {
+            return TryGetAttribute(attributes, "rel", out var rel)
+                && html.IndexOf("stylesheet", rel.ValueStart, rel.ValueLength, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool TryGetAttribute(List<TagAttribute> attributes, string name, out TagAttribute found)
+        {
+            foreach (var attribute in attributes)
+            {
+                if (attribute.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    found = attribute;
+                    return true;
+                }
+            }
+
+            found = default;
+            return false;
+        }
+
+        /// <summary>
+        /// Parses a tag's attribute list starting just after the tag name, and
+        /// reports where the tag ends. Quoted values are consumed as units, which
+        /// is what makes <c>data-json="a&gt;b"</c> a value containing '&gt;'
+        /// rather than the end of the tag, and what stops a <c>src</c> written
+        /// inside another attribute's value from being mistaken for a real
+        /// attribute.
+        /// </summary>
+        /// <returns>False when the tag is never terminated.</returns>
+        private static bool TryParseAttributes(string html, int from, out List<TagAttribute> attributes, out int tagEnd)
+        {
+            attributes = new List<TagAttribute>();
+            tagEnd = -1;
+            var index = from;
+
+            while (index < html.Length)
+            {
+                while (index < html.Length && char.IsWhiteSpace(html[index]))
+                {
+                    index++;
+                }
+
+                if (index >= html.Length)
+                {
+                    return false;
+                }
+
+                if (html[index] == '>')
+                {
+                    tagEnd = index;
+                    return true;
+                }
+
+                // The '/' of a self-closing tag; the '>' decides where it ends.
+                if (html[index] == '/')
+                {
+                    index++;
+                    continue;
+                }
+
+                var nameStart = index;
+                while (index < html.Length
+                       && html[index] != '='
+                       && html[index] != '>'
+                       && html[index] != '/'
+                       && !char.IsWhiteSpace(html[index]))
+                {
+                    index++;
+                }
+
+                var name = html.Substring(nameStart, index - nameStart);
+
+                while (index < html.Length && char.IsWhiteSpace(html[index]))
+                {
+                    index++;
+                }
+
+                if (index >= html.Length)
+                {
+                    return false;
+                }
+
+                if (html[index] != '=')
+                {
+                    // A valueless attribute ("defer", "async").
+                    attributes.Add(new TagAttribute(name, index, 0));
+                    continue;
+                }
+
+                index++;
+                while (index < html.Length && char.IsWhiteSpace(html[index]))
+                {
+                    index++;
+                }
+
+                if (index >= html.Length)
+                {
+                    return false;
+                }
+
+                var quote = html[index];
+                if (quote == '"' || quote == '\'')
+                {
+                    var valueStart = index + 1;
+                    var valueEnd = html.IndexOf(quote, valueStart);
+                    if (valueEnd < 0)
+                    {
+                        return false;
+                    }
+
+                    attributes.Add(new TagAttribute(name, valueStart, valueEnd - valueStart));
+                    index = valueEnd + 1;
+                }
+                else
+                {
+                    var valueStart = index;
+                    while (index < html.Length && html[index] != '>' && !char.IsWhiteSpace(html[index]))
+                    {
+                        index++;
+                    }
+
+                    attributes.Add(new TagAttribute(name, valueStart, index - valueStart));
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Finds the <c>&lt;/name</c> that ends a raw text element, matching the
+        /// way a browser's tokenizer does: the name must be followed by
+        /// whitespace, '/' or '&gt;', so <c>&lt;/scriptfoo&gt;</c> does not close
+        /// a <c>&lt;script&gt;</c>.
+        /// </summary>
+        private static int IndexOfClosingTag(string html, int from, string name)
+        {
+            var index = from;
+            while (index < html.Length)
+            {
+                var open = html.IndexOf("</", index, StringComparison.Ordinal);
+                if (open < 0)
+                {
+                    return -1;
+                }
+
+                var after = open + 2;
+                if (after + name.Length <= html.Length
+                    && string.Compare(html, after, name, 0, name.Length, StringComparison.OrdinalIgnoreCase) == 0)
+                {
+                    var tail = after + name.Length;
+                    if (tail >= html.Length || html[tail] == '>' || html[tail] == '/' || char.IsWhiteSpace(html[tail]))
+                    {
+                        return open;
+                    }
+                }
+
+                index = open + 2;
+            }
+
+            return -1;
+        }
+
+        private static bool IsRawTextElement(string name)
+        {
+            foreach (var candidate in RawTextElements)
+            {
+                if (name.Equals(candidate, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool StartsWith(string html, int index, string value)
+        {
+            return index + value.Length <= html.Length
+                && string.CompareOrdinal(html, index, value, 0, value.Length) == 0;
+        }
+
+        private static bool IsAsciiLetter(char value)
+        {
+            return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z');
+        }
+
+        private static bool IsNameCharacter(char value)
+        {
+            return IsAsciiLetter(value) || (value >= '0' && value <= '9') || value == '-' || value == ':' || value == '_';
+        }
+
+        /// <summary>One parsed attribute: its name, and where its value sits in the document.</summary>
+        private readonly struct TagAttribute
+        {
+            public TagAttribute(string name, int valueStart, int valueLength)
+            {
+                Name = name;
+                ValueStart = valueStart;
+                ValueLength = valueLength;
+            }
+
+            public string Name { get; }
+
+            public int ValueStart { get; }
+
+            public int ValueLength { get; }
         }
 
         /// <summary>

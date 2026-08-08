@@ -60,6 +60,15 @@ if [ -f "${BUILD_DIR}/publish/Jellyfin.Plugin.RefreshKit.pdb" ]; then
     cp "${BUILD_DIR}/publish/Jellyfin.Plugin.RefreshKit.pdb" "${STAGE_DIR}/"
 fi
 
+# meta.json is the manifest the SERVER keeps for the installed plugin.
+#
+# "autoUpdate" is deliberately true. Jellyfin PRESERVES the value it finds here
+# rather than resetting it — verified on 10.11.11: a copy of this folder placed
+# by hand kept "autoUpdate": false across a load and rewrite, while every
+# marketplace-installed plugin defaults to true. Shipping false therefore opts
+# the plugin out of the "Update Plugins" task permanently, which is a strange
+# thing for a plugin whose entire purpose is that nobody should have to think
+# about running stale code.
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cat > "${STAGE_DIR}/meta.json" <<EOF
 {
@@ -75,7 +84,7 @@ cat > "${STAGE_DIR}/meta.json" <<EOF
     "changelog": "Initial standalone plugin release.",
     "timestamp": "${TIMESTAMP}",
     "status": "Active",
-    "autoUpdate": false,
+    "autoUpdate": true,
     "imagePath": ""
 }
 EOF
