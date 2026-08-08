@@ -13,9 +13,10 @@ using MediaBrowser.Model.Serialization;
 namespace Jellyfin.Plugin.RefreshKit
 {
     /// <summary>
-    /// Jellyfin Refresh Kit — the STANDALONE plugin. Install this one plugin and
-    /// every OTHER installed plugin stops serving stale client code, without any
-    /// of them knowing this plugin exists.
+    /// Jellyfin Refresh Kit — the standalone plugin. It aligns eligible plugin
+    /// shell assets and open tabs with the active server state without requiring
+    /// participating plugins to adopt its API. Assets outside its documented
+    /// transformation boundary remain the owning plugin's responsibility.
     /// </summary>
     public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
@@ -49,9 +50,9 @@ namespace Jellyfin.Plugin.RefreshKit
         public override Guid Id => new Guid("515255fe-3332-49b0-b471-0be58c8221d8");
 
         public override string Description =>
-            "Fixes stale-cache / hard-refresh problems for every installed plugin: "
-            + "revalidating index.html, cache-busting stamps on other plugins' script tags, "
-            + "and a safe auto-reload when any plugin changes.";
+            "Keeps eligible plugin shell assets and open tabs aligned with active server state: "
+            + "revalidates or safely no-stores transformed index.html, stamps visible unversioned "
+            + "plugin tags, and coordinates reloads through documented light-DOM safety gates.";
 
         /// <summary>
         /// The embedded jellyfin-refresh-kit.js source. Read once per process.

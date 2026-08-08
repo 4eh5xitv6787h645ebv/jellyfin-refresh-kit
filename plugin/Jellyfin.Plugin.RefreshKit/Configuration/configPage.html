@@ -14,7 +14,7 @@
                         <h2 class="sectionTitle">Jellyfin Refresh Kit</h2>
                     </div>
                     <p class="fieldDescription">
-                        Fixes stale-cache problems for every installed plugin. Current generation:
+                        Handles the common stale app-shell and open-tab path across loaded plugins. Current generation:
                         <span id="rkGeneration">…</span>
                     </p>
                 </div>
@@ -25,8 +25,9 @@
                         <span>Serve index.html through the refresh kit</span>
                     </label>
                     <div class="fieldDescription checkboxFieldDescription">
-                        Adds strong revalidation (ETag / 304) to the web shell and enables everything below.
-                        Turn off to make this plugin completely inert.
+                        Uses strong ETag / 304 revalidation when Refresh Kit owns the final shell bytes;
+                        nested outer response buffers safely degrade to a full no-store response. Turn off
+                        to pass the shell through unchanged; the configuration and public endpoints remain available.
                     </div>
                 </div>
 
@@ -36,8 +37,9 @@
                         <span>Cache-bust other plugins' script tags</span>
                     </label>
                     <div class="fieldDescription checkboxFieldDescription">
-                        Appends ?rkv=&lt;generation&gt; to unversioned script/stylesheet tags injected by other
-                        plugins, so a plugin update always changes their URL.
+                        Appends ?rkv=&lt;generation&gt; to eligible unversioned script/stylesheet tags that are
+                        visible when this transform runs. Their URL changes when the active generation changes;
+                        later outer-owned and runtime-created tags remain their owner's responsibility.
                     </div>
                 </div>
 
@@ -47,8 +49,9 @@
                         <span>Reload open tabs after a plugin update</span>
                     </label>
                     <div class="fieldDescription checkboxFieldDescription">
-                        Never during playback, an open dialog, typing, or a fullscreen view. Off = the client
-                        only logs that an update is available.
+                        Defers while light-DOM probes observe playback, a rendered dialog, active editing, or
+                        fullscreen. Closed shadow roots and external players are outside those probes. Off = the
+                        client only logs that an update is available.
                     </div>
                 </div>
 
@@ -60,8 +63,8 @@
                     <div class="fieldDescription checkboxFieldDescription">
                         A plugin's saved settings can change what the web UI renders (a new tab, a new button),
                         so saving them counts as an update. Bursts are coalesced and each plugin is
-                        rate-limited by the cooldown below. Turn off to react only to plugin
-                        installs/upgrades/binary changes.
+                        rate-limited by the cooldown below. Turn off to exclude configuration content;
+                        loaded host/plugin MVIDs and active loose client assets are still tracked.
                     </div>
                 </div>
 
@@ -69,9 +72,9 @@
                     <label class="inputLabel inputLabelUnfocused" for="rkConfigCooldown">Settings-change cooldown (minutes, per plugin)</label>
                     <input is="emby-input" type="number" id="rkConfigCooldown" min="0" max="1440" />
                     <div class="fieldDescription">
-                        A single save is applied straight away and opens a window this many minutes long.
-                        Only further saves inside that window are held, and they are applied together when
-                        it expires — nothing is lost.
+                        After the provider observes new content, it must remain stable for 10 seconds; a later
+                        scan publishes the leading change and opens a window this many minutes long. Further
+                        saves inside that window are coalesced and published when it expires — nothing is lost.
                     </div>
                 </div>
 
