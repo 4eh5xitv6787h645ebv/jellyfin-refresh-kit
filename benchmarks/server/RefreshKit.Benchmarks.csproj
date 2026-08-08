@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>RefreshKit.Benchmarks</AssemblyName>
+    <RootNamespace>RefreshKit.Benchmarks</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <NuGetAudit>false</NuGetAudit>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Jellyfin.Controller" Version="[12.0.0-rc4]" />
+    <PackageReference Include="Jellyfin.Model" Version="[12.0.0-rc4]" />
+  </ItemGroup>
+
+  <!-- Compile the exact working-tree implementation into the benchmark
+       assembly. The provider test seam and middleware are intentionally
+       internal in the shipping plugin, so a ProjectReference cannot exercise
+       these paths without broadening the production API. -->
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../../plugin/Jellyfin.Plugin.RefreshKit/RefreshKit.cs"
+             Link="RefreshKit.cs" />
+    <Compile Include="../../plugin/Jellyfin.Plugin.RefreshKit/PluginGenerationProvider.cs"
+             Link="PluginGenerationProvider.cs" />
+    <Compile Include="../../plugin/Jellyfin.Plugin.RefreshKit/ThirdPartyTagStamper.cs"
+             Link="ThirdPartyTagStamper.cs" />
+    <Compile Include="../../plugin/Jellyfin.Plugin.RefreshKit/Plugin.cs"
+             Link="Plugin.cs" />
+    <Compile Include="../../plugin/Jellyfin.Plugin.RefreshKit/Configuration/PluginConfiguration.cs"
+             Link="Configuration/PluginConfiguration.cs" />
+  </ItemGroup>
+
+</Project>
