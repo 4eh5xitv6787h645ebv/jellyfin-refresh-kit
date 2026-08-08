@@ -69,8 +69,9 @@
                     <label class="inputLabel inputLabelUnfocused" for="rkConfigCooldown">Settings-change cooldown (minutes, per plugin)</label>
                     <input is="emby-input" type="number" id="rkConfigCooldown" min="0" max="1440" />
                     <div class="fieldDescription">
-                        At most one settings-driven reload per plugin per this many minutes. A change inside the
-                        window is not lost — it is applied when the window expires.
+                        A single save is applied straight away and opens a window this many minutes long.
+                        Only further saves inside that window are held, and they are applied together when
+                        it expires — nothing is lost.
                     </div>
                 </div>
 
