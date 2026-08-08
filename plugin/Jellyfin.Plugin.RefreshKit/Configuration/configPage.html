@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Jellyfin Refresh Kit</title>
+</head>
+<body>
+<div id="RefreshKitConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-controller="__plugin/refreshkit">
+    <div data-role="content">
+        <div class="content-primary">
+            <form id="RefreshKitConfigForm">
+                <div class="verticalSection">
+                    <div class="sectionTitleContainer flex align-items-center">
+                        <h2 class="sectionTitle">Jellyfin Refresh Kit</h2>
+                    </div>
+                    <p class="fieldDescription">
+                        Fixes stale-cache problems for every installed plugin. Current generation:
+                        <span id="rkGeneration">…</span>
+                    </p>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input is="emby-checkbox" type="checkbox" id="rkEnableInjection" />
+                        <span>Serve index.html through the refresh kit</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        Adds strong revalidation (ETag / 304) to the web shell and enables everything below.
+                        Turn off to make this plugin completely inert.
+                    </div>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input is="emby-checkbox" type="checkbox" id="rkEnableStamping" />
+                        <span>Cache-bust other plugins' script tags</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        Appends ?rkv=&lt;generation&gt; to unversioned script/stylesheet tags injected by other
+                        plugins, so a plugin update always changes their URL.
+                    </div>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input is="emby-checkbox" type="checkbox" id="rkEnableAutoReload" />
+                        <span>Reload open tabs after a plugin update</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        Never during playback, an open dialog, typing, or a fullscreen view. Off = the client
+                        only logs that an update is available.
+                    </div>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input is="emby-checkbox" type="checkbox" id="rkEnableConfigWatching" />
+                        <span>Treat plugin settings changes as updates</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        A plugin's saved settings can change what the web UI renders (a new tab, a new button),
+                        so saving them counts as an update. Bursts are coalesced and each plugin is
+                        rate-limited by the cooldown below. Turn off to react only to plugin
+                        installs/upgrades/binary changes.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="rkConfigCooldown">Settings-change cooldown (minutes, per plugin)</label>
+                    <input is="emby-input" type="number" id="rkConfigCooldown" min="0" max="1440" />
+                    <div class="fieldDescription">
+                        At most one settings-driven reload per plugin per this many minutes. A change inside the
+                        window is not lost — it is applied when the window expires.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="rkConfigExclusions">Ignore settings changes from these plugins</label>
+                    <textarea is="emby-textarea" id="rkConfigExclusions" class="emby-textarea" rows="4"></textarea>
+                    <div class="fieldDescription">
+                        One per line. Plugin name, install folder, GUID or assembly name. Use this if a plugin
+                        stores per-user preferences or runtime state in its plugin configuration and keeps
+                        bumping the generation on its own.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="rkPollSeconds">Poll interval (seconds)</label>
+                    <input is="emby-input" type="number" id="rkPollSeconds" min="15" max="3600" />
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="rkIdleSeconds">Required idle time (seconds)</label>
+                    <input is="emby-input" type="number" id="rkIdleSeconds" min="0" max="300" />
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="rkReloadBudget">Max reloads per minute</label>
+                    <input is="emby-input" type="number" id="rkReloadBudget" min="1" max="100" />
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input is="emby-checkbox" type="checkbox" id="rkDevMode" />
+                        <span>Developer mode</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        Serves the client runtime with no-store instead of immutable. For debugging this plugin.
+                    </div>
+                </div>
+
+                <div>
+                    <button is="emby-button" type="submit" class="raised button-submit block">
+                        <span>Save</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        (function () {
+            var pluginId = '515255fe-3332-49b0-b471-0be58c8221d8';
+
+            function load(page, config) {
+                page.querySelector('#rkEnableInjection').checked = config.EnableInjection !== false;
+                page.querySelector('#rkEnableStamping').checked = config.EnableThirdPartyStamping !== false;
+                page.querySelector('#rkEnableAutoReload').checked = config.EnableAutoReload !== false;
+                page.querySelector('#rkPollSeconds').value = config.PollSeconds || 60;
+                page.querySelector('#rkIdleSeconds').value = config.IdleSeconds === 0 ? 0 : (config.IdleSeconds || 5);
+                page.querySelector('#rkReloadBudget').value = config.ReloadBudget || 3;
+                page.querySelector('#rkDevMode').checked = config.DevMode === true;
+                page.querySelector('#rkEnableConfigWatching').checked = config.EnableConfigWatching !== false;
+                page.querySelector('#rkConfigCooldown').value = config.ConfigCooldownMinutes === 0 ? 0 : (config.ConfigCooldownMinutes || 5);
+                page.querySelector('#rkConfigExclusions').value = (config.ConfigWatchExclusions || []).join('\n');
+            }
+
+            document.querySelector('#RefreshKitConfigPage').addEventListener('pageshow', function () {
+                var page = this;
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    load(page, config);
+                    Dashboard.hideLoadingMsg();
+                });
+                ApiClient.ajax({
+                    type: 'GET',
+                    url: ApiClient.getUrl('RefreshKit/Generation'),
+                    dataType: 'json'
+                }).then(function (info) {
+                    page.querySelector('#rkGeneration').textContent = info.CacheKey || info.cacheKey || '?';
+                }).catch(function () {
+                    page.querySelector('#rkGeneration').textContent = 'unavailable';
+                });
+            });
+
+            document.querySelector('#RefreshKitConfigForm').addEventListener('submit', function (e) {
+                e.preventDefault();
+                var page = document.querySelector('#RefreshKitConfigPage');
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    config.EnableInjection = page.querySelector('#rkEnableInjection').checked;
+                    config.EnableThirdPartyStamping = page.querySelector('#rkEnableStamping').checked;
+                    config.EnableAutoReload = page.querySelector('#rkEnableAutoReload').checked;
+                    config.PollSeconds = parseInt(page.querySelector('#rkPollSeconds').value, 10) || 60;
+                    config.IdleSeconds = parseInt(page.querySelector('#rkIdleSeconds').value, 10) || 0;
+                    config.ReloadBudget = parseInt(page.querySelector('#rkReloadBudget').value, 10) || 3;
+                    config.DevMode = page.querySelector('#rkDevMode').checked;
+                    config.EnableConfigWatching = page.querySelector('#rkEnableConfigWatching').checked;
+                    config.ConfigCooldownMinutes = parseInt(page.querySelector('#rkConfigCooldown').value, 10) || 0;
+                    config.ConfigWatchExclusions = page.querySelector('#rkConfigExclusions').value
+                        .split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+                    ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                    });
+                });
+                return false;
+            });
+        })();
+    </script>
+</div>
+</body>
+</html>
