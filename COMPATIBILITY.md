@@ -361,3 +361,26 @@ plugin's configuration XML, never its data directory, and pays for that with the
 debounce and cooldown above. The tradeoff is stated in `plugin/README.md` — a
 settings change reaches open clients within seconds rather than instantly, in
 exchange for a signal that cannot be spammed by ordinary plugin activity.
+
+### Leading-edge cooldown (live re-verification on 10.11.11)
+
+The cooldown originally re-armed its window on *every* publish, including a
+publish that had itself been held back. Live testing showed the cost: a plugin
+that rewrites its own configuration on server start opens a window before anyone
+touches anything, and the admin's first real save then sits unseen for up to five
+minutes. The gate is now leading-edge — the change that opens a window publishes
+at once, only changes arriving inside the window are held and coalesced, and a
+held publish **closes** the window instead of re-arming it.
+
+Re-verified end to end on the demo server (34 third-party plugins, three kit
+instances, one open admin tab, Jellyfin Enhanced as the plugin under test):
+
+| Phase | Action | Result |
+|---|---|---|
+| A | one admin save (`HiddenContentEnabled` off) with no window open | generation moved **+24 s**, **one** reload at **+48 s**, the Hidden Content tab disappeared |
+| B | two saves 2 s apart, inside the window A opened | generation **unchanged** 2 s later; the pair coalesced into **one** bump at **+255 s** (the window's end) and **one** reload at +275 s |
+| C | one admin save (`HiddenContentEnabled` on) right after B's held publish | generation moved **+20 s**, **one** reload at **+40 s**, the Hidden Content tab was live again |
+
+Phase C is the decisive one: under the old rule B's publish would have re-armed a
+five-minute window and C would have waited it out. Zero page errors across all
+three phases, and one reload per phase — never two.
