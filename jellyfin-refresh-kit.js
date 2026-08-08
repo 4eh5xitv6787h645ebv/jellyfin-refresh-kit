@@ -1259,6 +1259,15 @@
      *     critical killed by construction rather than by another special case.
      *   • Several adopters each ASSIGNING their own global above their own tag
      *     are unaffected: those are distinct objects, each claimed by its author.
+     *   • A MANAGER HANDOFF (REGISTRATION CONTRACT clause 7) changes nothing
+     *     here, by construction. Both halves of the claim are page-level — the
+     *     marker lives on the config object, the WeakSet on `window` — so a
+     *     global claimed under the old manager is still claimed under the new
+     *     one, with nothing to transfer and no second chance to claim it. The
+     *     transferred instances are re-registered from the config they had
+     *     already MERGED, never re-offered the global, so the one adoption that
+     *     legitimately owns it does not get told its own config is "already
+     *     claimed" by itself.
      *   • The same payload injected twice assigns a NEW object per evaluation,
      *     so each copy claims its own and both apply — and the registry's
      *     equivalence dedupe (configsEquivalent, which compares callbacks by
