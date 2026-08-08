@@ -139,7 +139,8 @@ confirmation into a 1.5 s fetch loop.
 
 **Safe reload.** In `auto` mode the kit reloads only when *every* gate passes:
 
-- document is visible
+- the document is visible, **or** it has been hidden for at least
+  `hiddenSettleSeconds` (2.4.0 — see *Invisible moments* below)
 - not on a `#/video` route, not fullscreen, not picture-in-picture
 - no `<video>`/`<audio>` holding a real **session** — playing, or paused with a
   playback position, a played range, or an in-progress seek. A decorative
@@ -149,16 +150,84 @@ confirmation into a 1.5 s fetch loop.
 - no open dialog (`.dialog.opened`, `.actionSheet.opened`, `[role="dialog"]`,
   `[aria-modal="true"]`, ignoring ones parked inside `aria-hidden`/`hidden`)
 - nothing focused that the user might be typing into
+- no `input[type="password"]` **anywhere on the page with a value in it** (2.4.0
+  — `active_editor` only covers the field that has *focus*, and a typed password
+  is the one thing on a page that is genuinely expensive to lose. Shadow-DOM
+  fields are not seen; `querySelectorAll` does not descend into shadow roots)
 - user idle for at least `idleSeconds` (floored at 1s even when you configure 0 —
   reloading in the same task as a click steals that click)
 
 Blocked? Re-check every second, bounded (~10 min so a tab parked on a video does
 not tick at 1 Hz forever) — and after that cap the pending update is still live:
 every user interaction, every tab refocus, and **every successful poll** re-tests
-the gate directly and reloads the moment it clears. A hidden tab holds **zero
-timers**, and so does an interaction: each discrete event supersedes the
-previous one's settle timer rather than adding to it, so typing a query does not
-queue one probe per keystroke.
+the gate directly and reloads the moment it clears. A hidden tab holds **at most
+one** timer (2.4.0: the single-shot below — before that, zero), and so does an
+interaction: each discrete event supersedes the previous one's settle timer
+rather than adding to it, so typing a query does not queue one probe per
+keystroke.
+
+### Invisible moments (2.4.0)
+
+The kit used to spend every moment a reload would have been *free* waiting, and
+then reload the tab in the user's face a second later. 2.4.0 takes those
+moments. All four are refusals being *narrowed*; nothing else about the gate
+chain changed, and every scenario below was verified live on Jellyfin 10.11.11.
+
+**Reload while hidden.** `hidden` is no longer an unconditional first refusal —
+it is a *permission mode*. After a settle grace (`hiddenSettleSeconds`, default
+25s, so alt-tabbing away and straight back is never reloaded under) **every
+other gate still evaluates**: a hidden tab playing audio blocks on
+`media_element`, a hidden tab with an open dialog or a focused editor blocks.
+Hidden buys the reload nothing except the absence of a watching user. A hidden
+tab still never runs the 1 Hz ladder: it holds ONE single-shot timer, armed on
+`visibilitychange`, cancelled when the tab is shown, re-armed (never stacked) at
+the slow hidden cadence while another gate refuses, and capped. Set
+`hiddenReload: false` / `data-hidden-reload="false"` on any instance to put the
+whole page back on pre-2.4.0 behaviour.
+
+*Measured (Chrome, Jellyfin 10.11.11):* a reload issued while hidden completes
+the entire boot in the background — DOMContentLoaded 130 ms, `ApiClient`
+146 ms, `load` 347 ms, view rendered 757 ms — with `requestAnimationFrame` never
+firing until the tab is shown, and the first frame landing **24 ms** after it
+is. The visible control needed **900 ms** to the same point. The work is
+finished before the user comes back.
+
+*Degradation, honestly:* background `setTimeout` is throttled by every browser,
+and after ~5 minutes hidden Chrome clamps timers to roughly one per minute. The
+grace shot is armed at the moment of hiding, so it lands inside the ordinary
+regime; a re-arm while some other gate refuses just stretches. A tab the browser
+**freezes** runs no timers at all — there the page-lifecycle `resume` event
+re-arms the shot while still hidden, and if even that never comes the pending
+reload waits for the tab to be shown, which is exactly what it did before
+2.4.0. The worst case of this feature is the old behaviour.
+
+**Exit from playback.** Coming out of the player, the view is already being torn
+down and rebuilt, so a reload there is invisible in a way it can never be on a
+settled page — and it is the likeliest moment for a page to be *holding* an
+update, because `playback_route` refused it for the whole session. Leaving a
+video route opens a 2.5s window in which the **idle requirement only** drops to
+the 1s floor. Every other gate still decides, including `media_element` for a
+`<video>` that has not finished tearing down. The window expires on a wall
+clock, so it cannot be banked and spent an hour later. The route is *sampled* at
+moments the engine is already awake (the retry tick, the interaction settle) —
+no `hashchange` listener, no `history.pushState` patching, because the 10.11
+client fires neither event on in-app navigation. *Measured:* exit at 25.0s →
+reload at 26.0s, against 30.1s for the identical scenario before the change.
+
+**Login and server-picker routes.** `#/login` and `#/selectserver` (both router
+spellings, query strings tolerated) hold nothing a user can lose, so the idle
+requirement drops to the 1s floor there. That relaxation is why the password
+refusal above exists. *Measured with `idleSeconds: 30`, same page and config,
+only the route differing:* `#/login` reloaded 1.9s after the interaction,
+`#/home` waited the full 30s.
+
+**Screensaver as proof of absence.** When Jellyfin's own screensaver takes the
+screen it puts `screensaver-noScroll` on `<body>` — the application itself
+concluding the user is away. That overrides the **dialog** gate (a details sheet
+or an error toast left open on an abandoned tab otherwise blocks the reload
+*forever*) and satisfies idle. Every media gate still applies, and so do
+`active_editor` and `password_entry`. One `classList` check on a tick the engine
+already runs; no new listeners.
 
 **Ambient backdrop video does not block (2.3.0).** A `<video>` that is muted
 (or at volume 0) **and** looping **and** has no controls is decoration, not a
@@ -723,7 +792,9 @@ All options are **per instance** (each kit tag configures its own instance).
 | `getVersion` | — | — | Config-object only. `async () => string`. Overrides `versionUrl`. |
 | `pollSeconds` | `data-poll-seconds` | `60` | Clamped 15–3600. Only ticks while visible. |
 | `idleSeconds` | `data-idle-seconds` | `5` | Clamped 0–300. Effective floor is 1s. Page reload uses the **max** among instances wanting one. |
-| `assetPatterns` | `data-asset-patterns` | `[]` | Substrings, or `RegExp` via the config object. `data-*` is comma-separated substrings only. First-registered match wins across instances. |
+| `hiddenReload` | `data-hidden-reload` | `true` | 2.4.0. Allow the reload to happen while the tab is **hidden**, after `hiddenSettleSeconds` and with every other gate still applying. Page-level: any instance setting `false` (`"false"`/`"0"`/`"off"`/`"no"` in the attribute) puts the whole page back on pre-2.4.0 behaviour. |
+| `hiddenSettleSeconds` | `data-hidden-settle-seconds` | `25` | Clamped 0–3600. How long the tab must have been hidden before the hidden reload is attempted, and the cadence at which the single-shot re-arms while another gate refuses (floored at 5s). Page-level value is the **max** among all instances. |
+| `assetPatterns` | `data-asset-patterns` | `[]` | Substrings, or `RegExp` via the config object. `data-*` is comma-separated substrings only. First-registered match wins across instances. **Since 2.4.0 the `document.createElement` interceptor is installed only if some instance declares `assetPatterns` or `entryScripts`** — with neither, layer 2 has nothing to rewrite, so the kit leaves the page's `createElement` alone. |
 | `mode` | `data-mode` | `auto` | `auto` \| `notify` \| `off`. `notify` never triggers the shared reload. `off` disables **polling and reloads only** — the instance still performs one version fetch so its `assetPatterns` keep getting `?v=`; turning off auto-reload does not turn off cache-busting. |
 | `onUpdateAvailable` | — | — | Config-object only. `(newVersion, oldVersion) => void`. Fires once per distinct version. |
 | `reloadBudget` | `data-reload-budget` | `3` | Reloads per rolling 60s. **Clamped 1–100** — `0` is *not* "never reload", it is silently raised to `1`. To keep `?v=` versioning with no auto-reload use `mode: 'notify'` (callback, no reload) or `mode: 'off'` (no polling either); see the `mode` row. Page-level budget is the **min** among all instances. |

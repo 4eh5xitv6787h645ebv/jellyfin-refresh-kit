@@ -247,7 +247,8 @@
  *       • config: a PLAIN OBJECT of tag-level options using the documented
  *         option names (name, versionUrl, versionJsonField, getVersion,
  *         pollSeconds, idleSeconds, assetPatterns, entryScripts,
- *         entryTimeoutMs, mode, onUpdateAvailable, reloadBudget, bootVersion —
+ *         entryTimeoutMs, mode, onUpdateAvailable, reloadBudget, bootVersion,
+ *         hiddenReload, hiddenSettleSeconds (2.4.0) —
  *         plus the private marker `__singularApplied`, set by a 2.1+ copy that
  *         already SETTLED window.JellyfinRefreshKitConfig for its own tag —
  *         either merging it over that tag's config or declining it under the
@@ -389,6 +390,44 @@
  * working.
  *
  * ---------------------------------------------------------------------------
+ * THE SAFETY GATE, IN ORDER (blockReasonFor)
+ * ---------------------------------------------------------------------------
+ * Cheapest-and-most-decisive first; the FIRST refusal wins, so the order is
+ * also what a `blockReason` in a support log means. Everything a 2.4.0 feature
+ * touches is marked.
+ *
+ *   1. hidden          — (2.4.0) A PERMISSION MODE, not a refusal. With
+ *                        hiddenReload disabled anywhere on the page it refuses
+ *                        outright, as before. Otherwise it refuses only until
+ *                        the tab has been hidden for hiddenSettleSeconds
+ *                        ('hidden_settling'), and then FALLS THROUGH to every
+ *                        gate below — a hidden tab is not a safe tab, it is
+ *                        merely an unwatched one.
+ *   2. playback_route  — #/video or #!/video, either spelling, with or without
+ *                        a query string. Leaving it opens the masked window
+ *                        (2.4.0), which relaxes gate 8 and nothing else.
+ *   3. fullscreen_media
+ *   4. dialog          — (2.4.0) overridable by body.screensaver-noScroll: an
+ *                        abandoned modal used to hold the gate forever.
+ *   5. media_element   — never overridden by anything in 2.4.0. Ambient
+ *                        backdrop video is exempt (2.3.0) and a frozen element
+ *                        loses the gate after ~10 minutes of zero progress.
+ *   6. active_editor   — the FOCUSED field only. Not overridden by the
+ *                        screensaver: absent or not, the user's typing is
+ *                        still there when they come back.
+ *   7. password_entry  — (2.4.0) ANY input[type=password] on the page holding a
+ *                        value, focused or not. A pure refusal: it can only
+ *                        ever stop a reload the gates above would have allowed.
+ *   8. not_idle        — idleSeconds (max across pending instances), floored at
+ *                        MIN_SETTLE_MS. (2.4.0) Drops to that floor on the
+ *                        empty routes (#/login, #/selectserver), under the
+ *                        screensaver, and inside the masked post-playback
+ *                        window.
+ *
+ * A probe that throws returns 'probe_failed' and refuses: safety unknown is
+ * safety refused.
+ *
+ * ---------------------------------------------------------------------------
  * DESIGN NOTES (why it looks like this)
  * ---------------------------------------------------------------------------
  * • Zero dependencies, one file, ES2017, no build step. It has to be pasteable
@@ -521,6 +560,39 @@
  *   (the same span the retry ladder covers); after that the kit logs one line
  *   and re-tests with the media probe suppressed. Every other gate (dialog,
  *   editor, route, fullscreen, visibility, idle) still applies.
+ * • THE HIDDEN-TAB RELOAD IS AT THE BROWSER'S MERCY, and deliberately so.
+ *   Background timers are throttled everywhere: Chrome clamps a hidden page's
+ *   timers to ~1/minute after about five minutes hidden, and a tab the browser
+ *   FREEZES (Android, desktop battery savers) runs no timers at all until it is
+ *   resumed. The kit does not fight this and cannot: the settle shot is armed
+ *   at the moment of hiding, so it lands inside the ordinary regime; a re-arm
+ *   while another gate refuses simply stretches; a poll tick that fires while
+ *   hidden takes one opportunistic attempt for free; and the page-lifecycle
+ *   `resume` event re-arms the shot on a tab that was frozen and is still
+ *   hidden. If none of that fires, the reload waits for the tab to be shown —
+ *   which is exactly what it did before 2.4.0. The worst case of this feature
+ *   is the behaviour it replaced. MEASURED (Chrome 146 headless, tab hidden for
+ *   9 minutes with the reload held by an open dialog): an independent 25s
+ *   self-rescheduling probe in the same page fired 22 times at 25000–25001ms
+ *   each — no throttling penalty at all, including past the five-minute mark —
+ *   and the kit's own hidden single-shot re-armed 18 times in the first 175s
+ *   at its configured 10s cadence, then stopped at MAX_HIDDEN_RETRIES as
+ *   designed, leaving the tab with NO timer and the reload waiting for the
+ *   user. Headless Chrome is the friendly end of the range: a phone with the
+ *   screen off is the other, and the honest answer there is the paragraph
+ *   above.
+ * • THE PASSWORD REFUSAL DOES NOT SEE SHADOW DOM. querySelectorAll does not
+ *   descend into shadow roots, so a password field inside a web component
+ *   (some third-party plugins ship those) is invisible to it. Walking every
+ *   shadow root on every retry tick is not worth its cost; Jellyfin's own login
+ *   form is light DOM, and the focused case is still covered by active_editor.
+ * • LAYER 2 IS OPT-IN BY CONFIGURATION (2.4.0). The createElement interceptor
+ *   is installed only when some registered instance declares assetPatterns or
+ *   entryScripts, because with neither there is nothing it could rewrite. Two
+ *   consequences: an instance registered LATE that declares patterns versions
+ *   only what is created after it registered (elements handed out earlier were
+ *   never versionable by it anyway), and a page whose only adopter is the
+ *   standalone plugin keeps its native document.createElement.
  * • A CDN's own "@latest" resolution TTL is invisible to JavaScript. jsDelivr
  *   caches the @latest → tag mapping for up to 24h; no amount of ?v= changes
  *   that, because the STALE FILE IS THE CORRECT RESPONSE for that URL. Pin a
@@ -615,13 +687,48 @@
      *           away; flapDisarmedFor reports the LATEST refused transition;
      *           and a frozen singular window config takes the WeakSet claim
      *           path silently instead of via a swallowed throw.
-     *   2.4.0 — INVISIBLE MOMENTS: the kit now takes the reloads a user cannot
-     *           see. `hidden` stops being an unconditional first refusal and
-     *           becomes a PERMISSION MODE — every other gate still evaluates,
-     *           so a hidden tab reloads only when nothing else objects — armed
-     *           by ONE single-shot timer per hide (hiddenSettleSeconds, default
-     *           25) instead of the 1Hz ladder, which a hidden tab must never
-     *           run. Feature flag: hiddenReload / data-hidden-reload="false".
+     *   2.4.0 — INVISIBLE MOMENTS: the kit stops spending the moments a reload
+     *           would have been free and then reloading in the user's face a
+     *           second later. Four refusals are NARROWED, nothing is widened
+     *           elsewhere, and every gate not named still decides:
+     *             • `hidden` becomes a PERMISSION MODE rather than the
+     *               unconditional first refusal. After a settle grace
+     *               (hiddenSettleSeconds, default 25) every other gate still
+     *               evaluates — a hidden tab with live media, an open dialog or
+     *               a focused editor still blocks. A hidden tab still never
+     *               runs the 1Hz ladder: it holds ONE single-shot timer, armed
+     *               on visibilitychange, cancelled on show, re-armed (never
+     *               stacked) at the hidden cadence while another gate refuses,
+     *               capped at MAX_HIDDEN_RETRIES, plus one opportunistic
+     *               attempt from a poll tick that fires while hidden and a
+     *               re-arm on the page-lifecycle `resume` event for tabs the
+     *               browser froze. Opt out: hiddenReload / data-hidden-reload.
+     *             • LEAVING THE PLAYBACK ROUTE opens a 2.5s masked window in
+     *               which the IDLE requirement (only) drops to the settle
+     *               floor: the view is already being torn down and rebuilt.
+     *               The route is SAMPLED at the moments the engine is awake —
+     *               the 10.11 client navigates by pushState and fires neither
+     *               hashchange nor popstate, and patching history is not
+     *               something a guest does to someone else's page. The window
+     *               expires on a wall clock and cannot be banked.
+     *             • #/login and #/selectserver hold nothing a user can lose, so
+     *               the idle requirement drops to the settle floor there...
+     *             • ...which is safe only with the refusal that arrives with
+     *               it: any input[type=password] with a value in it blocks the
+     *               reload, on every route. 'active_editor' only ever covered
+     *               the FOCUSED field.
+     *             • Jellyfin's own screensaver (body.screensaver-noScroll) is
+     *               PROOF OF ABSENCE: it overrides the dialog gate — a modal
+     *               left open on an abandoned tab blocked the reload forever —
+     *               and satisfies idle. Media gates, active_editor and the
+     *               password refusal all still apply.
+     *           Also: the createElement interceptor is installed ONLY IF some
+     *           instance declares assetPatterns or entryScripts. With neither
+     *           (the standalone plugin's own shape) layer 2 has nothing to
+     *           rewrite, and the kit no longer replaces the page's
+     *           document.createElement — or installs per-element accessors on
+     *           every script/link the host creates — to guarantee a rewrite
+     *           that could never happen.
      */
     var KIT_VERSION = '2.4.0';
 
@@ -2153,6 +2260,46 @@
         });
         document.createElement = wrapper;
         interceptorInstalled = true;
+    }
+
+    /**
+     * Install the createElement interceptor ONLY IF SOMETHING ON THIS PAGE CAN
+     * USE IT (2.4.0).
+     *
+     * Layer 2 is a URL rewrite driven entirely by `assetPatterns`: with no
+     * instance declaring any, versionUrlForPage() matches nothing and returns
+     * every URL untouched. Installing the wrapper anyway meant replacing
+     * `document.createElement` for the whole document — and installing a pair
+     * of per-element accessors on every <script> and <link> ANY code on the
+     * page creates, Jellyfin's own client included — to guarantee a rewrite
+     * that could never happen.
+     *
+     * That is not a hypothetical configuration: it is exactly how the
+     * standalone plugin adopts the kit (a version endpoint, no patterns, no
+     * entries — it exists to detect updates and reload, not to version another
+     * collection's assets). The least invasive kit is the one that installs
+     * nothing it cannot use.
+     *
+     * Called before every instance's start(), so:
+     *   • the ordinary page installs the hook in the same synchronous turn the
+     *     kit tag runs in, exactly as an unconditional install did;
+     *   • an instance registered LATE that declares patterns still gets
+     *     interception from that moment on — elements created BEFORE it
+     *     registered were never versionable by it anyway;
+     *   • a manager handoff re-decides under the new manager's rules as its
+     *     transferred instances are adopted.
+     * `entryScripts` counts as well as `assetPatterns`: a bootstrap chain
+     * exists to run code that creates sub-assets, and that is the code the
+     * wrapper is there for.
+     */
+    function ensureCreateElementHook() {
+        if (interceptorInstalled) return;
+        for (var i = 0; i < registry.length; i++) {
+            if (registry[i].cfg.assetPatterns.length > 0 || registry[i].cfg.entryScripts.length > 0) {
+                safe(installCreateElementHook);
+                return;
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -4102,6 +4249,16 @@
                 // requests on top of each other.
                 safe(startPolling);
                 safe(function () { poll(); });
+                // OPPORTUNISTIC HIDDEN ATTEMPT (2.4.0). A poll tick that fires
+                // while the document is hidden is a timer that the browser DID
+                // decide to run in a background tab — so it is a free second
+                // chance at the hidden reload, and it costs no new timer. It
+                // matters on a host where `visibilitychange` never arrives (so
+                // nothing armed the hidden shot and nothing stopped this loop)
+                // and in the window between the tab being hidden and the
+                // visibility handler running. It is only ever an ATTEMPT: every
+                // gate, including the hidden-settle grace, still decides.
+                if (document.visibilityState === 'hidden') safe(tryReload);
             }, cfg.pollSeconds * 1000);
         }
 
@@ -4809,6 +4966,9 @@
         // earlier audit pass said so before this copy existed.
         if (keyedConfigKey && warnedLateKeys[keyedConfigKey]) delete warnedLateKeys[keyedConfigKey];
         scheduleKeyedConfigAudit();
+        // BEFORE start(): a bootstrap chain begins there, and the sub-assets its
+        // entries create must meet an installed interceptor.
+        ensureCreateElementHook();
         inst.start();
         return inst.handle;
     }
@@ -5153,6 +5313,9 @@
         inst.anonymous = rec.anonymous === true;
         registry.push(inst);
         byName[rec.name] = inst;
+        // Same rule for an instance arriving by handoff: the NEW manager
+        // installs its wrapper only if something it now owns can use it.
+        ensureCreateElementHook();
         inst.start();
         return inst;
     }
@@ -5564,10 +5727,14 @@
         }
     }
 
-    // Install the createElement hook FIRST and synchronously. Any sub-script the
-    // host bootstrap creates before this point is unversioned forever, so the
-    // kit's <script> tag must come before the bootstrap's in the document.
-    safe(installCreateElementHook);
+    // The createElement hook is installed by the first registration that can
+    // USE it (ensureCreateElementHook), which happens a few statements below in
+    // this same synchronous turn — no host code runs in between. It is still
+    // true that any sub-script the host bootstrap creates before that point is
+    // unversioned forever, so the kit's <script> tag must come before the
+    // bootstrap's in the document; what changed in 2.4.0 is that a page whose
+    // adopters declare no assetPatterns and no entryScripts (the standalone
+    // plugin's own shape) never has its document.createElement replaced at all.
 
     safe(function () {
         // Capture phase, passive: we only observe. Capture means we see the event
@@ -5588,6 +5755,20 @@
         addPageListener(document, 'visibilitychange', wakeListener, false);
         addPageListener(window, 'focus', wakeListener, false);
         addPageListener(window, 'pageshow', wakeListener, false);
+        // PAGE LIFECYCLE 'resume' (2.4.0): the browser FROZE this background
+        // tab — Chrome on Android and desktop battery-saver both do — and has
+        // now un-frozen it while it is STILL HIDDEN. Every timer the tab held
+        // was stopped for the duration, including the hidden single shot, so
+        // this is the one moment it can be put back. It is not a wake (the tab
+        // is still hidden, so polling must stay stopped); onHidden() re-arms
+        // against the ORIGINAL hiddenSince, so a tab frozen for an hour finds
+        // its grace long expired and takes the reload immediately.
+        addPageListener(document, 'resume', function () {
+            safe(function () {
+                if (handedOff) return;
+                if (document.visibilityState === 'hidden') onHidden();
+            });
+        }, false);
     });
 
     /**
