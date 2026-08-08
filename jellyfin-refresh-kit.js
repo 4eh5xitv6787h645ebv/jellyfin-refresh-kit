@@ -2270,6 +2270,58 @@
     }
 
     /**
+     * Is this hash one of Jellyfin's EMPTY ROUTES — the login screen and the
+     * server picker?
+     *
+     * They are the two views in the whole client that hold nothing to lose: no
+     * scroll position, no list state, no half-finished action, nothing but a
+     * form the user has usually not touched yet. Reloading one is, from the
+     * user's side, indistinguishable from the page they are already looking at.
+     *
+     * Both router spellings and a trailing query string are tolerated, exactly
+     * as isPlaybackRoute does — "#/login.html?serverid=…" is what the 10.11
+     * client actually puts in the bar, and a route matcher that missed it would
+     * quietly never fire.
+     * @param {string} hash
+     * @returns {boolean}
+     */
+    function isEmptyRoute(hash) {
+        return /^#!?\/(login|selectserver)(\.html)?([?/#]|$)/i.test(String(hash || ''));
+    }
+
+    /**
+     * Is there a PASSWORD FIELD ON THIS PAGE WITH SOMETHING TYPED IN IT?
+     *
+     * The 'active_editor' gate only covers the field that currently has FOCUS,
+     * which is exactly the wrong shape for a password: a user types their
+     * password, clicks away or tabs to the "remember me" checkbox, and the
+     * field is now unfocused, non-empty, and — before 2.4.0 — invisible to
+     * every gate the kit had. Wiping it costs the user the one thing on the
+     * page that is genuinely expensive to retype, and it is not recoverable
+     * from browser autofill the way a username is.
+     *
+     * It matters most on precisely the route 2.4.0 just relaxed (login), which
+     * is why the two arrived together — but it applies EVERYWHERE, because a
+     * password field with a value in it means the same thing on any page.
+     *
+     * KNOWN LIMITATION: querySelectorAll does not descend into shadow roots, so
+     * a password field inside a web component's shadow DOM (some third-party
+     * plugins ship those) is not seen. Walking every shadow root on every retry
+     * tick is not worth its cost here; Jellyfin's own login form is light DOM,
+     * and the other gates (active_editor while it is focused, idle while it is
+     * being typed into) still cover the ordinary case.
+     * @returns {boolean}
+     */
+    function hasTypedPassword() {
+        var fields = document.querySelectorAll('input[type="password"]');
+        for (var i = 0; i < fields.length; i++) {
+            var value = fields[i].value;
+            if (typeof value === 'string' && value.length > 0) return true;
+        }
+        return false;
+    }
+
+    /**
      * SAMPLE THE ROUTE, and notice the one transition worth acting on: the user
      * LEAVING playback.
      *
@@ -2402,6 +2454,19 @@
             if (active && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName || ''))) {
                 return 'active_editor';
             }
+
+            // A TYPED-BUT-UNFOCUSED PASSWORD (2.4.0). One refusal, never a
+            // relaxation: it can only ever stop a reload the other gates were
+            // about to allow. See hasTypedPassword().
+            if (hasTypedPassword()) return 'password_entry';
+
+            // EMPTY ROUTES (2.4.0): the login screen and the server picker hold
+            // nothing the user can lose, so the idle requirement — the gate
+            // that exists to protect work in progress — drops to the settle
+            // floor there. Everything above still applies, including the
+            // password refusal directly above this, which is what makes
+            // relaxing the login route safe at all.
+            if (isEmptyRoute(hash)) idleMs = Math.min(idleMs, MIN_SETTLE_MS);
 
             if ((Date.now() - lastInteractionAt) < idleMs) return 'not_idle';
             return null;
