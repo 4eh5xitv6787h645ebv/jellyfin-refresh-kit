@@ -686,6 +686,47 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Same(Html, RefreshKit.ReplaceOwnedScriptTags(Html, PluginName, CurrentTag));
         }
 
+        [Theory]
+        [InlineData("<select><option>a</body><option>b</select>")]
+        [InlineData("<table><tbody><tr></body></tr></tbody></table>")]
+        [InlineData("<object></body></object>")]
+        [InlineData("<applet></body></applet>")]
+        [InlineData("<marquee></body></marquee>")]
+        public void ReplaceOwnedScriptTags_IgnoresBodyEndInNonBodyInsertionMode(
+            string content)
+        {
+            var html = "<html><body>" + content;
+
+            Assert.Same(html, RefreshKit.ReplaceOwnedScriptTags(html, PluginName, CurrentTag));
+        }
+
+        [Fact]
+        public void ReplaceOwnedScriptTags_UsesLaterRealBodyEndAfterIgnoredSelectToken()
+        {
+            const string Html = "<html><body><select><option>a</body>"
+                + "<option>b</select></body></html>";
+
+            var result = RefreshKit.ReplaceOwnedScriptTags(Html, PluginName, CurrentTag);
+
+            Assert.Contains("</select>" + CurrentTag + "\n</body>", result, StringComparison.Ordinal);
+            Assert.Equal(1, Count(result, CurrentTag));
+        }
+
+        [Fact]
+        public void ReplaceOwnedScriptTags_UsesLastAcceptedBodyEndAfterLateMarkup()
+        {
+            const string Html = "<html><body><main></body>"
+                + "<script id=\"late\"></script></body></html>";
+
+            var result = RefreshKit.ReplaceOwnedScriptTags(Html, PluginName, CurrentTag);
+
+            Assert.Contains(
+                "<script id=\"late\"></script>" + CurrentTag + "\n</body>",
+                result,
+                StringComparison.Ordinal);
+            Assert.Equal(1, Count(result, CurrentTag));
+        }
+
         [Fact]
         public void ReplaceOwnedScriptTags_ClosesTrueSelfClosingForeignRootsBeforeBody()
         {

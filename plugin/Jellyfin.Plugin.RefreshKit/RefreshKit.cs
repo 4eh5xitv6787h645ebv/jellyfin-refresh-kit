@@ -896,6 +896,7 @@ namespace Jellyfin.Plugin.RefreshKit
                         && framesetDepth == 0
                         && !sawFrameset
                         && !hasForeignAncestor
+                        && !HtmlBodyEndTagBlockedByInsertionMode(elements)
                         && closesHtmlElement;
                     if (closesHtmlElement
                         && name.Equals("frameset", StringComparison.OrdinalIgnoreCase))
@@ -918,9 +919,12 @@ namespace Jellyfin.Plugin.RefreshKit
                         lastBodyClose = open;
                     }
 
-                    // An ignored body end tag (for example one inside template
-                    // or foreign content) must not tear down the real body frame.
-                    if (!isBodyEnd || acceptsBodyEnd)
+                    // The tree builder changes insertion mode for accepted body
+                    // and html end tags without popping their stack frames. Keep
+                    // them so a later reprocessed body token can still be the
+                    // document's last accepted close.
+                    if (!isBodyEnd
+                        && !name.Equals("html", StringComparison.OrdinalIgnoreCase))
                     {
                         HtmlPopElement(elements, name);
                     }
@@ -1662,6 +1666,44 @@ namespace Jellyfin.Plugin.RefreshKit
             }
 
             return false;
+        }
+
+        private static bool HtmlBodyEndTagBlockedByInsertionMode(
+            List<HtmlElementContext> elements)
+        {
+            for (var index = elements.Count - 1; index >= 0; index--)
+            {
+                var element = elements[index];
+                if (element.Namespace != HtmlMarkupNamespace.Html)
+                {
+                    return true;
+                }
+
+                var name = element.Name;
+                if (name.Equals("body", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                // `</body>` requires body in standard scope. Select additionally
+                // ignores it in the select insertion mode even though body is in
+                // standard scope.
+                if (name.Equals("select", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("applet", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("caption", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("html", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("marquee", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("object", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("table", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("td", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("th", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("template", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return true;
         }
 
         private static bool HtmlIsVoidElement(string name) =>
