@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "legacy-direct-writer",
+      "generation": "g-1111222233334444",
+      "html": "<!doctype html><html><head><!-- stale marker <script src=\"/commented.js\"></script> --><link rel=\"stylesheet\" href=\"../Seasonals/Resources/seasonals.css\"></head><body><script plugin=\"Jellyscrub\" src=\"/Jellyscrub/ClientScript\"></script><script plugin=\"HoverTrailer\" src=\"/HoverTrailer/ClientScript?mode=hover\"></script><script src=\"/legacy/stale.js?rkv=old&amp;mode=1\"></script><script plugin=\"Jellyfin Refresh Kit\" src=\"../RefreshKit/kit.js?v=g-old\"></script></body></html>",
+      "expectedStampCount": 4,
+      "mustContain": [
+        "../Seasonals/Resources/seasonals.css?rkv=g-1111222233334444",
+        "/Jellyscrub/ClientScript?rkv=g-1111222233334444",
+        "/HoverTrailer/ClientScript?mode=hover&rkv=g-1111222233334444",
+        "/legacy/stale.js?mode=1&rkv=g-1111222233334444",
+        "../RefreshKit/kit.js?v=g-old"
+      ],
+      "mustNotContain": ["commented.js?rkv=", "rkv=old"]
+    },
+    {
+      "id": "branding-css",
+      "generation": "g-2222333344445555",
+      "html": "<html><head><style>.x::after{content:\"<script src='/style-decoy.js'>\"}@import url('https://cdn.example/theme.css');</style><link rel=\"stylesheet\" href=\"/StaticAssets/asset/skin.css\"><link rel=\"stylesheet\" href=\"https://fonts.example/font.css\"><link rel=\"icon\" href=\"/StaticAssets/asset/icon.svg\"><link rel=\"stylesheet\" href=\"/user/theme.css?v=2\"></head><body></body></html>",
+      "expectedStampCount": 1,
+      "mustContain": [
+        "/StaticAssets/asset/skin.css?rkv=g-2222333344445555",
+        "https://fonts.example/font.css",
+        "/user/theme.css?v=2"
+      ],
+      "mustNotContain": ["style-decoy.js?rkv=", "icon.svg?rkv=", "font.css?rkv="]
+    },
+    {
+      "id": "javascript-broker",
+      "generation": "g-3333444455556666",
+      "html": "<html><body><script>const decoy = \"<script src='/inline-decoy.js'>\";</script><script data-template=\" src='/attribute-decoy.js'\" src=\"/JavaScriptInjector/loader.js\"></script><script data-json=\"a>b\" src='/MediaPreview/loader.js'></script></body></html>",
+      "expectedStampCount": 2,
+      "mustContain": [
+        "/JavaScriptInjector/loader.js?rkv=g-3333444455556666",
+        "/MediaPreview/loader.js?rkv=g-3333444455556666",
+        "/attribute-decoy.js"
+      ],
+      "mustNotContain": ["inline-decoy.js?rkv=", "attribute-decoy.js?rkv="]
+    },
+    {
+      "id": "transformation-chain",
+      "generation": "g-4444555566667777",
+      "html": "<html><head><script src=\"/web/main.abcdef012345.js\"></script><script src=\"/SeerrFin/seerrfin-tabs.js?v=1.6.5.1\"></script></head><body><script defer src=\"../ActorPlus/assets/birthage.js\"></script><script defer src=\"../ActorPlus/assets/birthage.js\"></script></body></html>",
+      "expectedStampCount": 2,
+      "mustContain": [
+        "/web/main.abcdef012345.js",
+        "/SeerrFin/seerrfin-tabs.js?v=1.6.5.1",
+        "../ActorPlus/assets/birthage.js?rkv=g-4444555566667777"
+      ],
+      "mustNotContain": ["abcdef012345.js?rkv=", "seerrfin-tabs.js?v=1.6.5.1&rkv="]
+    },
+    {
+      "id": "dynamic-static-assets",
+      "generation": "g-5555666677778888",
+      "html": "<html><head><link rel=\"preconnect\" href=\"https://cdn.example\"><link rel=\"stylesheet\" href=\"../StaticAssets/asset/theme.css?tenant=alpha\"></head><body><script src=\"/StaticAssets/asset/custom.js\"></script><script src=\"https://cdn.example/custom.js\"></script><img src=\"/StaticAssets/asset/poster.png\"></body></html>",
+      "expectedStampCount": 2,
+      "mustContain": [
+        "../StaticAssets/asset/theme.css?tenant=alpha&rkv=g-5555666677778888",
+        "/StaticAssets/asset/custom.js?rkv=g-5555666677778888",
+        "/StaticAssets/asset/poster.png"
+      ],
+      "mustNotContain": ["cdn.example/custom.js?rkv=", "poster.png?rkv="]
+    },
+    {
+      "id": "jf12-synthetic",
+      "generation": "g-6666777788889999",
+      "html": "<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'self'; style-src 'self'\"><link rel=\"stylesheet\" href=\"/plugins/synthetic/theme.css\"><script type=\"importmap\">{\"imports\":{}}</script><script type=\"module\" src=\"/plugins/synthetic/module.js\"></script><script type=\"module\" src=\"/web/main.0123456789abcdef.js\"></script><script nomodule src=\"/legacy/bridge.js\"></script><script type=\"module\" src=\"https://cdn.example/module.js\"></script></head><body><main id=\"root\"></main></body></html>",
+      "expectedStampCount": 3,
+      "mustContain": [
+        "/plugins/synthetic/theme.css?rkv=g-6666777788889999",
+        "/plugins/synthetic/module.js?rkv=g-6666777788889999",
+        "/legacy/bridge.js?rkv=g-6666777788889999",
+        "/web/main.0123456789abcdef.js"
+      ],
+      "mustNotContain": ["0123456789abcdef.js?rkv=", "cdn.example/module.js?rkv="]
+    }
+  ]
+}

@@ -1,0 +1,607 @@
+{
+  "schemaVersion": 1,
+  "audit": {
+    "source": "/tmp/rk-ecosystem-audit.json",
+    "sha256": "b9b5431eca9377f5f15b9636775f989f632bf89ae1554db9df68778f26d9bff2",
+    "catalogCommit": "a60d3d24fe0e16e59518f95ea4743d8996fa81c9",
+    "cutoff": "2026-08-08T14:17:00Z"
+  },
+  "artifacts": [
+    {
+      "id": "file-transformation-jf10",
+      "catalogName": "File Transformation",
+      "catalogDependency": true,
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-file-transformation",
+      "sourceRevision": "f4f01c361343c63b51fe7a69c6ea0625c4ad1852",
+      "archive": {
+        "name": "Release-10.11.11.zip",
+        "url": "https://github.com/IAmParadox27/jellyfin-plugin-file-transformation/releases/download/2.5.11.0/Release-10.11.11.zip",
+        "sha256": "1ebb39a6ad9c4b738638c5e8e5b7e3c67167a7163cf9e035433329739746251c"
+      },
+      "plugin": {
+        "guid": "5e87cc92-571a-4d8d-8d98-d2d4147f9f90",
+        "name": "File Transformation",
+        "version": "2.5.11.0",
+        "targetAbi": "10.11.11.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.FileTransformation.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": []
+    },
+    {
+      "id": "achievement-badges-jf10",
+      "catalogName": "Achievement Badges",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/ZL154/AchievementBadges_for_Jellyfin",
+      "sourceRevision": "96838befa52ad432839f0d81fe941d6edcda1ce2",
+      "archive": {
+        "name": "Jellyfin.Plugin.AchievementBadges_2.2.0.0.zip",
+        "url": "https://github.com/ZL154/AchievementBadges_for_Jellyfin/releases/download/v2.2.0/Jellyfin.Plugin.AchievementBadges_2.2.0.0.zip",
+        "sha256": "11d1794d111578daa87e47576807d2a67e86654eb93805a8554936f6f7280982"
+      },
+      "plugin": {
+        "guid": "d9f4b7d2-6c4d-4d7e-9d2d-1c6b4f8e2a11",
+        "name": "Achievement Badges",
+        "version": "2.2.0.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.AchievementBadges.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["/plugins/achievementbadges/"]
+    },
+    {
+      "id": "hover-trailer-jf10",
+      "catalogName": "HoverTrailer",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/Fovty/HoverTrailer",
+      "sourceRevision": "990b313a3f095ccbfe109340f69e4448655870bd",
+      "archive": {
+        "name": "HoverTrailer-0.3.1.0-server.zip",
+        "url": "https://github.com/Fovty/HoverTrailer/releases/download/v0.3.1.0/HoverTrailer-0.3.1.0-server.zip",
+        "sha256": "836611a08e5f091139d89905def0ecf0ba6f102658538314d8d2459d4742bfa8"
+      },
+      "plugin": {
+        "guid": "82c71cde-a52b-44f1-a18e-d93eb6a35ed0",
+        "name": "HoverTrailer",
+        "version": "0.3.1.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Fovty.Plugin.HoverTrailer.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["/hovertrailer/"]
+    },
+    {
+      "id": "in-player-episode-preview-jf10",
+      "catalogName": "InPlayerEpisodePreview",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/Namo2/InPlayerEpisodePreview",
+      "sourceRevision": "fd0f0f50daa2c7792a54ce9e1ffe3f959068c1bc",
+      "archive": {
+        "name": "InPlayerEpisodePreview_1.6.1.2-10.11.0.zip",
+        "url": "https://github.com/Namo2/InPlayerEpisodePreview/releases/download/v1.6.1/InPlayerEpisodePreview_1.6.1.2-10.11.0.zip",
+        "sha256": "5d6f85bf660188be1d5f8da05b46317efebf0c1659ac6767119290afa8076791"
+      },
+      "plugin": {
+        "guid": "73833d5f-0bcb-45dc-ab8b-7ce668f4345d",
+        "name": "InPlayerEpisodePreview",
+        "version": "1.6.1.2",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Namo.Plugin.InPlayerEpisodePreview.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["/inplayerpreview/"]
+    },
+    {
+      "id": "editors-choice-jf10",
+      "catalogName": "jellyfin-editors-choice-plugin",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/lachlandcp/jellyfin-editors-choice-plugin",
+      "sourceRevision": "bea2192d9799e03d210383a5036743f36c715820",
+      "archive": {
+        "name": "EditorsChoicePlugin.v1.5.2.zip",
+        "url": "https://github.com/lachlandcp/jellyfin-editors-choice-plugin/releases/download/1.5.2/EditorsChoicePlugin.v1.5.2.zip",
+        "sha256": "f59dce917452d58500c4efc6ad72c6ac85fa959c2602bbf23a897bdcddedef97"
+      },
+      "plugin": {
+        "guid": "70bb2ec1-f19e-46b5-b49a-942e6b96ebae",
+        "name": "EditorsChoice",
+        "version": "1.5.2.0",
+        "targetAbi": "10.11.8.0",
+        "framework": "net9.0",
+        "assembly": "EditorsChoicePlugin.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["/editorschoice/"]
+    },
+    {
+      "id": "jellyfin-enhanced-jf10",
+      "catalogName": "Jellyfin-Enhanced",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/n00bcodr/Jellyfin-Enhanced",
+      "repositoryAccess": "strictly-read-only",
+      "sourceRevision": "82b425201e92dad1f251f574bc73f1b892b79f71",
+      "archive": {
+        "name": "Jellyfin.Plugin.JellyfinEnhanced_10.11.0.zip",
+        "url": "https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.1.0.0/Jellyfin.Plugin.JellyfinEnhanced_10.11.0.zip",
+        "sha256": "ef27604cb7711ade70a2ea659db1528fdbda9420b98d259a4f404b135079a24b"
+      },
+      "plugin": {
+        "guid": "f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b",
+        "name": "Jellyfin Enhanced",
+        "version": "12.1.0.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.JellyfinEnhanced.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["/jellyfinenhanced/"]
+    },
+    {
+      "id": "jellyfin-enhanced-jf12",
+      "catalogName": "Jellyfin-Enhanced",
+      "disposition": "testable",
+      "runtime": "jf12",
+      "repository": "https://github.com/n00bcodr/Jellyfin-Enhanced",
+      "repositoryAccess": "strictly-read-only",
+      "sourceRevision": "82b425201e92dad1f251f574bc73f1b892b79f71",
+      "archive": {
+        "name": "Jellyfin.Plugin.JellyfinEnhanced_12.0.0.zip",
+        "url": "https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.1.0.0/Jellyfin.Plugin.JellyfinEnhanced_12.0.0.zip",
+        "sha256": "954705e060da45b8f97793bd74bd0e0b7b5f39549605570b62a185ebba4eb042"
+      },
+      "plugin": {
+        "guid": "f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b",
+        "name": "Jellyfin Enhanced",
+        "version": "12.1.0.0",
+        "targetAbi": "12.0.0.0",
+        "framework": "net10.0",
+        "assembly": "Jellyfin.Plugin.JellyfinEnhanced.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["/jellyfinenhanced/"]
+    },
+    {
+      "id": "javascript-injector-jf10",
+      "catalogName": "Jellyfin-JavaScript-Injector",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/n00bcodr/Jellyfin-JavaScript-Injector",
+      "sourceRevision": "6c24fb69e8ecebd32ad8104d02b2a465cec98888",
+      "archive": {
+        "name": "Jellyfin.Plugin.JavaScriptInjector_10.11.0.zip",
+        "url": "https://github.com/n00bcodr/Jellyfin-JavaScript-Injector/releases/download/3.5.0.0/Jellyfin.Plugin.JavaScriptInjector_10.11.0.zip",
+        "sha256": "15265c66dddcd9319b67beaeb468d761f651c33f47820cc988db90ef8bf19cf6"
+      },
+      "plugin": {
+        "guid": "f5a34f7b-2e8a-4e6a-a722-3a216a81b374",
+        "name": "JavaScript Injector",
+        "version": "3.5.0.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.JavaScriptInjector.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["javascriptinjector"]
+    },
+    {
+      "id": "media-preview-jf10",
+      "catalogName": "jellyfin-media-preview-plugin",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/spkesDE/jellyfin-media-preview-plugin",
+      "sourceRevision": "edc47debfb2896f1b270dc3401fee8ed8d1bbf62",
+      "archive": {
+        "name": "MediaPreview.zip",
+        "url": "https://github.com/spkesDE/jellyfin-media-preview-plugin/releases/download/v0.3.1.1/MediaPreview.zip",
+        "sha256": "a6a9225dd3e08218120dc5db3217033a11ca7fee767719406ee6c144954be262"
+      },
+      "plugin": {
+        "guid": "2c2ee6c1-bcd7-48e4-a7e8-e6b4d77d3df2",
+        "name": "Media Preview",
+        "version": "0.3.1.1",
+        "targetAbi": "10.11.11.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.MediaPreview.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": ["/mediapreview/"]
+    },
+    {
+      "id": "jmsfusion-jf10",
+      "catalogName": "Jellyfin-MonWUI-Plugin",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/G-grbz/Jellyfin-MonWUI-Plugin",
+      "sourceRevision": "f1a6f7f6d43295dbf9b7fe1d10eaef8ddb3b4de7",
+      "archive": {
+        "name": "JMSFusion-3.7.0.0-server.zip",
+        "url": "https://github.com/G-grbz/Jellyfin-MonWUI-Plugin/releases/download/v3.7.0/JMSFusion-3.7.0.0-server.zip",
+        "sha256": "42da0aff4536f390058f1fa70886e28a97675ac8070f6c668884325e3eec3b55"
+      },
+      "plugin": {
+        "guid": "c0b4a5e0-2f6a-4e70-9c5f-1e7c2d0b7f12",
+        "name": "JMSFusion",
+        "version": "3.7.0.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.JMSFusion.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": ["/plugins/jmsfusion/", "/slider/"]
+    },
+    {
+      "id": "actor-plus-jf10",
+      "catalogName": "Jellyfin.Plugin.ActorPlus",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/Druidblack/Jellyfin.Plugin.ActorPlus",
+      "sourceRevision": "792ee5360c323096223446a01a1298404f49e0ea",
+      "archive": {
+        "name": "Release-1.0.0.0.zip",
+        "url": "https://github.com/Druidblack/Jellyfin.Plugin.ActorPlus/releases/download/Release-1.0.0.0/Release-1.0.0.0.zip",
+        "sha256": "834f80549cd2dcf5ed66f0ead251e3ffa1a645ac884fa0fe70d3e47776d8f33b"
+      },
+      "plugin": {
+        "guid": "d47f75a1-2c4c-4aa1-a1cd-5da6e5e6ccfd",
+        "name": "Actor Plus",
+        "version": "1.0.0.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.ActorPlus.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["/actorplus/"]
+    },
+    {
+      "id": "collection-sections-jf10",
+      "catalogName": "jellyfin-plugin-collection-sections",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-collection-sections",
+      "sourceRevision": "d30740b5575c3b730580fb3a260a4b0c98926dfa",
+      "archive": {
+        "name": "Release-10.11.11.zip",
+        "url": "https://github.com/IAmParadox27/jellyfin-plugin-collection-sections/releases/download/2.3.10.0/Release-10.11.11.zip",
+        "sha256": "f1687bf5fb5ce881b8acd7f4123175f47f9d2313e7e54e9fddcd9bad3c708306"
+      },
+      "plugin": {
+        "guid": "043b2c48-b3e0-4610-b398-8217b146d1a4",
+        "name": "Collection Sections",
+        "version": "2.3.10.0",
+        "targetAbi": "10.11.11.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.CollectionSections.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": []
+    },
+    {
+      "id": "custom-tabs-jf10",
+      "catalogName": "jellyfin-plugin-custom-tabs",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-custom-tabs",
+      "sourceRevision": "0809e54e86864fab9b15a075eb5e58987df3b00d",
+      "archive": {
+        "name": "Release-10.11.11.zip",
+        "url": "https://github.com/IAmParadox27/jellyfin-plugin-custom-tabs/releases/download/0.2.10.0/Release-10.11.11.zip",
+        "sha256": "4c3dca6a704a7afeaadd8cc47f40dd49b1de4fcf6b3c6659af2d3e2a1d8b801c"
+      },
+      "plugin": {
+        "guid": "fbacd0b6-fd46-4a05-b0a4-2045d6a135b0",
+        "name": "Custom Tabs",
+        "version": "0.2.10.0",
+        "targetAbi": "10.11.11.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.CustomTabs.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["customtabs"]
+    },
+    {
+      "id": "get-avatar-jf10",
+      "catalogName": "jellyfin-plugin-GetAvatar",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/cedev-1/jellyfin-plugin-GetAvatar",
+      "sourceRevision": "8adac344e33423ddca3f0f7b4f33ace462efae0f",
+      "archive": {
+        "name": "Jellyfin.Plugin.GetAvatar-v1.6.4.1.zip",
+        "url": "https://github.com/cedev-1/jellyfin-plugin-GetAvatar/releases/download/v1.6.4.1/Jellyfin.Plugin.GetAvatar-v1.6.4.1.zip",
+        "sha256": "48a123e67e48beb5a03d53a6c52a039ef50ce5d92ec5fbec5f014a562403d990"
+      },
+      "plugin": {
+        "guid": "88accc81-d913-44b3-b1d3-2abfa457dd2d",
+        "name": "GetAvatar",
+        "version": "1.6.4.1",
+        "targetAbi": "10.11.5.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.GetAvatar.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["/getavatar/"]
+    },
+    {
+      "id": "home-screen-sections-jf10",
+      "catalogName": "jellyfin-plugin-home-sections",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-home-sections",
+      "sourceRevision": "dcf2484838ced76585499c767fae6451fff6f80e",
+      "archive": {
+        "name": "Release-10.11.11.zip",
+        "url": "https://github.com/IAmParadox27/jellyfin-plugin-home-sections/releases/download/2.5.11.0/Release-10.11.11.zip",
+        "sha256": "63a5cf95130ef8b6f89dae03bd2b84108432872d40158786fc5309b2feccdf4b"
+      },
+      "plugin": {
+        "guid": "b8298e01-2697-407a-b44d-aa8dc795e850",
+        "name": "Home Screen Sections",
+        "version": "2.5.11.0",
+        "targetAbi": "10.11.11.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.HomeScreenSections.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["homescreensections"]
+    },
+    {
+      "id": "media-bar-jf10",
+      "catalogName": "jellyfin-plugin-media-bar",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-media-bar",
+      "sourceRevision": "2b0faa81239daecc7466de0faa01f8b36451ca5a",
+      "archive": {
+        "name": "Release-10.11.11.zip",
+        "url": "https://github.com/IAmParadox27/jellyfin-plugin-media-bar/releases/download/2.4.12.0/Release-10.11.11.zip",
+        "sha256": "809cc1eeee1dab4c30632395ff566e7803de371eaed75c6e93e31cc7c57fe9e0"
+      },
+      "plugin": {
+        "guid": "08f615ea-2107-4f04-89cc-091035f54448",
+        "name": "Media Bar",
+        "version": "2.4.12.0",
+        "targetAbi": "10.11.11.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.MediaBar.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["media-bar", "jellyfin-plugin-media-bar"]
+    },
+    {
+      "id": "plugin-pages-jf10",
+      "catalogName": "jellyfin-plugin-pages",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-pages",
+      "sourceRevision": "352eed217fe8d762c9105a4bd189b685d6be88be",
+      "archive": {
+        "name": "Release-10.11.11.zip",
+        "url": "https://github.com/IAmParadox27/jellyfin-plugin-pages/releases/download/2.4.11.0/Release-10.11.11.zip",
+        "sha256": "3b1840fe79e9eb6981ae5a1e0edde8961917a626243cf668cfa8ffcb10bd4418"
+      },
+      "plugin": {
+        "guid": "5b6550fa-a014-4f4c-8a2c-59a43680ac6d",
+        "name": "Plugin Pages",
+        "version": "2.4.11.0",
+        "targetAbi": "10.11.11.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.PluginPages.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["pluginpages"]
+    },
+    {
+      "id": "ratings-jf10",
+      "catalogName": "jellyfin-plugin-ratings",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/K3ntas/jellyfin-plugin-ratings",
+      "sourceRevision": "9c8827f625c00036d199e4c606fa5dbcffecab2d",
+      "archive": {
+        "name": "jellyfin-plugin-ratings_1.0.361.0.zip",
+        "url": "https://github.com/K3ntas/jellyfin-plugin-ratings/releases/download/v1.0.361.0/jellyfin-plugin-ratings_1.0.361.0.zip",
+        "sha256": "e624861721f1189d59ef4a7f9e19026d840469c8db944fafd6214a3207cf3336"
+      },
+      "plugin": {
+        "guid": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
+        "name": "Ratings",
+        "version": "1.0.361.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.Ratings.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": ["/ratings/"]
+    },
+    {
+      "id": "seasonals-jf10",
+      "catalogName": "Jellyfin-Seasonals",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/CodeDevMLH/Jellyfin-Seasonals",
+      "sourceRevision": "8ba3e3cd1e140a899f370430c4a700b0942f5fac",
+      "archive": {
+        "name": "Jellyfin.Plugin.Seasonals.zip",
+        "url": "https://github.com/CodeDevMLH/Jellyfin-Seasonals/releases/download/v3.1.0.0/Jellyfin.Plugin.Seasonals.zip",
+        "sha256": "08095feea036a6bf4e01de268aa5d303d0c8e0039378bd45c4129e7598980fcc"
+      },
+      "plugin": {
+        "guid": "ef1e863f-cbb0-4e47-9f23-f0cbb1826ad4",
+        "name": "Seasonals",
+        "version": "3.1.0.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.Seasonals.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["/seasonals/"]
+    },
+    {
+      "id": "seerrfin-jf10",
+      "catalogName": "SeerrFin",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/varunaditya-plus/SeerrFin",
+      "sourceRevision": "c2fadfcb76e85ab3e7c00ac3fd64a39cd378feaa",
+      "archive": {
+        "name": "Jellyfin.Plugin.SeerrFin_10.11.0.zip",
+        "url": "https://github.com/varunaditya-plus/SeerrFin/releases/download/1.6.5.1/Jellyfin.Plugin.SeerrFin_10.11.0.zip",
+        "sha256": "614596ca1bd905a6345f3dc60b7396d52b7563f1028016fcd43ec659412c97df"
+      },
+      "plugin": {
+        "guid": "c8e4f2a1-9b3d-4e7f-a6c2-1d5e8f0a3b7c",
+        "name": "SeerrFin",
+        "version": "1.6.5.1",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.SeerrFin.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": ["/seerrfin/"]
+    },
+    {
+      "id": "startrack-jf10",
+      "catalogName": "StarTrack",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/ZL154/jellyfin-plugin-startrack",
+      "sourceRevision": "08a5b80f6179fc0230767a8aeefe60275662a379",
+      "archive": {
+        "name": "Jellyfin.Plugin.InternalRating_1.6.4.zip",
+        "url": "https://github.com/ZL154/jellyfin-plugin-startrack/releases/download/v1.6.4/Jellyfin.Plugin.InternalRating_1.6.4.zip",
+        "sha256": "7908b7011e24686a565f8ae1277ecc77cc284b7e851cdb3c7513577e5d260e93"
+      },
+      "plugin": {
+        "guid": "a8b5e2f3-4c1d-4e8a-b2f9-6d3c7e1a5b2f",
+        "name": "StarTrack",
+        "version": "1.6.4.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.InternalRating.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": ["/plugins/startrack/"]
+    },
+    {
+      "id": "skin-manager-legacy",
+      "catalogName": "jellyfin-plugin-skin-manager",
+      "disposition": "quarantined",
+      "runtime": null,
+      "repository": "https://github.com/danieladov/jellyfin-plugin-skin-manager",
+      "sourceRevision": "0e68847fff7770f769eb22f81c164362b29d7e8b",
+      "archive": {
+        "name": "Jellyfin-Plugin-SkinManager.zip",
+        "url": "https://github.com/danieladov/jellyfin-plugin-skin-manager/releases/download/2.0.2/Jellyfin-Plugin-SkinManager.zip",
+        "sha256": "d32cb542454b151bb2e2748b65bc389ea73b5eef3a34504735c1f03299fb179c"
+      },
+      "plugin": {
+        "guid": "e9ca8b8e-ca6d-40e7-85dc-58e536df8eb3",
+        "name": "Skin Manager",
+        "version": "2.0.2.0",
+        "targetAbi": "10.7.0.0",
+        "framework": "net8.0",
+        "assembly": "Jellyfin.Plugin.SkinManager.dll",
+        "archiveMeta": "absent"
+      },
+      "quarantineReason": "The latest artifact targets Jellyfin 10.7 and source targets the older net8/Jellyfin 10.10 line; it may overwrite Branding CustomCss.",
+      "shellUrlNeedles": []
+    },
+    {
+      "id": "jellyscrub-legacy",
+      "catalogName": "jellyscrub",
+      "disposition": "unsupported",
+      "runtime": null,
+      "repository": "https://github.com/nicknsy/jellyscrub",
+      "sourceRevision": "8e43d5a117b686a10136014e03c6dccb4f3c9970",
+      "archive": {
+        "name": "Jellyscrub-v2.1.0.0.zip",
+        "url": "https://github.com/nicknsy/jellyscrub/releases/download/2.1.0.0/Jellyscrub-v2.1.0.0.zip",
+        "sha256": "b0ff6557750a3bd9c97608b7a2041d965abb1832f319643722b5cb3bd8100d43"
+      },
+      "plugin": {
+        "guid": "a84a949d-4b73-4099-aacb-8341b4da17ba",
+        "name": "Jellyscrub",
+        "version": "2.1.0.0",
+        "targetAbi": "10.10.0.0",
+        "framework": "net8.0",
+        "assembly": "Nick.Plugin.Jellyscrub.dll",
+        "archiveMeta": "absent"
+      },
+      "quarantineReason": "Upstream retired the plugin after Jellyfin 10.9 in favor of native trickplay.",
+      "shellUrlNeedles": []
+    },
+    {
+      "id": "static-assets-legacy",
+      "catalogName": "Static Assets",
+      "disposition": "quarantined",
+      "runtime": null,
+      "repository": "https://github.com/cleverdevil/jelly-static-assets",
+      "sourceRevision": "2c60b85f9c888765f244b4fb0b1b17b51b039860",
+      "archive": {
+        "name": "jellyfin-plugin-staticassets_0.0.1.0.zip",
+        "url": "https://github.com/cleverdevil/jelly-static-assets/releases/download/v0.0.1.0/jellyfin-plugin-staticassets_0.0.1.0.zip",
+        "sha256": "704c3444d64e6234fbe07f530ac6e76be46258daec1bb3b54fd38451df42f91a"
+      },
+      "plugin": {
+        "guid": "1f826750-d8f1-4e44-a814-9432d2833dc0",
+        "name": "Static Assets",
+        "version": "0.0.1.0",
+        "targetAbi": "10.8.0.0",
+        "framework": "net8.0",
+        "assembly": "Jellyfin.Plugin.StaticAssets.dll",
+        "archiveMeta": "absent"
+      },
+      "quarantineReason": "The artifact has no Jellyfin 10.11 claim and exposes an arbitrary dynamic-asset route without mutating the shell.",
+      "shellUrlNeedles": ["/staticassets/asset/"]
+    }
+  ],
+  "catalogCoverage": [
+    {"name":"Achievement Badges","artifacts":["achievement-badges-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
+    {"name":"HoverTrailer","artifacts":["hover-trailer-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
+    {"name":"InPlayerEpisodePreview","artifacts":["in-player-episode-preview-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
+    {"name":"jellyfin-editors-choice-plugin","artifacts":["editors-choice-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
+    {"name":"Jellyfin-Enhanced","artifacts":["jellyfin-enhanced-jf10","jellyfin-enhanced-jf12"],"jf10":"testable","jf12":"testable","fixtures":[]},
+    {"name":"jellyfin-icon-metadata","artifacts":[],"jf10":"unsupported","jf12":"unsupported","fixtures":["branding-css"]},
+    {"name":"Jellyfin-JavaScript-Injector","artifacts":["javascript-injector-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["javascript-broker"]},
+    {"name":"jellyfin-media-preview-plugin","artifacts":["media-preview-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["javascript-broker"]},
+    {"name":"Jellyfin-MonWUI-Plugin","artifacts":["jmsfusion-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
+    {"name":"Jellyfin.Plugin.ActorPlus","artifacts":["actor-plus-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
+    {"name":"jellyfin-plugin-collection-sections","artifacts":["collection-sections-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["transformation-chain"]},
+    {"name":"jellyfin-plugin-custom-tabs","artifacts":["custom-tabs-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["transformation-chain"]},
+    {"name":"jellyfin-plugin-GetAvatar","artifacts":["get-avatar-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
+    {"name":"jellyfin-plugin-home-sections","artifacts":["home-screen-sections-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["transformation-chain"]},
+    {"name":"jellyfin-plugin-media-bar","artifacts":["media-bar-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["dynamic-static-assets"]},
+    {"name":"jellyfin-plugin-pages","artifacts":["plugin-pages-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["transformation-chain"]},
+    {"name":"jellyfin-plugin-ratings","artifacts":["ratings-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
+    {"name":"jellyfin-plugin-skin-manager","artifacts":["skin-manager-legacy"],"jf10":"quarantined","jf12":"unsupported","fixtures":["branding-css"]},
+    {"name":"Jellyfin-Seasonals","artifacts":["seasonals-jf10"],"jf10":"testable","jf12":"quarantined","fixtures":["jf12-synthetic"]},
+    {"name":"jellyscrub","artifacts":["jellyscrub-legacy"],"jf10":"unsupported","jf12":"unsupported","fixtures":["legacy-direct-writer"]},
+    {"name":"SeerrFin","artifacts":["seerrfin-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["dynamic-static-assets"]},
+    {"name":"StarTrack","artifacts":["startrack-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
+    {"name":"Static Assets","artifacts":["static-assets-legacy"],"jf10":"quarantined","jf12":"unsupported","fixtures":["dynamic-static-assets"]}
+  ],
+  "coverageExpectations": {
+    "catalogCount": 23,
+    "jf10": {"testable": 19, "quarantined": 2, "unsupported": 2},
+    "jf12": {"testable": 1, "quarantined": 1, "unsupported": 21},
+    "fixtureIds": [
+      "branding-css",
+      "dynamic-static-assets",
+      "javascript-broker",
+      "jf12-synthetic",
+      "legacy-direct-writer",
+      "transformation-chain"
+    ]
+  }
+}

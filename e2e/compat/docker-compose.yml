@@ -1,0 +1,62 @@
+# Disposable, project-scoped compatibility lab. Invoke only through ./run.sh;
+# the runner supplies a validated Compose project name and verifies the image
+# digest again from the created container.
+
+services:
+  jf10:
+    image: jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
+    read_only: true
+    init: true
+    ports:
+      - "127.0.0.1:${RK_COMPAT_JF10_PORT:-18216}:8096"
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    volumes:
+      - jf10-config:/config
+      - jf10-cache:/cache
+    networks:
+      - compat-internal
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 1024
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8096/System/Info/Public >/dev/null || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 80
+    stop_grace_period: 20s
+
+  jf12:
+    image: jellyfin/jellyfin:12.0-rc4@sha256:db1df1d111c27ba1f10bb8fce6630892f66eb66b12c2b24e79011453ac18b3db
+    read_only: true
+    init: true
+    ports:
+      - "127.0.0.1:${RK_COMPAT_JF12_PORT:-18217}:8096"
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    volumes:
+      - jf12-config:/config
+      - jf12-cache:/cache
+    networks:
+      - compat-internal
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 1024
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8096/System/Info/Public >/dev/null || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 80
+    stop_grace_period: 20s
+
+networks:
+  compat-internal:
+    internal: true
+
+volumes:
+  jf10-config:
+  jf10-cache:
+  jf12-config:
+  jf12-cache:

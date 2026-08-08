@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PluginConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <EditorUserId />
+  <DoScriptInject>false</DoScriptInject>
+  <FileTransformation>true</FileTransformation>
+  <ShowRandomMedia>true</ShowRandomMedia>
+  <Mode />
+  <RandomMediaCount>5</RandomMediaCount>
+  <MinimumRating>0</MinimumRating>
+  <MinimumCriticRating>0</MinimumCriticRating>
+  <MaximumParentRating>-2</MaximumParentRating>
+  <MaximumParentRatingSubscore>0</MaximumParentRatingSubscore>
+  <FilteredLibraries />
+  <SelectedCollections />
+  <EnableAutoplay>true</EnableAutoplay>
+  <AutoplayInterval>10</AutoplayInterval>
+  <ShowPlayButton>true</ShowPlayButton>
+  <NewTimeLimit>1month</NewTimeLimit>
+  <ShowRating>true</ShowRating>
+  <ShowDescription>true</ShowDescription>
+  <HideOnTvLayout>false</HideOnTvLayout>
+  <UseHeroLayout>false</UseHeroLayout>
+  <TransitionEffect>loop</TransitionEffect>
+  <HeroBackdropPosition>center</HeroBackdropPosition>
+  <ReduceImageSize>false</ReduceImageSize>
+  <BannerHeight>360</BannerHeight>
+  <ShowPlayed>true</ShowPlayed>
+</PluginConfiguration>
