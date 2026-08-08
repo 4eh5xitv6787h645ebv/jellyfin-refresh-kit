@@ -81,11 +81,14 @@ namespace Jellyfin.Plugin.RefreshKit.Configuration
         public string[] ConfigWatchExclusions { get; set; } = Array.Empty<string>();
 
         /// <summary>
-        /// Gets or sets the minimum gap, in minutes, between two
-        /// configuration-driven generation changes FOR THE SAME PLUGIN. A change
-        /// arriving inside the window is not dropped — it is published when the
-        /// window expires. Zero disables the cooldown (the debounce still
-        /// applies). Version/DLL changes ignore it entirely.
+        /// Gets or sets the length, in minutes, of the burst window that follows a
+        /// configuration-driven generation change FOR THE SAME PLUGIN. The gate is
+        /// LEADING-EDGE: a change arriving while no window is open publishes at
+        /// once (the admin's single save is live within seconds) and opens the
+        /// window; only further changes inside that window are held, and they
+        /// coalesce into one publish when it expires. Nothing is dropped. Zero
+        /// disables the cooldown (the debounce still applies). Version/DLL changes
+        /// ignore it entirely.
         /// </summary>
         public int ConfigCooldownMinutes { get; set; } = 5;
 

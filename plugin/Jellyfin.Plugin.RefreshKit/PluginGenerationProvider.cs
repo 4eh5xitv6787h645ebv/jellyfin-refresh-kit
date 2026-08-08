@@ -70,9 +70,11 @@ namespace Jellyfin.Plugin.RefreshKit
     /// <para>
     /// Even watching only the XML, a plugin is free to persist churn there, so
     /// config-driven bumps additionally go through a DEBOUNCE (a burst of
-    /// writes coalesces into one) and a per-plugin COOLDOWN (at most one
-    /// config-driven bump per
-    /// <see cref="Configuration.PluginConfiguration.ConfigCooldownMinutes"/>).
+    /// writes coalesces into one) and a per-plugin, LEADING-EDGE COOLDOWN: the
+    /// change that opens a window publishes at once, and only further changes
+    /// inside that
+    /// <see cref="Configuration.PluginConfiguration.ConfigCooldownMinutes"/>
+    /// window are held and coalesced into one publish at its end.
     /// Version/DLL changes bypass both — a new binary is unambiguous and rare.
     /// Admins can turn config watching off globally or exclude individual
     /// plugins (<see cref="Configuration.PluginConfiguration.ConfigWatchExclusions"/>).
@@ -369,15 +371,23 @@ namespace Jellyfin.Plugin.RefreshKit
         /// <item><description>DEBOUNCE: a new timestamp must stand still for
         /// <see cref="ConfigDebounceSeconds"/>; each further write restarts the
         /// clock, so a burst collapses into one bump.</description></item>
-        /// <item><description>COOLDOWN: after a bump is published, later config
-        /// changes for that plugin wait out
+        /// <item><description>COOLDOWN, LEADING EDGE: a change that arrives while
+        /// no cooldown window is open publishes IMMEDIATELY and opens a window of
         /// <see cref="Configuration.PluginConfiguration.ConfigCooldownMinutes"/>.
-        /// The change is never dropped — it publishes when the cooldown expires,
-        /// carrying the latest timestamp — so the worst case is "one reload per
-        /// cooldown", not "one reload per save".</description></item>
-        /// <item><description>The FIRST change after startup is not delayed: the
-        /// cooldown starts at the first publish, so the ordinary "admin saves a
-        /// setting once" case propagates within seconds.</description></item>
+        /// Only changes that arrive *inside* that window are held; they coalesce
+        /// into a single publish at the window's end, carrying the latest
+        /// timestamp. Nothing is ever dropped.</description></item>
+        /// <item><description>A publish that was held back closes the window
+        /// instead of opening a new one. Without that, every deferred publish
+        /// would re-arm the cooldown and a single later save could sit unseen for
+        /// another full window — the "my setting did nothing for five minutes"
+        /// behaviour this gate exists to avoid. The cost is that a plugin
+        /// rewriting its configuration continuously can produce two bumps per
+        /// window rather than one; the benefit is that an ordinary single save is
+        /// always live within the debounce plus one client poll.</description></item>
+        /// <item><description>A change that arrives after a window has already
+        /// expired is a leading edge in its own right: it publishes at once and
+        /// opens a fresh window, so burst protection re-arms itself.</description></item>
         /// </list>
         /// </summary>
         private long PublishConfigTicks(
@@ -422,15 +432,24 @@ namespace Jellyfin.Plugin.RefreshKit
             }
 
             var cooldownMinutes = Math.Clamp(configuration?.ConfigCooldownMinutes ?? 5, 0, 1440);
-            if (signal.LastPublishedUtc != DateTime.MinValue
-                && (now - signal.LastPublishedUtc).TotalMinutes < cooldownMinutes)
+            var windowOpen = signal.CooldownUntilUtc != DateTime.MinValue;
+
+            if (windowOpen && now < signal.CooldownUntilUtc)
             {
+                // Inside the window: hold the newest timestamp until the window ends.
                 return signal.PublishedTicks;
             }
 
+            // A change first seen while the window was still running is a held
+            // (trailing) publish; one first seen after the window had already
+            // expired is a fresh leading edge.
+            var wasHeldBack = windowOpen && signal.PendingFirstSeenUtc < signal.CooldownUntilUtc;
+
             signal.PublishedTicks = rawTicks;
             signal.PendingTicks = 0;
-            signal.LastPublishedUtc = now;
+            signal.CooldownUntilUtc = wasHeldBack || cooldownMinutes <= 0
+                ? DateTime.MinValue
+                : now.AddMinutes(cooldownMinutes);
             return signal.PublishedTicks;
         }
 
@@ -499,7 +518,12 @@ namespace Jellyfin.Plugin.RefreshKit
 
             public DateTime PendingFirstSeenUtc { get; set; }
 
-            public DateTime LastPublishedUtc { get; set; } = DateTime.MinValue;
+            /// <summary>
+            /// End of the open cooldown window, or <see cref="DateTime.MinValue"/>
+            /// when no window is open — in which case the next debounced change
+            /// publishes on the leading edge.
+            /// </summary>
+            public DateTime CooldownUntilUtc { get; set; } = DateTime.MinValue;
         }
 
         private static string ReadStringProperty(JsonElement root, string name)

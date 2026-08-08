@@ -160,11 +160,18 @@ pointless server-wide reloads:
   all.
 * **Debounced:** a new timestamp must stand still for 10s; a burst of writes
   (a settings page that saves three times as you click) collapses into one bump.
-* **Cooled down:** at most one config-driven bump **per plugin** per
-  *Settings-change cooldown* (default **5 minutes**). A change arriving inside
-  the window is **not dropped** — it publishes when the window expires, carrying
-  the latest timestamp. Worst case is therefore "one reload per cooldown", not
-  "one reload per save". The first change after a restart is not delayed.
+* **Cooled down on the LEADING edge:** a change that arrives while no cooldown
+  window is open for that plugin publishes **immediately** (after the 10s
+  debounce) and opens a window of *Settings-change cooldown* length
+  (default **5 minutes**). Only changes arriving **inside** that window are
+  held, and they coalesce into a single publish when it expires, carrying the
+  latest timestamp — nothing is dropped. A held publish **closes** the window
+  rather than opening a new one, so the save after it is snappy again; without
+  that, each deferred publish would re-arm the cooldown and a lone later save
+  could sit unseen for another five minutes. The practical guarantee is
+  therefore "an ordinary single save is live within the debounce plus one client
+  poll", with a plugin that rewrites its configuration continuously bounded to
+  about two bumps per window instead of one.
 * **Excludable:** turn config watching off globally, or list individual plugins
   to ignore. An excluded plugin falls back to version/DLL-change detection only.
 
@@ -189,7 +196,7 @@ Dashboard → Plugins → **Jellyfin Refresh Kit**.
 | Cache-bust other plugins' script tags | on | Mechanism 2. |
 | Reload open tabs after a plugin update | on | Off switches the client to `notify` mode: it logs the update instead of reloading. |
 | Treat plugin settings changes as updates | on | Mechanism 3's config input (above). |
-| Settings-change cooldown (minutes, per plugin) | 5 | 0 disables the cooldown; the debounce still applies. |
+| Settings-change cooldown (minutes, per plugin) | 5 | Length of the leading-edge burst window: the change that opens it publishes at once, later changes inside it coalesce to one publish at its end. 0 disables the cooldown; the debounce still applies. |
 | Ignore settings changes from these plugins | empty | One per line: plugin name, install folder, GUID or assembly name. |
 | Poll interval (seconds) | 60 | Clamped 15–3600 by the client runtime. |
 | Required idle time (seconds) | 5 | Clamped 0–300. |
