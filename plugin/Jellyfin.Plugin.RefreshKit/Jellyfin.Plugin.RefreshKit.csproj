@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Jellyfin 10.11.11 ships a net9.0 host (jellyfin.runtimeconfig.json:
+         "tfm": "net9.0", Microsoft.AspNetCore.App 9.0.16), so plugin assemblies
+         must be net9.0. Verified against the jellyfin/jellyfin:10.11.11 image. -->
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Version>1.0.0.0</Version>
+    <RootNamespace>Jellyfin.Plugin.RefreshKit</RootNamespace>
+    <AssemblyName>Jellyfin.Plugin.RefreshKit</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>false</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.11" />
+    <PackageReference Include="Jellyfin.Model" Version="10.11.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SINGLE SOURCE OF TRUTH: the client runtime is embedded straight from
+         the repository root at build time. There is deliberately no committed
+         copy inside the plugin — the file another agent evolves on main is the
+         file this plugin ships. -->
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)../../jellyfin-refresh-kit.js"
+                      Link="Resources/jellyfin-refresh-kit.js"
+                      LogicalName="Jellyfin.Plugin.RefreshKit.jellyfin-refresh-kit.js" />
+    <EmbeddedResource Include="Configuration/configPage.html" />
+  </ItemGroup>
+
+</Project>
