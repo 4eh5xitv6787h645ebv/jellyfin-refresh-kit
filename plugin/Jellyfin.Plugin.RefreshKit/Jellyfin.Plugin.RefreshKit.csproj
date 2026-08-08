@@ -1,10 +1,24 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Jellyfin 10.11.11 ships a net9.0 host (jellyfin.runtimeconfig.json:
-         "tfm": "net9.0", Microsoft.AspNetCore.App 9.0.16), so plugin assemblies
-         must be net9.0. Verified against the jellyfin/jellyfin:10.11.11 image. -->
-    <TargetFramework>net9.0</TargetFramework>
+    <!-- ONE SOURCE TREE, TWO SERVER GENERATIONS.
+         A Jellyfin plugin assembly must be built for the framework its host
+         runs on, and the two supported hosts disagree:
+
+           net9.0   Jellyfin 10.11.x — jellyfin.runtimeconfig.json says
+                    "tfm": "net9.0", Microsoft.AspNetCore.App 9.0.16.
+                    Verified against the jellyfin/jellyfin:10.11.11 image.
+           net10.0  Jellyfin 12.0.x  — jellyfin.runtimeconfig.json says
+                    "tfm": "net10.0", Microsoft.AspNetCore.App 10.0.10.
+                    Verified against the jellyfin/jellyfin:unstable image
+                    reporting Version 12.0.0.
+
+         Multi-targeting rather than a second csproj: the plugin's source is
+         identical for both hosts (it uses only the plugin surface that survived
+         the 12 rewrite), so a fork of the project file would be two copies of
+         the same thing waiting to drift. `dotnet publish -f <tfm>` picks the
+         host. -->
+    <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
     <Version>1.0.0.0</Version>
@@ -17,9 +31,19 @@
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
   </PropertyGroup>
 
-  <ItemGroup>
+  <!-- The Jellyfin server generation each framework compiles against.
+       Both are on nuget.org, so neither target needs DLLs copied out of a
+       container: the 12.0.0 packages were published alongside the release
+       candidates (12.0.0-rc4 at the time of writing) and carry the same
+       MediaBrowser.* surface the running server exposes. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
     <PackageReference Include="Jellyfin.Controller" Version="10.11.11" />
     <PackageReference Include="Jellyfin.Model" Version="10.11.11" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Jellyfin.Controller" Version="12.0.0-rc4" />
+    <PackageReference Include="Jellyfin.Model" Version="12.0.0-rc4" />
   </ItemGroup>
 
   <ItemGroup>
