@@ -4,9 +4,9 @@ One file per plugin type. Zero dependencies. No build step. Drop the file that
 matches your plugin in and users stop running last week's code.
 
 ```
-jellyfin-refresh-kit.js   3453 lines — vanilla JS for script collections and any
+jellyfin-refresh-kit.js   5149 lines — vanilla JS for script collections and any
                           plugin's client side (the file doubles as its own docs)
-RefreshKit.cs             2090 lines — the server companion for C# plugins:
+RefreshKit.cs             2109 lines — the server companion for C# plugins:
                           revalidating index.html injection middleware, build
                           identity, version endpoint, cache-correct script serving
 ```
