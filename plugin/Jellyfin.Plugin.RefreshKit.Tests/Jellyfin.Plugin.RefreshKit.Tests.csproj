@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The plugin itself targets net9.0 (the framework the 10.11 server runs).
+         The test host only needs to LOAD that assembly, and the dev box may
+         only have a newer runtime installed, so roll forward rather than
+         pinning a runtime nobody has. -->
+    <TargetFramework>net9.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>false</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Jellyfin.Plugin.RefreshKit.Tests</AssemblyName>
+    <RootNamespace>Jellyfin.Plugin.RefreshKit.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Jellyfin.Plugin.RefreshKit/Jellyfin.Plugin.RefreshKit.csproj" />
+  </ItemGroup>
+
+</Project>

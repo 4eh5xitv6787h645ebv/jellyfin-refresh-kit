@@ -1,3 +1,5 @@
 plugin/build/
 plugin/Jellyfin.Plugin.RefreshKit/bin/
 plugin/Jellyfin.Plugin.RefreshKit/obj/
+plugin/Jellyfin.Plugin.RefreshKit.Tests/bin/
+plugin/Jellyfin.Plugin.RefreshKit.Tests/obj/

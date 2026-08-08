@@ -7,6 +7,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Jellyfin.Plugin.RefreshKit.Tests")]
+
 namespace Jellyfin.Plugin.RefreshKit
 {
     /// <summary>
@@ -17,9 +19,9 @@ namespace Jellyfin.Plugin.RefreshKit
     /// plugin changes. It is the whole point of the standalone plugin: other
     /// plugins do not (and must not have to) publish a version endpoint, so this
     /// plugin derives one identity covering all of them, from what the server
-    /// already knows — for every folder under <c>PluginsPath</c>: the plugin id
-    /// and version out of its <c>meta.json</c>, plus the NEWEST DLL write-ticks
-    /// anywhere in that folder.
+    /// already knows — for every folder under <c>PluginsPath</c>: the plugin id,
+    /// version and status out of its <c>meta.json</c>, plus the NEWEST write-ticks
+    /// across the binaries and client assets in that folder.
     /// </para>
     ///
     /// <para>WHY THOSE INPUTS</para>
@@ -294,7 +296,7 @@ namespace Jellyfin.Plugin.RefreshKit
             }
         }
 
-        private PluginFingerprint Fingerprint(string directory, string configurationsPath, DateTime now)
+        internal PluginFingerprint Fingerprint(string directory, string configurationsPath, DateTime now)
         {
             var folder = Path.GetFileName(directory);
             var id = string.Empty;
