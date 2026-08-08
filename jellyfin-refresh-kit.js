@@ -451,8 +451,28 @@
      *           imposing it) when nothing is pending; and the keyed-config
      *           audit waits for late-injected copies instead of warning about
      *           keys they were about to consume.
+     *   2.3.0 — NEWEST-WINS: the page manager is no longer "whichever copy
+     *           parsed first" but the NEWEST copy on the page. A newer copy
+     *           arriving after an older manager takes the page over through
+     *           contract revision 3's manager.__handoffTo(newManager), which
+     *           stops the old manager, transfers every registered instance
+     *           WITH its live state (baseline/latest version, pending update,
+     *           entry-chain progress, warning latches) plus the shared reload
+     *           latch, and leaves the old copy as a permanent INERT DELEGATE
+     *           that forwards the whole contract surface to the new manager.
+     *           Without it, a plugin shipping the newest kit could not
+     *           guarantee its own safety fixes governed the page: a 2.1.2 copy
+     *           parsing first ran ITS pair-based flip guard instead of 2.2.0's
+     *           hasLeftVersion guard, which a live 4-copy test turned into a
+     *           real reload loop (7 reloads in 185s over 3 version identities)
+     *           on a page where the newest copy present had already fixed it.
+     *           Also: the recurring "update available" line names the flap
+     *           refusal instead of leaving it to a warning logged once and
+     *           scrolled away; flapDisarmedFor reports the LATEST refused
+     *           transition; and a frozen singular window config takes the
+     *           WeakSet claim path silently instead of via a swallowed throw.
      */
-    var KIT_VERSION = '2.2.0';
+    var KIT_VERSION = '2.3.0';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -461,8 +481,12 @@
      *   1 — __registerInstance / __contractVersion / kitVersion.
      *   2 — adds __claimSingularGlobal (2.2.0). A v1 caller never calls it and
      *       is unaffected.
+     *   3 — adds __handoffTo (2.3.0), which makes the manager rule NEWEST-WINS.
+     *       A v1/v2 caller never calls it; a v3 caller checks
+     *       __contractVersion >= 3 before it does, and registers (loudly) when
+     *       the manager cannot hand over.
      */
-    var CONTRACT_VERSION = 2;
+    var CONTRACT_VERSION = 3;
 
     /** @type {string} Console prefix for every message this kit emits. */
     var LOG = '[RefreshKit]';
@@ -632,6 +656,57 @@
         var n = typeof value === 'string' ? Number(value) : value;
         if (typeof n !== 'number' || !isFinite(n)) return fallback;
         return Math.min(max, Math.max(min, n));
+    }
+
+    /**
+     * Parse a kit version string into numeric segments.
+     *
+     * Deliberately forgiving and deliberately DUMB: each dot-separated segment
+     * contributes its LEADING digits, everything else in the segment is
+     * ignored, and a missing segment is 0. So "2.3.0" → [2,3,0], "2.3.0.1" →
+     * [2,3,0,1], "2.3.0-rc1" → [2,3,0]. A string whose first segment holds no
+     * digits at all ("unknown", "", a manager that never set kitVersion) is
+     * UNPARSEABLE and returns null — the caller must then not act on a guess.
+     *
+     * A pre-release suffix is therefore neither newer nor older than its
+     * release, which is the safe reading for the one decision this feeds: two
+     * copies that compare EQUAL leave the sitting manager in place.
+     * @param {*} v
+     * @returns {number[]|null}
+     */
+    function parseKitVersion(v) {
+        if (typeof v !== 'string' || !v) return null;
+        var parts = v.split('.');
+        var out = [];
+        for (var i = 0; i < parts.length; i++) {
+            var m = /^\s*(\d+)/.exec(parts[i]);
+            if (i === 0 && !m) return null;
+            out.push(m ? parseInt(m[1], 10) : 0);
+        }
+        return out;
+    }
+
+    /**
+     * Compare two kit versions SEGMENT BY SEGMENT AS NUMBERS. String compare
+     * would be wrong in the ordinary case the manager rule depends on:
+     * "2.10.0" < "2.9.0" lexicographically, and a kit that mistakes its newest
+     * copy for its oldest is worse than one that never compares at all.
+     * @param {*} a
+     * @param {*} b
+     * @returns {number} 1 when a > b, -1 when a < b, 0 when equal OR when
+     *   either side is unparseable (an unknown version never wins).
+     */
+    function compareKitVersions(a, b) {
+        var pa = parseKitVersion(a);
+        var pb = parseKitVersion(b);
+        if (!pa || !pb) return 0;
+        var len = Math.max(pa.length, pb.length);
+        for (var i = 0; i < len; i++) {
+            var x = i < pa.length ? pa[i] : 0;
+            var y = i < pb.length ? pb[i] : 0;
+            if (x !== y) return x > y ? 1 : -1;
+        }
+        return 0;
     }
 
     /**
@@ -1169,6 +1244,16 @@
     // Role decision (REGISTRATION CONTRACT clause 2)
     // ─────────────────────────────────────────────────────────────────────────
 
+    /**
+     * The manager this copy is TAKING OVER FROM, or null. Set only on the
+     * newest-wins path (REGISTRATION CONTRACT clause 2b): this copy falls
+     * through into the manager body below and performs the handoff itself,
+     * because the handoff has to pass THIS copy's own `api` object, which does
+     * not exist until that body has been evaluated.
+     * @type {Object|null}
+     */
+    var handoffFrom = null;
+
     var existingManager = safe(function () { return window.JellyfinRefreshKit; }, null) || null;
     if (!existingManager || typeof existingManager.__registerInstance !== 'function') {
         // The global is missing or is not a 2.x manager. Before concluding "a
@@ -1183,12 +1268,64 @@
     }
     if (existingManager) {
         if (typeof existingManager.__registerInstance === 'function') {
-            // 2.x manager already installed (possibly an older or newer 2.x than
-            // this copy — the contract covers both). Register and bow out: no
-            // second wrapper, no listeners, no timers from this copy.
-            safe(function () {
-                existingManager.__registerInstance(ownConfig, KIT_VERSION);
-            });
+            // A 2.x manager already owns the page. WHICH copy should run it?
+            //
+            // Until 2.3.0 the answer was always "the one that got here first",
+            // and that made the kit's own safety fixes un-shippable: the page
+            // ran the FIRST-loaded copy's reload engine, flip guard and gates
+            // even when a newer copy — with the fix for the very loop the page
+            // was in — was sitting right there as a registered instance. A live
+            // 4-copy test proved it end to end (a 2.1.2 copy parsing ahead of a
+            // 2.2.0 copy reload-looped a tab that 2.2.0 alone had latched shut).
+            //
+            // Since 2.3.0 the rule is NEWEST WINS, implemented as a handoff so
+            // that nothing about the page is rebuilt from scratch: only a
+            // STRICTLY newer copy takes over, and only from a manager that
+            // speaks contract revision 3, which is what makes the takeover
+            // lossless. Equal versions never hand over — the sitting manager
+            // stays, so two identical copies behave exactly as they did in 2.2.
+            var managerKitVersion = safe(function () {
+                return String(existingManager.kitVersion == null ? '' : existingManager.kitVersion);
+            }, '') || '';
+            var managerContract = safe(function () {
+                var n = Number(existingManager.__contractVersion);
+                return isFinite(n) ? n : 0;
+            }, 0) || 0;
+            var iAmNewer = compareKitVersions(KIT_VERSION, managerKitVersion) > 0;
+            var canHandOff = managerContract >= 3 &&
+                safe(function () { return typeof existingManager.__handoffTo === 'function'; }, false) === true;
+
+            if (iAmNewer && canHandOff) {
+                // Fall through into the manager body; the boot section performs
+                // the handoff and adopts everything the old manager was running.
+                handoffFrom = existingManager;
+            } else {
+                if (iAmNewer) {
+                    // A newer copy that CANNOT take over. This can only be a
+                    // pre-2.3.0 manager, i.e. a kit copy from before the
+                    // newest-wins rule existed — which is why no pre-2.3.0 copy
+                    // may ever be shipped publicly. Say so loudly and name both
+                    // versions: the page's reload semantics (flip guard, budget,
+                    // gates, interception) are the OLDER copy's, so any bug
+                    // fixed since is still live on this page.
+                    safe(function () {
+                        console.warn(LOG, 'this ' + KIT_VERSION + ' copy is NEWER than the kit copy ' +
+                            'already managing this page (' + (managerKitVersion || 'unknown') +
+                            ', registration contract ' + managerContract + '), but that manager is too ' +
+                            'old to hand the page over (handoff needs contract revision 3, added in ' +
+                            '2.3.0). Registering as an instance, as before — which means PAGE-LEVEL ' +
+                            'RELOAD SEMANTICS ON THIS PAGE ARE ' + (managerKitVersion || 'the older copy') +
+                            "'S, not " + KIT_VERSION + "'s: the older copy's flip guard, reload budget, " +
+                            'safety gates and createElement interception govern every instance here. ' +
+                            'Ship 2.3.0 or newer in every adopting plugin.');
+                    });
+                }
+                // Register and bow out: no second wrapper, no listeners, no
+                // timers from this copy. The manager runs everything.
+                safe(function () {
+                    existingManager.__registerInstance(ownConfig, KIT_VERSION);
+                });
+            }
         } else {
             // A 1.x singleton owns the page. It already wrapped createElement
             // and owns the reload engine; fighting it would mean two wrappers
@@ -1199,11 +1336,16 @@
                     'should upgrade its kit so both can register as instances.');
             });
         }
-        return;
+        // The ONE case that keeps going is the newest-wins takeover, which needs
+        // the whole manager body below (and its `api`) before it can ask the
+        // sitting manager to hand the page over.
+        if (!handoffFrom) return;
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // From here on: THIS COPY IS THE MANAGER (first kit copy on the page).
+    // From here on: THIS COPY IS THE MANAGER — either because it is the first
+    // kit copy on the page, or (2.3.0) because it is NEWER than the copy that
+    // was managing it and is about to take the page over by handoff.
     // ═════════════════════════════════════════════════════════════════════════
 
     /**
@@ -1422,6 +1564,38 @@
     var warnedOverlap = false;
     /** @type {boolean} True once the single createElement wrapper is installed. */
     var interceptorInstalled = false;
+    /**
+     * The NEWER manager this copy handed the page over to (REGISTRATION
+     * CONTRACT clause 7), or null while this copy still owns the page.
+     *
+     * Once set, this copy is a permanent INERT DELEGATE: it holds no instances,
+     * runs no timers, listens to nothing, and its `api` object — which stays
+     * reachable forever, because window.JellyfinRefreshKit is installed
+     * non-configurable by whichever copy got there first and can never be
+     * re-pointed — forwards every contract call here. A copy arriving later
+     * therefore lands on the CURRENT manager whichever object it happens to
+     * hold.
+     * @type {Object|null}
+     */
+    var delegate = null;
+    /** @type {boolean} True once this copy has handed the page over. */
+    var handedOff = false;
+    /**
+     * True when this copy's createElement wrapper has been neutralized by a
+     * handoff. The wrapper cannot be UNINSTALLED — `document.createElement` may
+     * have been captured by any amount of third-party code by then, and
+     * restoring the native function would strip a newer manager's wrapper right
+     * off the page — so it has a permanent inert-delegate mode instead: it
+     * creates the element and touches nothing, while the per-element accessors
+     * it installed BEFORE the handoff keep working by delegating their
+     * versioning decision to the current manager (see versionUrlForPage).
+     * @type {boolean}
+     */
+    var interceptorInert = false;
+    /** @type {number} How many handoffs THIS copy has received (chain depth). */
+    var handoffsReceived = 0;
+    /** @type {string[]} Kit versions that managed this page before this copy. */
+    var inheritedFrom = [];
 
     // ─────────────────────────────────────────────────────────────────────────
     // URL versioning helpers (shared, pure)
@@ -1480,6 +1654,14 @@
     function versionUrlForPage(url) {
         if (typeof url !== 'string' || !url) return url;
         if (hasVersionParam(url)) return url;
+        // HANDED OFF: this copy owns no instances any more, but elements it
+        // handed out BEFORE the handoff still carry its per-element accessors,
+        // and those must not silently stop versioning. Ask the current manager
+        // instead — its `versionedUrl(url)` without `force` IS the page-level
+        // matcher, so this is the same decision, taken by the newest code.
+        if (handedOff && delegate) {
+            return safe(function () { return delegate.versionedUrl(url); }, url);
+        }
         var matches = null;
         for (var i = 0; i < registry.length; i++) {
             if (registry[i].matchesAssetPattern(url)) {
@@ -1656,13 +1838,32 @@
     function installCreateElementHook() {
         var nativeCreateElement = document.createElement;
         if (typeof nativeCreateElement !== 'function') return;
-        // Belt and braces: if a wrapper of ours is somehow already present
+        // Belt and braces: if an ACTIVE wrapper of ours is already present
         // (manager global failed to install but the hook stuck), never stack a
-        // second one.
-        if (nativeCreateElement.__jellyfinRefreshKitWrapper) { interceptorInstalled = true; return; }
+        // second one — two live wrappers would install two sets of per-element
+        // accessors and version the same URL twice.
+        //
+        // An INERT one is different (2.3.0). A manager that handed the page
+        // over flips its wrapper to pass-through and says so here, and the new
+        // manager stacks ITS wrapper on top: `document.createElement` is then
+        // new-wrapper → inert-old-wrapper → native, exactly one of which does
+        // anything. That is what makes the NEWEST copy's interception code —
+        // its normalizeUrlValue, its accessors, its setAttribute patch — govern
+        // the page, which is the whole point of the newest-wins rule. The
+        // wrapper chain grows by one frame per handoff, i.e. by at most one per
+        // kit copy in the document.
+        if (nativeCreateElement.__jellyfinRefreshKitWrapper &&
+            safe(function () { return nativeCreateElement.__jellyfinRefreshKitInert === true; }, false) !== true) {
+            interceptorInstalled = true;
+            return;
+        }
 
         var wrapper = function (tagName) {
             var el = nativeCreateElement.apply(this, arguments);
+            // Inert-delegate mode: this copy handed the page over, so it must
+            // not touch the element. The manager stacked above us has already
+            // installed (or is about to install) its own interceptors on it.
+            if (interceptorInert) return el;
             safe(function () {
                 if (typeof tagName !== 'string') return;
                 var tag = tagName.toLowerCase();
@@ -1682,6 +1883,13 @@
         };
         safe(function () {
             Object.defineProperty(wrapper, '__jellyfinRefreshKitWrapper', { value: true });
+            // Read by a NEWER copy's installCreateElementHook to decide whether
+            // it may stack. A getter, not a value: inertness is a property of
+            // this copy's live state, and the wrapper is frozen-by-convention
+            // API surface between kit versions.
+            Object.defineProperty(wrapper, '__jellyfinRefreshKitInert', {
+                get: function () { return interceptorInert; }
+            });
         });
         document.createElement = wrapper;
         interceptorInstalled = true;
@@ -2229,6 +2437,7 @@
      */
     function scheduleRetry(delayMs) {
         clearRetry();
+        if (handedOff) return;
         if (blockedRetries >= MAX_BLOCKED_RETRIES) return;
         blockedRetries++;
         retryTimer = setTimeout(function () {
@@ -2245,6 +2454,13 @@
      * unchanged) versions.
      */
     function tryReload() {
+        // Handed off: the reload engine of this copy is retired. The manager
+        // that took over holds the transferred latch, budget view and pending
+        // set, and is the only engine allowed to navigate this document —
+        // two engines calling location.reload() is exactly the double-fire the
+        // one-navigation-one-slot latch exists to prevent.
+        if (handedOff) return;
+
         // The navigation is already committed; this document is on its way out.
         // Anything that arms between here and unload is served by the reload
         // that is already in flight, so it must not reserve a second slot of
@@ -2402,6 +2618,30 @@
      * Mirrors client-refresh.js's beginReloadAttempt/recoverFailedReload pair.
      */
     function beginReloadAttempt() {
+        try {
+            location.reload();
+        } catch (err) {
+            safe(function () { console.debug(LOG, 'location.reload() threw:', err); });
+            safe(recoverFailedReload);
+            return;
+        }
+        armReloadSurvivalWatchdog();
+    }
+
+    /**
+     * Arm (or RE-arm) the watchdog that decides a reload never navigated.
+     *
+     * Separate from beginReloadAttempt() because a HANDOFF can inherit a
+     * committed reload (REGISTRATION CONTRACT clause 7): the old manager's
+     * timers are all stopped as part of handing over, so without re-arming
+     * here, a navigation the host blocks a moment later would leave the new
+     * manager latched shut for the life of the document — the exact failure
+     * 2.2.0's watchdog was added to end. The new manager must NOT call
+     * location.reload() again (that would be the double-fire), only re-arm the
+     * watch. Worst case the recovery lands a fraction of a second later than it
+     * would have.
+     */
+    function armReloadSurvivalWatchdog() {
         var fired = false;
         var survived = function () {
             if (fired) return;
@@ -2409,13 +2649,6 @@
             reloadWatchdogTimer = null;
             safe(recoverFailedReload);
         };
-        try {
-            location.reload();
-        } catch (err) {
-            safe(function () { console.debug(LOG, 'location.reload() threw:', err); });
-            survived();
-            return;
-        }
         reloadWatchdogTimer = safe(function () {
             return setTimeout(survived, RELOAD_SURVIVAL_WATCHDOG_MS);
         }, null);
@@ -2486,6 +2719,7 @@
      * has already run (and, e.g., opened its dialog) before we probe safety.
      */
     function onDiscreteInteraction() {
+        if (handedOff) return;
         lastInteractionAt = Date.now();
         // Supersede any chain an earlier interaction armed. Typing fires
         // keydown + input per character; without this every keystroke left two
@@ -2512,6 +2746,7 @@
      * a single scroll. The 1Hz retry tick already re-evaluates on its own.
      */
     function onContinuousInteraction() {
+        if (handedOff) return;
         lastInteractionAt = Date.now();
     }
 
@@ -2522,6 +2757,7 @@
      * visibilitychange/focus/pageshow burst at one fetch per instance, not three.
      */
     function onWake() {
+        if (handedOff) return;
         var i;
         if (document.visibilityState === 'hidden') {
             for (i = 0; i < registry.length; i++) registry[i].stopPolling();
@@ -2531,6 +2767,41 @@
         for (i = 0; i < registry.length; i++) registry[i].wake();
         // A pending update that was blocked purely by 'hidden' can now proceed.
         if (pendingInstances().length > 0) { blockedRetries = 0; safe(tryReload); }
+    }
+
+    /**
+     * Every document/window listener this copy installed, kept so that a
+     * HANDOFF can take them all off again (REGISTRATION CONTRACT clause 7).
+     * The guards at the top of the handlers are the correctness half — a
+     * handed-off copy must observe nothing — and this is the tidiness half: a
+     * retired manager should not be left holding capture-phase listeners on
+     * every pointer and key event for the life of the document.
+     * @type {Array<Object>}
+     */
+    var pageListeners = [];
+
+    /**
+     * @param {EventTarget} target
+     * @param {string} type
+     * @param {Function} fn
+     * @param {Object|boolean} opts Passed to addEventListener AND to
+     *   removeEventListener — they must match for the removal to take.
+     */
+    function addPageListener(target, type, fn, opts) {
+        safe(function () {
+            target.addEventListener(type, fn, opts);
+            pageListeners.push({ target: target, type: type, fn: fn, opts: opts });
+        });
+    }
+
+    /** Remove every listener addPageListener installed. */
+    function removePageListeners() {
+        for (var i = 0; i < pageListeners.length; i++) {
+            safe(function (l) {
+                return function () { l.target.removeEventListener(l.type, l.fn, l.opts); };
+            }(pageListeners[i]));
+        }
+        pageListeners = [];
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2548,11 +2819,23 @@
      * @param {boolean} [entriesSuppressed] Register normally but do NOT load
      *   entryScripts: an already-registered instance is loading the same files
      *   and loading them twice into one document is never correct.
+     * @param {Object} [restore] HANDOFF ONLY (REGISTRATION CONTRACT clause 7):
+     *   the live internals of the same instance as it was running under the
+     *   PREVIOUS manager (transferState() below produces it). An instance
+     *   rebuilt from one does not start over — it RESUMES: same baseline, same
+     *   pending update, same entry-chain progress, same one-shot warning
+     *   latches. Starting over would be a correctness bug, not just churn: a
+     *   fresh baseline would silently adopt whatever the endpoint says NOW as
+     *   "the build this tab is running", so an update that landed before the
+     *   handoff would never be detected, and a bootstrap chain would re-execute
+     *   the collection's entry files into a document that already has them.
      * @returns {Object} Internal instance record.
      */
-    function createInstance(name, cfg, sourceKitVersion, entriesSuppressed) {
+    function createInstance(name, cfg, sourceKitVersion, entriesSuppressed, restore) {
         /** Log prefix so N instances' messages stay attributable. */
         var TAG = '[' + name + ']';
+        /** @type {boolean} True when this instance was rebuilt by a handoff. */
+        var restored = !!restore;
 
         /**
          * Marker for the one-shot per-tab recovery that fires when this
@@ -2579,7 +2862,9 @@
          * reload per tab session, then correct (if blind-spotted) behaviour.
          */
         var bootSeedRejected = !!cfg.bootVersion && recoverySpent(BOOT_SEED_MARKER);
-        if (bootSeedRejected) {
+        // A restored instance already logged this (or not) under the previous
+        // manager; a handoff must not re-say anything the page has been told.
+        if (bootSeedRejected && !restored) {
             safe(function () {
                 console.warn(LOG, TAG, 'data-boot-version "' + cfg.bootVersion + '" still disagrees with ' +
                     'the version endpoint after a reload, so it does not describe the same identity the ' +
@@ -2648,6 +2933,55 @@
         var entriesLoaded = false;
         /** @type {boolean} Did the entries get a ?v= — i.e. did the version resolve in time? */
         var entriesVersioned = false;
+        /** @type {number|null} setTimeout handle for the bootstrap entry-timeout race. */
+        var entryBootTimer = null;
+        /**
+         * The promise of the entry chain, kept so a handoff can hand the NEW
+         * instance something to observe: a chain already in flight belongs to
+         * the closure that started it and must be allowed to finish (the page
+         * needs those files), but the instance that takes over still has to
+         * learn when it settled or its state() would report entriesLoaded:false
+         * forever. @type {Promise<void>|null}
+         */
+        var entriesChain = null;
+        /**
+         * DEACTIVATED by a handoff: this closure is retired and must stop
+         * acting on the document. It is not the same as suspended — a suspended
+         * instance wakes up again. @type {boolean}
+         */
+        var deactivated = false;
+
+        // ── Handoff: resume the previous manager's instance, don't restart it ──
+        if (restored) {
+            baselineVersion = typeof restore.baselineVersion === 'string' ? restore.baselineVersion : null;
+            baselineFromBootSeed = restore.baselineFromBootSeed === true;
+            latestVersion = typeof restore.latestVersion === 'string' ? restore.latestVersion : baselineVersion;
+            notifiedVersion = typeof restore.notifiedVersion === 'string' ? restore.notifiedVersion : null;
+            candidateVersion = typeof restore.candidateVersion === 'string' ? restore.candidateVersion : null;
+            lastFetchAt = typeof restore.lastFetchAt === 'number' ? restore.lastFetchAt : 0;
+            bootSeedRejected = restore.bootSeedRejected === true;
+            // One-shot latches, so the page is not told the same thing twice by
+            // two different copies of the same kit.
+            warnedFlap = restore.warnedFlap === true;
+            flapDisarmedFor = typeof restore.flapDisarmedFor === 'string' ? restore.flapDisarmedFor : null;
+            warnedFetchFailure = restore.warnedFetchFailure === true;
+            warnedConfirmChurn = restore.warnedConfirmChurn === true;
+            confirmSpentThisCycle = restore.confirmSpentThisCycle === true;
+            // Entry-chain progress. `entriesStarted` is the load-bearing one:
+            // loadEntries() is a one-shot latched on it, so carrying it across
+            // is what stops a handoff from re-executing a collection's entry
+            // files into a document that already ran them.
+            entriesStarted = restore.entriesStarted === true;
+            entriesLoaded = restore.entriesLoaded === true;
+            entriesVersioned = restore.entriesVersioned === true;
+            if (entriesStarted && !entriesLoaded && restore.entriesChain &&
+                typeof restore.entriesChain.then === 'function') {
+                safe(function () {
+                    restore.entriesChain.then(function () { entriesLoaded = true; },
+                        function () { entriesLoaded = true; });
+                });
+            }
+        }
 
         /**
          * Does this URL belong to an asset THIS instance is supposed to version?
@@ -2847,6 +3181,12 @@
          * @param {string} version
          */
         function onVersion(version) {
+            // A fetch this closure started before a handoff can only land after
+            // it. The instance that took over owns the decision now (and has
+            // its own request in flight); acting on it here would arm a reload
+            // engine that has been retired, against a baseline nobody reads.
+            if (deactivated) return;
+
             // First success establishes the baseline: "this is the build this tab
             // is running". It is deliberately NOT the newest version — it is the
             // one whose assets are already in memory.
@@ -3005,6 +3345,7 @@
          * @returns {Promise<void>}
          */
         function poll(force, isConfirm) {
+            if (deactivated) return Promise.resolve();
             if (cfg.mode === 'off') return Promise.resolve();
             if (!force && (Date.now() - lastFetchAt) < MIN_FETCH_GAP_MS) return Promise.resolve();
             // One version request per instance at a time. Without this every
@@ -3170,6 +3511,10 @@
          */
         function loadEntries() {
             if (entriesStarted) return Promise.resolve();
+            // Deactivated BEFORE the chain started: the instance that took over
+            // owns these entries and will load them itself. Starting here would
+            // be the double-execution the whole handoff is careful to avoid.
+            if (deactivated) return Promise.resolve();
             entriesStarted = true;
             entriesVersioned = !!baselineVersion;
 
@@ -3183,10 +3528,11 @@
             cfg.entryScripts.forEach(function (url) {
                 chain = chain.then(function () { return appendEntry(url); });
             });
-            return chain.then(function () {
+            entriesChain = chain.then(function () {
                 entriesLoaded = true;
                 safe(function () { console.log(LOG, TAG, 'bootstrap: all entries settled'); });
             });
+            return entriesChain;
         }
 
         /**
@@ -3248,16 +3594,21 @@
          * @returns {Promise<void>}
          */
         function bootstrapEntries() {
-            var timer = setTimeout(function () {
-                timer = null;
-                if (entriesStarted) return;
+            // Tracked on the closure (not a local) so deactivate() can cancel
+            // it: a handoff in the window between "kit tag parsed" and "version
+            // resolved" is the NORMAL case, and a retired closure firing this
+            // timer would load the entry files the new instance is about to.
+            entryBootTimer = setTimeout(function () {
+                entryBootTimer = null;
+                if (entriesStarted || deactivated) return;
                 noteUnversionedEntries('version not resolved within ' + cfg.entryTimeoutMs + 'ms');
                 safe(loadEntries);
                 armPolling();
             }, cfg.entryTimeoutMs);
 
             function proceed() {
-                if (timer !== null) { clearTimeout(timer); timer = null; }
+                if (entryBootTimer !== null) { clearTimeout(entryBootTimer); entryBootTimer = null; }
+                if (deactivated) return Promise.resolve();
                 if (!entriesStarted && !baselineVersion) {
                     noteUnversionedEntries('version source unavailable');
                 }
@@ -3271,6 +3622,8 @@
 
         /** Kick this instance off (called exactly once, at registration). */
         function start() {
+            if (restored) { resume(); return; }
+
             // The first fetch is immediate so the version is known as early as
             // possible — every millisecond before it resolves is a window in
             // which the host bootstrap may create unversioned assets.
@@ -3302,6 +3655,90 @@
                 });
                 safe(function () { return firstVersionAttempt(); });
             }
+        }
+
+        /**
+         * Take over from the same instance running under the PREVIOUS manager
+         * (REGISTRATION CONTRACT clause 7). Everything already done stays done;
+         * only what the retired closure was still going to do is picked up:
+         *
+         *   • entries configured but never started — the old chain was
+         *     cancelled with its closure, so this instance owns them now and
+         *     runs the ordinary bootstrap sequence (version race included);
+         *   • no baseline yet — whatever version request the old copy had in
+         *     flight resolves into a deactivated closure and is discarded, so
+         *     ask again immediately rather than waiting a whole pollSeconds
+         *     with every asset going out unversioned;
+         *   • otherwise just re-arm the poll loop. The baseline, the pending
+         *     update, the announced version and the warning latches all came
+         *     across in `restore`, so nothing is re-detected and nothing is
+         *     re-logged.
+         */
+        function resume() {
+            if (bootstrapMode && !entriesStarted) { safe(bootstrapEntries); return; }
+            if (baselineVersion === null) {
+                if (cfg.mode !== 'off') {
+                    safe(startPolling);
+                    safe(function () { poll(true); });
+                } else {
+                    safe(function () { return firstVersionAttempt(); });
+                }
+                return;
+            }
+            armPolling();
+        }
+
+        /**
+         * RETIRE this closure as part of handing the page to a newer manager.
+         *
+         * Stronger than suspend(): a suspended instance wakes up, a deactivated
+         * one never acts again. Every timer it owns is cancelled and every
+         * entry point is latched off (poll, onVersion, loadEntries), because a
+         * request or timer started before the handoff can still land after it —
+         * and two live copies of ONE instance would poll the same endpoint
+         * twice, announce twice, and arm two reload engines.
+         *
+         * The ONE thing deliberately left running is an entry chain already in
+         * flight: those files are needed by the page, the elements are already
+         * appended, and the instance taking over observes the chain's promise
+         * instead of starting a second one.
+         */
+        function deactivate() {
+            deactivated = true;
+            suspend();
+            if (entryBootTimer !== null) { clearTimeout(entryBootTimer); entryBootTimer = null; }
+        }
+
+        /**
+         * The live internals a handoff carries to the instance that replaces
+         * this one (see createInstance's `restore`). Everything here is state
+         * that exists ONLY in this closure — the reload budget and the per-tab
+         * flip/left/recovery records are already in session/localStorage under
+         * page-wide keys (BUDGET_KEY, FLIP_KEY, LEFT_KEY, RECOVERY_KEY) and are
+         * keyed by INSTANCE NAME, which the handoff preserves, so that history
+         * survives on its own and must not be copied through here.
+         * @returns {Object}
+         */
+        function transferState() {
+            return {
+                baselineVersion: baselineVersion,
+                baselineFromBootSeed: baselineFromBootSeed,
+                latestVersion: latestVersion,
+                notifiedVersion: notifiedVersion,
+                candidateVersion: candidateVersion,
+                lastFetchAt: lastFetchAt,
+                bootSeedRejected: bootSeedRejected,
+                updatePending: inst.updatePending,
+                warnedFlap: warnedFlap,
+                flapDisarmedFor: flapDisarmedFor,
+                warnedFetchFailure: warnedFetchFailure,
+                warnedConfirmChurn: warnedConfirmChurn,
+                confirmSpentThisCycle: confirmSpentThisCycle,
+                entriesStarted: entriesStarted,
+                entriesLoaded: entriesLoaded,
+                entriesVersioned: entriesVersioned,
+                entriesChain: entriesChain
+            };
         }
 
         /**
@@ -3340,6 +3777,9 @@
                 kitVersion: KIT_VERSION,
                 name: name,
                 registeredByKitVersion: sourceKitVersion,
+                // True when this instance was carried across a manager handoff
+                // rather than registered from a <script> tag in this document.
+                restoredByHandoff: restored,
                 mode: cfg.mode,
                 bootstrapMode: bootstrapMode,
                 entriesLoaded: entriesLoaded,
@@ -3405,7 +3845,11 @@
             name: name,
             cfg: cfg,
             /** @type {boolean} True once an update has been detected and the shared engine should act. */
-            updatePending: false,
+            updatePending: restored && restore.updatePending === true,
+            /** @type {string} KIT_VERSION of the copy whose tag registered this adoption. */
+            sourceKitVersion: sourceKitVersion,
+            /** @type {boolean} Whether this instance's entry chain was suppressed as a duplicate. */
+            entriesSuppressed: !!entriesSuppressed,
             handle: handle,
             matchesAssetPattern: matchesAssetPattern,
             versionedUrl: versionedUrl,
@@ -3417,7 +3861,10 @@
             stopPolling: suspend,
             wake: wake,
             start: start,
-            state: state
+            state: state,
+            // Handoff surface (REGISTRATION CONTRACT clause 7).
+            deactivate: deactivate,
+            transferState: transferState
         };
         return inst;
     }
@@ -4006,16 +4453,19 @@
         var opts = { capture: true, passive: true };
         var discrete = ['pointerdown', 'keydown', 'click', 'input', 'change'];
         var continuous = ['pointermove', 'wheel', 'scroll', 'touchmove'];
+        // ONE named function per wake source, registered through
+        // addPageListener, so a handoff can remove exactly what it added.
+        var wakeListener = function () { safe(onWake); };
         var i;
         for (i = 0; i < discrete.length; i++) {
-            document.addEventListener(discrete[i], onDiscreteInteraction, opts);
+            addPageListener(document, discrete[i], onDiscreteInteraction, opts);
         }
         for (i = 0; i < continuous.length; i++) {
-            document.addEventListener(continuous[i], onContinuousInteraction, opts);
+            addPageListener(document, continuous[i], onContinuousInteraction, opts);
         }
-        document.addEventListener('visibilitychange', function () { safe(onWake); }, false);
-        window.addEventListener('focus', function () { safe(onWake); }, false);
-        window.addEventListener('pageshow', function () { safe(onWake); }, false);
+        addPageListener(document, 'visibilitychange', wakeListener, false);
+        addPageListener(window, 'focus', wakeListener, false);
+        addPageListener(window, 'pageshow', wakeListener, false);
     });
 
     // REGISTRATION CONTRACT clause 1 makes "the first copy installs
