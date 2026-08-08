@@ -414,7 +414,11 @@
  *                        loses the gate after ~10 minutes of zero progress.
  *   6. active_editor   — the FOCUSED field only. Not overridden by the
  *                        screensaver: absent or not, the user's typing is
- *                        still there when they come back.
+ *                        still there when they come back. (2.4.1) Does not
+ *                        fire for an EMPTY field on an empty route — Jellyfin
+ *                        focuses the login form for you, so without this the
+ *                        refusal was permanent there and relaxation 8 could
+ *                        never be reached. Any typed value still refuses.
  *   7. password_entry  — (2.4.0) ANY input[type=password] on the page holding a
  *                        value, focused or not. A pure refusal: it can only
  *                        ever stop a reload the gates above would have allowed.
@@ -729,8 +733,21 @@
      *           document.createElement — or installs per-element accessors on
      *           every script/link the host creates — to guarantee a rewrite
      *           that could never happen.
+     *   2.4.1 — THE LOGIN RELAXATION ACTUALLY REACHES THE LOGIN PAGE. 2.4.0
+     *           dropped the idle requirement on #/login and #/selectserver, but
+     *           the gate two steps above it made that unreachable: Jellyfin's
+     *           login controller calls .focus() on the username field as the
+     *           form appears (controllers/session/login/index.js, identical on
+     *           10.11 and 12), so 'active_editor' refused for as long as the
+     *           tab sat there — on the exact page a stale tab is most likely to
+     *           be parked on. 'active_editor' now ignores a field the user has
+     *           typed NOTHING into, and only on an empty route; a field with
+     *           any value in it still refuses everywhere, and the password
+     *           refusal below it is untouched. Found on Jellyfin 12.0.0, but it
+     *           was never a 12 bug — the same client code ships in 10.11, and
+     *           both are fixed by the same narrowing.
      */
-    var KIT_VERSION = '2.4.0';
+    var KIT_VERSION = '2.4.1';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -2469,6 +2486,41 @@
     }
 
     /**
+     * Does this focused element hold NOTHING THE USER WOULD MIND LOSING (2.4.1)?
+     *
+     * Used by one caller only — the 'active_editor' gate, and only on an empty
+     * route — so it is written to be wrong in the SAFE direction: anything it
+     * cannot confidently call empty, it calls non-empty, and the reload is
+     * refused. A false "not empty" costs a deferred reload the next poll will
+     * retry; a false "empty" costs the user their typing, which nothing can
+     * retry.
+     *
+     * That is why it enumerates the shapes it understands instead of testing
+     * `!el.value`:
+     *   • contentEditable — empty only when it renders no text at all.
+     *   • INPUT/TEXTAREA  — empty only when `value` is the empty string. A
+     *                       checkbox or radio reads `value === 'on'` by
+     *                       default and is therefore never "empty", which is
+     *                       the conservative answer for the "remember me" box
+     *                       sitting next to Jellyfin's login fields.
+     *   • anything else   — including SELECT, whose value is a CHOICE the user
+     *                       may have just made, never empty.
+     *
+     * @param {Element} el The focused element.
+     * @returns {boolean} True only when the field demonstrably holds nothing.
+     */
+    function isEmptyEditor(el) {
+        try {
+            if (el.isContentEditable) return String(el.textContent || '') === '';
+            if (!/^(INPUT|TEXTAREA)$/.test(el.tagName || '')) return false;
+            var value = /** @type {HTMLInputElement} */ (el).value;
+            return typeof value === 'string' && value.length === 0;
+        } catch (err) {
+            return false;
+        }
+    }
+
+    /**
      * SAMPLE THE ROUTE, and notice the one transition worth acting on: the user
      * LEAVING playback.
      *
@@ -2623,7 +2675,32 @@
 
             var active = document.activeElement;
             if (active && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName || ''))) {
-                return 'active_editor';
+                // AN EMPTY FIELD ON AN EMPTY ROUTE IS NOT WORK IN PROGRESS
+                // (2.4.1). This is the one narrowing that makes 2.4.0's login
+                // relaxation real, because without it the relaxation below was
+                // unreachable on the route it was written for.
+                //
+                // Jellyfin's login controller focuses a field the moment the
+                // form appears — `context.querySelector('#txtManualName')
+                // .focus()` in controllers/session/login/index.js, on BOTH
+                // 10.11 and 12 — so `document.activeElement` is an INPUT for
+                // the entire life of a tab parked on the login screen. That
+                // made 'active_editor' a permanent refusal on exactly the page
+                // the kit most wants to be able to refresh: the one a stale tab
+                // lands on, and the one it can sit on for days. Measured on
+                // Jellyfin 12.0.0 with an untouched login page and no
+                // interaction for 5 s: `wouldBlockNow: 'active_editor'`, idle
+                // true, update never taken.
+                //
+                // The narrowing is deliberately the smallest one that fixes it.
+                // The gate exists to protect WORK IN PROGRESS, so it keeps
+                // refusing whenever there is any: a field with something in it
+                // blocks, on every route, focused or not (the password case is
+                // covered by 'password_entry' just below, which is what makes
+                // relaxing anything here safe). Only a field the user has typed
+                // NOTHING into, on a route that holds nothing to lose, stops
+                // counting as a reason to refuse.
+                if (!(isEmptyRoute(hash) && isEmptyEditor(active))) return 'active_editor';
             }
 
             // A TYPED-BUT-UNFOCUSED PASSWORD (2.4.0). One refusal, never a
