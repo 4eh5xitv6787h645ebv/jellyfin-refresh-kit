@@ -1,21 +1,26 @@
 # Jellyfin Refresh Kit — the standalone plugin
 
-Install **this one plugin** and it watches every plugin on the server for you.
+Install **this one plugin** and it watches every loaded plugin on the server for
+you.
 No other plugin needs to know it exists, and none of them need a code change.
 It does three things:
 
-* **serves a fresh app shell** — `index.html` goes out through a revalidating
-  middleware with a real ETag, so the page itself can never be stuck;
+* **serves a fresh app shell** — on the ordinary Kestrel path, `index.html`
+  goes out through a revalidating middleware with a body-derived ETag; when an
+  outer response buffer owns the final bytes, the middleware serves the complete
+  transformed shell as `no-store` instead;
 * **cache-busts other plugins' `<script>` and stylesheet tags** that sit in that
   shell and carry no version of their own;
-* **notices when any plugin changes** — installed, upgraded, enabled, disabled,
-  reconfigured — and reloads open tabs *safely*: never during playback, never
-  over a dialog, never while you are typing.
+* **notices when active Jellyfin/plugin code or client state changes** —
+  lifecycle changes publish only after the required restart actually loads
+  them, while active loose assets and watched configuration can publish in the
+  running process — and defers open-tab reloads while its documented light-DOM
+  probes observe playback, a rendered dialog, or active editing.
 
 **What it does not do:** it cannot version assets a plugin creates at *runtime*
 (a dynamic `import()`, a `fetch`, a CSS `url()`), and it cannot stamp tags
 injected by a middleware that runs outside this one. Those two limits are real,
-and they are spelled out in [the ordering caveat](#-the-ordering-caveat--read-this)
+and they are spelled out in [the ordering caveat](#ordering-caveat)
 and [Known limitations](#known-limitations) below. A plugin that needs runtime
 sub-assets versioned should adopt the kit directly — see
 [Relationship to single-file adoption](#relationship-to-single-file-adoption).
@@ -51,8 +56,8 @@ coexist on one page by design.
    [Requirements](#requirements) — the wrong one will not load.)
 2. Unzip it into a folder named `Jellyfin Refresh Kit_<version>` inside your
    Jellyfin config's `plugins` directory — e.g.
-   `/config/plugins/Jellyfin Refresh Kit_1.0.0.0/`, containing
-   `Jellyfin.Plugin.RefreshKit.dll` and `meta.json`.
+   `/config/plugins/Jellyfin Refresh Kit_<version>/`, containing
+   `Jellyfin.Plugin.RefreshKit.dll`, its portable PDB, and `meta.json`.
    The `Name_version` folder layout is what the server's plugin loader expects;
    a folder without it is ignored.
    On a native install there is no `/config`: the loader reads
@@ -63,14 +68,16 @@ coexist on one page by design.
 Verify: Dashboard → Plugins shows **Jellyfin Refresh Kit — Active**, and
 `GET /RefreshKit/Generation` returns JSON.
 
-**Requirements:** Jellyfin **10.11.x** or **12.x**. There is one plugin per
+### Requirements
+
+Jellyfin **10.11.x** or **12.x**. There is one plugin per
 server generation, because a plugin assembly has to match the framework its host
 runs on:
 
 | Server | Zip | Framework | Built against | `targetAbi` |
 |---|---|---|---|---|
 | Jellyfin 10.11.x | `jellyfin-refresh-kit_<version>.zip` | `net9.0` | `Jellyfin.Controller` 10.11.11 | `10.11.0.0` |
-| Jellyfin 12.x | `jellyfin-refresh-kit_<version>_jf12.zip` | `net10.0` | `Jellyfin.Controller` 12.0.0 | `12.0.0.0` |
+| Jellyfin 12.x | `jellyfin-refresh-kit_<version>_jf12.zip` | `net10.0` | `Jellyfin.Controller` 12.0.0-rc4 | `12.0.0.0` |
 
 Installing from the plugin repository, this is not a choice you have to make:
 both are listed in the one `manifest.json`, and the server offers only the build
@@ -81,30 +88,39 @@ The two builds are the SAME SOURCE, compiled twice — the plugin uses only the
 part of the plugin surface that survived the 12 rewrite, so there is no
 `#if`-ed code and no second project to keep in step.
 
-**Verified on:** root Docker, non-root Docker (`--user 1000:1000`), and a native
-non-root Linux install from the generic tarball (unprivileged user, custom
-`--datadir`, no `/config` on the box — the loader reads `<datadir>/plugins/`).
-Windows is **expected-compatible but unverified**: no Windows host was available,
-so it has a source-level portability audit instead of a run. Evidence for all
-four, including the Windows audit, is in
-[COMPATIBILITY.md](../COMPATIBILITY.md#installation-types--native-non-root-linux-non-root-docker-windows-standalone-plugin-1000-jellyfin-101111).
+Historical root-Docker, non-root-Docker, and native non-root Linux installation
+probes remain available in Git history and release records. They are not
+presented as current-candidate certification. Windows remains source-audited
+rather than host-run. The exact current status and evidence rules live in the
+[compatibility evidence ledger](../COMPATIBILITY.md#current-evidence-ledger).
+The existence of a harness or command is not presented as a fresh pass of the
+current working tree; see [Validation workflow](#validation-workflow) below.
 
 ---
 
 ## What it actually does
 
 Three independent mechanisms. Each is useful alone; together they close the
-whole loop.
+common static-shell and open-tab loop described here.
 
 ### 1. index.html is served through a revalidating middleware
 
 The plugin registers an `IStartupFilter` (via `IPluginServiceRegistrator`) that
-puts the refresh kit's middleware in front of the web app shell. Every
-`/web/index.html` response then carries a **strong, body-derived ETag**
-(`"rk-…"`), answers `If-None-Match` with a real `304`, honours `If-Match` with a
-`412`, preserves the host's `Cache-Control`/`Vary` and content coding, handles
-`HEAD`, and **fails open**: on any unexpected condition it serves the host's
-original bytes rather than breaking the page.
+puts the refresh kit's middleware in front of the web app shell. On the
+ordinary Kestrel path, where Refresh Kit owns the final response bytes, each
+shell representation it safely transforms carries a **strong, body-derived
+ETag** (`"rk-…"`), answers `If-None-Match` with a real `304`, honours `If-Match`
+with a `412`, preserves the host's `Cache-Control`/`Vary` and content coding,
+and handles `HEAD`.
+
+An outer middleware can instead buffer the response and own the bytes that are
+eventually written. Refresh Kit detects that ownership and safely degrades: the
+complete injected/stamped shell is served, but with `Cache-Control: no-store`,
+without stale entity validators, digests, signatures, or trailers, and with the
+outer owner's final content type, coding, and HTTP/1.1 framing. A conditional
+request receives the full `200` body rather than an invalid `304`. In both
+paths the middleware **fails open**: if it cannot safely process a response, it
+serves the host's original bytes rather than breaking the page.
 
 This is the same `RefreshKit.cs` machinery documented in the root README,
 vendored into the plugin (see *Repository layout* below).
@@ -114,9 +130,9 @@ vendored into the plugin (see *Repository layout* below).
 While it holds the shell, the middleware finds `<script src>` and
 `<link rel="stylesheet" href>` tags that **other** plugins put there — whether
 by patching `index.html` on disk or by injecting at serve time — and appends
-`?rkv=<generation>` to the ones that carry no version of their own. When any
-plugin changes, the generation changes, so those URLs change, so the browser
-cannot serve them from cache.
+`?rkv=<generation>` to the ones that carry no version of their own. When the
+monitored active identity changes, those URLs change, so the browser cannot
+serve the prior URL from cache.
 
 It is deliberately conservative. A tag is **skipped** when:
 
@@ -125,7 +141,10 @@ It is deliberately conservative. A tag is **skipped** when:
 | inline `<script>` (no `src`) | nothing to version |
 | `<link>` that is not a stylesheet (manifest, icons, preload) | not client code; stamping can break them |
 | absolute or protocol-relative URLs (`https://cdn…`, `//host/…`) | a third-party origin may key its cache/CORS/404 behaviour on the exact URL |
-| already carries `?v=`, `?ver=`, `?version=`, `?hash=`, `?rev=`, `?build=`, `?cb=`, `?_=`, `?rkv=` … | somebody's deliberate versioning; leave it alone |
+| standalone middleware: any real `<base href>` outside template content | it can redirect Refresh Kit's own PathBase-relative runtime URL, so the complete shell transform is left byte-for-byte unchanged |
+| direct `ThirdPartyTagStamper` use: any unsafe or entity-ambiguous base candidate | DOM recovery can reorder candidates, so source order is not trusted; safe same-origin relative bases remain eligible in this direct API |
+| any document containing a real `<noscript>` element | server-side code cannot know the user agent's scripting flag; with scripting disabled, an effective `<base>` inside `<noscript>` can change asset origin, so `ThirdPartyTagStamper` skips the whole transform byte-for-byte |
+| already carries `?v=`, `?ver=`, `?version=`, `?hash=`, `?rev=`, `?build=`, `?cb=`, `?_=` … | somebody's deliberate versioning; leave it alone (`rkv` is the exception: old values are scrubbed and restamped) |
 | an opaque valueless query (`?3cf5acc8506265662d4f`) | jellyfin-web's own bundle convention — already an identity |
 | a content-hashed filename (`main.jellyfin.f725276386e5b19afe0c.css`) | already immutable per URL; restamping would throw away a warm cache for nothing |
 
@@ -134,64 +153,128 @@ generation restamped, so repeated passes and generation changes converge instead
 of accumulating. Attribute order, quoting and whitespace are untouched — only the
 characters inside the `src`/`href` value change.
 
-#### ⚠ The ordering caveat — read this
+#### Ordering caveat
 
 The stamping pass can only see tags that are **already in the response when it
 runs**. ASP.NET Core composes startup filters so the *first-registered* filter
 ends up *outermost*, and plugin registrators run in the host's plugin load
-order, which no plugin can control. Measured on a live 10.11.11 server with four
-third-party plugins installed:
+order, which no plugin can control:
 
-* **On-disk-patched tags** — always seen, always stamped.
+* **On-disk-patched tags** — seen and stamped when eligible.
 * **Serve-time tags injected by a middleware INSIDE this one** — seen and
-  stamped. (Observed: InPlayerEpisodePreview's
-  `/InPlayerPreview/ClientScript` came back as
-  `/InPlayerPreview/ClientScript?rkv=5p-…`.)
+  stamped.
 * **Serve-time tags injected by a middleware OUTSIDE this one** — appended to
-  the response *after* this pass, so **not stamped**. (Observed: Jellyfin
-  Enhanced's tag, which is self-versioned anyway and would have been skipped.)
-  A plugin whose outer middleware rewrites the shell may also **replace the
-  response headers**, which can cost you the `rk-` ETag from mechanism 1 —
-  observed with Jellyfin Enhanced's injection middleware, which serves the shell
-  as `Cache-Control: no-cache` with no validator.
+  the response *after* this pass, so **not stamped**. If that middleware owns a
+  later response buffer, mechanism 1 uses the explicit `no-store`
+  safe-degradation path instead of claiming an `rk-` validator for somebody
+  else's final bytes.
 
-Nothing breaks in that case: those plugins simply keep whatever cache behaviour
-they already had, and mechanism 3 still gets every open tab onto the new build.
-There is no supported way for a plugin to force itself outermost, so this is a
-documented limit, not a bug that can be fixed from here.
+The compatibility matrices preserve one concrete limitation rather than hiding
+it: GetAvatar's single eligible outer-owned tag remains unstamped in both
+audited install orders. Mechanism 3 can still notify or reload eligible tabs,
+but an unchanged outer-owned URL is not guaranteed to return fresh bytes. There
+is no supported way for a plugin to force itself outermost, so this is a
+documented ownership boundary.
 
-### 3. A generation for every plugin, and a safe reload
+### 3. One loaded-state generation, and a safe reload
 
-An unauthenticated endpoint reports one short **generation** token derived from
-*all* installed plugins. The embedded `jellyfin-refresh-kit.js` runtime is
-injected (as the instance **`RefreshKitPlugin`**) pointed at that endpoint; it
-polls, and when the generation changes it performs a **safe** reload — never
-during playback, never over an open dialog, never while typing, never in
-fullscreen, only after an idle window, and inside a reload budget.
+An unauthenticated endpoint reports one short, opaque **generation** token
+derived from the code and client state this Jellyfin process is actually
+running. Consumers must compare the whole token rather than parse its current
+shape. The embedded `jellyfin-refresh-kit.js` runtime is injected as the
+instance **`RefreshKitPlugin`**, polls that endpoint, and performs a safe reload
+when the generation changes.
 
-The generation is `{plugin count}p-{16 hex}`, folded from, for every folder in
-the plugins directory:
+The token is folded deterministically from:
 
-* the plugin **id** and **version** from its `meta.json` — install / uninstall /
-  upgrade;
-* its **status** from the same file — Jellyfin rewrites `"status"` in place when
-  an admin enables or disables a plugin, and *nothing else moves*: same folder,
-  same version, byte-identical binaries with untouched timestamps. Without this
-  field a disable was invisible;
-* the **newest write-ticks** across its binaries **and its client assets**
-  (`.js`, `.mjs`, `.css`, `.map`, `.html`) — a same-version binary replaced in
-  place, or a script edited without the DLL moving at all. Runtime data files
-  (`.json`, `.db`, logs) are deliberately excluded: they churn on their own
-  schedule with nothing user-visible behind them;
-* the **newest write-time of its plugin-configuration XML** — see below.
+* selected **loaded Jellyfin host assemblies**, using assembly simple name,
+  assembly version, and module MVID;
+* the stable plugin id and **actually loaded plugin assemblies**, again using
+  assembly simple name, assembly version, and MVID;
+* bounded active loose client assets belonging to those loaded plugins: relative
+  path, size, and exact content hash for `.js`, `.mjs`, `.css`, and `.html`;
+* the filename and exact content of each loaded plugin's Jellyfin configuration
+  XML, when configuration watching is enabled.
 
-The scan is bounded per folder (files *and* directories visited), so a plugin
-shipping a large asset tree cannot turn it into a stat storm.
+Absolute install paths, folder names, manifest version/status text, filesystem
+timestamps, source maps (`.map`), databases, logs, and private runtime-data
+directories are **not** generation identity. Timestamps and manifest fields
+remain useful diagnostics, but copied identical active bytes produce the same
+token regardless of where or when they were written.
 
-One value does four jobs — the injected tag's `?v=`, its `data-boot-version`
-seed, what the version endpoint reports as `CacheKey`, and the `?rkv=` stamp — so
-they can never drift apart, and a generation change also invalidates the
-middleware's cached representation of the shell.
+#### Loaded state, not staged disk state
+
+The provider joins Jellyfin's plugin records to assemblies already loaded in
+the current process. A disk-only install, upgrade, enable, disable, or uninstall
+is staged state and does not announce code that is not active yet. If Jellyfin
+removes a plugin record or unlinks its folder while the old assembly still runs,
+Refresh Kit retains that plugin's last coherent fingerprint for the rest of the
+process. The next Jellyfin start publishes the new loaded set.
+
+That distinction also closes the normal same-version edge case: replacing a DLL
+with the same version, size, and modification time does not move the running
+process prematurely. Once Jellyfin restarts and loads a replacement with a new
+MVID, the generation moves. Arbitrary PE-byte changes that preserve the MVID are
+not an input. A loaded Jellyfin host update is handled by the same MVID rule.
+Active loose browser assets can still move immediately by content, including a
+same-size edit with its timestamp preserved.
+
+#### Process epochs and legitimate rollback
+
+The JSON endpoint also returns an opaque process `Epoch`. It is stable for one
+loaded server process, changes on a genuine restart, and is deliberately absent
+from the generation, `rkv`/`v` URLs, ETags, and injected boot identity. It exists
+only to distinguish a real new process serving a historical generation from a
+flapping proxy or mixed-node cycle.
+
+The client requires two observations of a fresh exact generation/epoch pair and
+a verified claim in a strict per-tab `sessionStorage` set before granting
+one-shot authorization to the otherwise-refused historical target generation.
+That authorization survives epoch rotation among replicas serving the same
+target while the safety gates keep the reload pending; those epochs are process
+evidence, not separate releases or updates. A same-generation restart records
+its epoch without a reload. The exact epoch set is non-evicting and saturates at
+48 tuples. A separate non-evicting 128-record coverage set remembers a
+generation departed without a durably verified epoch; if even the baseline
+generation was unresolved, its typed instance tombstone refuses every later
+automatic candidate for that instance for the rest of the tab session. Missing
+or invalid epochs, an already-seen epoch, incomplete coverage, corrupt or
+unavailable storage, and either saturation limit therefore fail closed. A
+finite set of stable process epochs cannot create an endless reload cycle;
+volatile or broken deployments may still delay convergence.
+
+#### Deterministic scan budgets and failure behaviour
+
+The five-second scan cache is bounded both per plugin and across the complete
+scan:
+
+| Budget | Per loaded plugin | Whole scan |
+| --- | ---: | ---: |
+| File entries examined | 4,000 | 16,000 |
+| Directories descended | 512 | 2,048 |
+| Active asset content hashed | 8 MiB | 32 MiB |
+| Configuration content hashed | 2 MiB | 8 MiB |
+
+Plugins are scanned in stable identity order, and paths/content records are
+ordinal-sorted before folding. If a budget is exhausted, the affected identity
+uses a deterministic truncation sentinel instead of a filesystem-dependent
+prefix. If an asset or configuration read races a writer or becomes
+unavailable, its reserved global budget remains consumed and the last-good
+snapshot is retained when one exists. `GET /RefreshKit/Diagnostics` exposes
+file/directory/byte counts, truncation and unavailability flags, last-good use,
+and retained plugin records.
+
+#### One response uses one exact tag identity
+
+The middleware resolves the generation while generating this plugin's exact
+`<script>` tag block. That value supplies the tag's `?v=` and
+`data-boot-version`. The third-party stamper then reads and HTML-decodes the boot
+identity from that already-generated tag block and uses it for every `rkv` in
+the same shell response; it does not perform a second mutable provider read.
+The representation cache is keyed by the generated tags, so a later generation
+invalidates the cached shell. The polling endpoint always reports the provider's
+current `CacheKey`; if it has advanced since an older shell was served, that is
+the update the client is meant to detect.
 
 ---
 
@@ -205,8 +288,10 @@ open clients.
 The signal is kept deliberately narrow, because a noisy generation means
 pointless server-wide reloads:
 
-* **Watched:** `plugins/configurations/<AssemblyName>.xml` — Jellyfin's own
-  plugin-configuration store, the file the dashboard writes when an admin saves.
+* **Watched:** the exact safe filename Jellyfin reports for the loaded plugin in
+  its plugin-configuration store (normally
+  `plugins/configurations/<AssemblyName>.xml`). The primary assembly-name XML is
+  used only as a fallback when the plugin does not report a configured filename.
 * **NOT watched:** the plugin's private `plugins/configurations/<AssemblyName>/`
   directory. Measured on 10.11.11 with Jellyfin Enhanced 12.1.0.0, that
   directory holds `<userId>/settings.json` (**per-user preferences**),
@@ -216,31 +301,68 @@ pointless server-wide reloads:
   the server* because *one* user toggled a personal setting, and the runtime
   caches would move the generation on their own with no user-visible change at
   all.
-* **Debounced:** a new timestamp must stand still for 10s; a burst of writes
-  (a settings page that saves three times as you click) collapses into one bump.
+* **Debounced:** a new exact content identity must stand still for 10s; a burst
+  of writes (a settings page that saves three times as you click) collapses into
+  one bump. Preserving the file's timestamp does not hide changed content.
 * **Cooled down on the LEADING edge:** a change that arrives while no cooldown
   window is open for that plugin publishes **immediately** (after the 10s
   debounce) and opens a window of *Settings-change cooldown* length
   (default **5 minutes**). Only changes arriving **inside** that window are
   held, and they coalesce into a single publish when it expires, carrying the
-  latest timestamp — nothing is dropped. A held publish **closes** the window
+  latest content identity — nothing is dropped. A held publish **closes** the window
   rather than opening a new one, so the save after it is snappy again; without
   that, each deferred publish would re-arm the cooldown and a lone later save
   could sit unseen for another five minutes. The practical guarantee is
-  therefore "an ordinary single save is live within the debounce plus one client
-  poll", with a plugin that rewrites its configuration continuously bounded to
-  about two bumps per window instead of one.
+  therefore that an ordinary single save publishes on the first provider scan
+  after the ten-second stable interval. The debounce clock starts only when a
+  scan first observes the new content; a polling-only client may need one poll
+  to start that clock and a later poll (plus the provider's five-second cache
+  boundary) to observe publication. Saving the dashboard form is not a
+  synchronous open-tab reload. A plugin that rewrites its configuration
+  continuously remains bounded to about two bumps per window instead of one.
 * **Excludable:** turn config watching off globally, or list individual plugins
-  to ignore. An excluded plugin falls back to version/DLL-change detection only.
+  to ignore. Loaded module and active loose-asset detection still apply.
 
-**Version/DLL changes bypass the debounce and the cooldown entirely** — a new
-binary is unambiguous and rare.
+**Loaded-module and active loose-asset identity changes bypass the configuration
+debounce and cooldown entirely.** A staged DLL remains invisible until restart;
+the MVID of the module loaded after that restart is authoritative.
 
-The default exclusion list is **empty**: of the plugins tested live (Jellyfin
-Enhanced, Media Bar, File Transformation, InPlayerEpisodePreview) none write
-churn into the watched XML. Add a plugin to the list if you observe the
-generation moving while nobody is changing settings — `GET /RefreshKit/Diagnostics`
-(admin) shows exactly which plugin contributed which timestamp.
+The default exclusion list is **empty**. Add a plugin if its normal XML content
+moves while nobody is changing server-wide settings. The admin diagnostics
+endpoint shows the loaded/content identities, byte budgets, truncation and
+last-good state needed to distinguish configuration churn from code or asset
+changes.
+
+---
+
+## Safe reload gates
+
+When an update is pending, automatic reload waits while its light-DOM probes
+observe playback routes, fullscreen or picture-in-picture media, live media
+sessions, active editing, the configured idle window, or a full shared rolling
+reload budget.
+
+Dialogs and password fields are based on current interactive state, not merely
+on matching DOM nodes:
+
+* A **rendered** dialog or action sheet blocks. A retained dialog hidden by a
+  `hidden`/`aria-hidden`/`inert` ancestor, layout, visibility, or
+  `content-visibility` does not. If the visibility probe itself fails, the gate
+  fails safe and blocks.
+* A populated **rendered, natively enabled, non-inert** password field blocks
+  whether focused or not. A populated login field that is retained but hidden,
+  natively disabled (including by a disabled fieldset), or inert after
+  authentication does not block the document for life. `aria-disabled` alone
+  does not make a native input non-interactive.
+
+The browser regressions cover both sides: Jellyfin 10.11's real hidden retained
+login password must permit a later update, while a visible interactive password
+field must continue to report `password_entry`.
+
+The probes do not see inside closed shadow roots and cannot prove the state of
+DRM or external-player integrations. They are conservative for the DOM state
+they can observe, but are not an absolute guarantee about every third-party
+playback, dialog, or editor surface.
 
 ---
 
@@ -250,74 +372,67 @@ Dashboard → Plugins → **Jellyfin Refresh Kit**.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| Serve index.html through the refresh kit | on | Master switch. Off = the plugin is inert; host bytes pass through untouched. |
+| Serve index.html through the refresh kit | on | Middleware switch. Off = host shell bytes pass through untouched; the configuration page and public generation/runtime endpoints remain available. |
 | Cache-bust other plugins' script tags | on | Mechanism 2. |
 | Reload open tabs after a plugin update | on | Off switches the client to `notify` mode: it logs the update instead of reloading. |
 | Treat plugin settings changes as updates | on | Mechanism 3's config input (above). |
-| Settings-change cooldown (minutes, per plugin) | 5 | Length of the leading-edge burst window: the change that opens it publishes at once, later changes inside it coalesce to one publish at its end. 0 disables the cooldown; the debounce still applies. |
+| Settings-change cooldown (minutes, per plugin) | 5 | Length of the leading-edge burst window: after debounce and a provider scan, the change that opens it publishes; later changes inside it coalesce to one publish at its end. 0 disables the cooldown; the debounce still applies. |
 | Ignore settings changes from these plugins | empty | One per line: plugin name, install folder, GUID or assembly name. |
 | Poll interval (seconds) | 60 | Clamped 15–3600 by the client runtime. |
 | Required idle time (seconds) | 5 | Clamped 0–300. |
 | Max reloads per minute | 3 | Clamped 1–100. |
-| Developer mode | off | Serves the client runtime `no-store` instead of `immutable`. |
+| Developer mode | off | Serves the client runtime `no-store` and uses a distinct `dev=1` script URL. The marker itself remains `no-store` across setting races, so an immutable production response cannot poison the dev URL. |
 
 ## Endpoints
 
 | Route | Auth | Purpose |
 | --- | --- | --- |
-| `GET /RefreshKit/Generation` | anonymous | `{ Version, BuildId, CacheKey }`, `CacheKey` = generation. `no-store`. |
+| `GET /RefreshKit/Generation` | anonymous | `{ Version, BuildId, CacheKey, Epoch }`; `CacheKey` = generation and `Epoch` = this process incarnation. `no-store`. |
 | `GET /RefreshKit/Generation.txt` | anonymous | The bare generation, `text/plain`. |
-| `GET /RefreshKit/kit.js` | anonymous | The embedded `jellyfin-refresh-kit.js`, `immutable` (the injected `src` carries `?v=<generation>`). |
-| `GET /RefreshKit/Diagnostics` | admin | Per-plugin id / version / status / asset ticks / config ticks behind the current generation. |
+| `GET /RefreshKit/kit.js` | anonymous | The embedded `jellyfin-refresh-kit.js`: immutable for a production generation URL, or `no-store` for developer mode / a `dev=1` URL. |
+| `GET /RefreshKit/Diagnostics` | admin | Loaded host modules plus per-plugin loaded/content identities, diagnostic timestamps, scan counts/budgets, truncation/unavailability, and last-good/retained-record state. |
 
 The first three are anonymous **on purpose**: the login screen is a real page of
 the web client, it is where a stale cache most often bites, and a tab can sit on
 it for days. An authenticated version endpoint would leave exactly that page
-unable to notice an update. They disclose nothing a logged-out visitor cannot
-already see — an opaque token and a public MIT-licensed script.
+unable to notice an update. The routes expose opaque generation/process tokens
+and a public MIT-licensed script, not the authenticated diagnostics or plugin
+inventory.
 
 ---
 
 ## Reverse proxies & CDNs
 
-Almost nobody reaches Jellyfin on `:8096`. The plugin was therefore run behind
-the proxies people actually deploy — the same 10.11.11 server, the same two
-plugins (this one plus Jellyfin Enhanced), one proxy per port. The rig that
-produced this table lives in [`e2e/proxy/`](../e2e/proxy/README.md) and rebuilds
-itself from nothing: `./run.sh all`.
+Normal reverse proxies should not need Refresh Kit-specific configuration. The
+disposable rig in [`e2e/proxy/`](../e2e/proxy/README.md) covers direct Jellyfin,
+official-nginx and Nginx Proxy Manager-style configurations, Caddy, Traefik,
+HAProxy, a Jellyfin `BaseUrl` subpath, and four nginx cache variants. Its legs
+check a 17/18-assertion shell/endpoint matrix (depending on whether Brotli is
+offered), gzip and optional Brotli, conditional
+requests, websocket upgrades, adversarial caching, login, a loose-asset content
+change, exactly one safe reload, and updated `rkv` stamps.
 
-| Setup | Shell `rk-` ETag + `304`/`412` | gzip / br | Generation endpoint | One smart reload | Websocket |
-|---|---|---|---|---|---|
-| **No proxy** (baseline) | ✅ 18/18 | ✅ | ✅ 5 s | ✅ exactly 1 | ✅ |
-| **nginx — official Jellyfin docs config** | ✅ 18/18 | ✅ | ✅ 5 s | ✅ exactly 1 | ✅ |
-| **Nginx Proxy Manager style** (incl. "Cache Assets") | ✅ 18/18 | ✅ | ✅ 5 s | ✅ exactly 1 | ✅ |
-| **Caddy** (the docs' 2-line `reverse_proxy`) | ✅ | ✅ ¹ | ✅ 5 s | ✅ exactly 1 | ✅ |
-| **Traefik v3** | ✅ | ✅ ¹ | ✅ 5 s | ✅ exactly 1 | ✅ |
-| **HAProxy** | ✅ 18/18 | ✅ | ✅ 5 s | ✅ exactly 1 | ✅ |
-| **nginx subpath** (`location /jellyfin` + `BaseUrl`) | ✅ 18/18 | ✅ | ✅ | ✅ exactly 1 | ✅ |
-| **nginx `proxy_cache`, naive** | ❌ ETag lost | ❌ | ❌ **frozen** | ❌ **2 reloads** | ✅ |
-| **nginx `proxy_cache`, honouring `Cache-Control`** | ⚠ fresh, but no client `304`/`412` | ✅ | ✅ | ✅ | ✅ |
-| **nginx `proxy_cache` + the exemption below** | ✅ 18/18 | ✅ | ✅ | ✅ exactly 1 | ✅ |
-
-¹ Caddy and Traefik ask upstream for gzip themselves and transparently decode
-it, so an ordinary client request returns an *identity* body carrying the
-**gzip representation's** ETag. Revalidation is unaffected — the proxy sends the
-same `Accept-Encoding` upstream on the conditional and gets its `304` — and
-`Vary: Accept-Encoding` is preserved either way.
+Run it with `e2e/proxy/run.sh all`; individual `up`, `matrix`, `ws`, `cache`,
+`e2e`, `subpath`, and `down` commands are also available. The runner builds and
+verifies one immutable package snapshot, then pins that resolved snapshot for
+the lab. These are coverage statements, not a claim that this documentation
+edit reran the long container/browser matrix.
 
 ### What the kit actually asks of a proxy
 
-Three things, and every proxy above does all three out of the box:
+Three things:
 
-1. **Pass the shell's validators through.** `ETag` in one direction,
+1. **Pass the ordinary shell path's validators through.** `ETag` in one direction,
    `If-None-Match` / `If-Match` in the other. That is what turns a page load
    into a `304` instead of a download.
-2. **Don't cache `/web/` or `/RefreshKit/` yourself.** The origin already says
-   `Cache-Control: no-cache` on the shell and `no-store` on the generation
-   endpoint. A proxy that believes them needs no configuration at all.
-3. **Leave the content coding alone, or re-code it honestly.** One
-   `Content-Encoding` header, a body that matches it. The kit ETags each coding
-   separately, so gzip and identity revalidate independently.
+2. **Do not override origin cache policy for the shell or `/RefreshKit/`.** The
+   ordinary shell says `no-cache`, the nested-buffer path says `no-store`, and
+   the generation endpoint says `no-store`. A proxy that honours those
+   directives needs no Refresh Kit-specific configuration.
+3. **Leave the content coding alone, or re-code it honestly.** At most one
+   `Content-Encoding` header, and a body that matches it. When a coding is
+   actually offered, the ordinary path revalidates that representation; an
+   identity response to a Brotli request is also valid.
 
 ### The one misconfiguration that breaks freshness
 
@@ -329,17 +444,11 @@ proxy_cache_valid 200 10m;
 proxy_ignore_headers Cache-Control Expires;   # ← this line
 ```
 
-Measured through that config: the origin's generation moved twice and the proxy
-kept serving a shell stamped with a generation from **before either change**,
-while `/RefreshKit/Generation` — a `no-store` endpoint — was pinned to a value
-ten minutes old. Both halves of the loop are frozen at once: the client cannot
-get a new shell, and it cannot even be told that one exists.
-
-It gets actively worse than "stale". In the browser leg, that proxy produced
-**two reloads instead of one**: the tab reloaded, was handed the cached shell,
-found its boot version still behind the endpoint, and armed again — a loop
-bounded only by the client's reload budget. A misconfigured cache does not just
-withhold the fix; it turns the fix into a flicker.
+The adversarial test leg demonstrates why this is unsafe: an intermediary can
+pin both the shell and the `no-store` generation endpoint. The rolling reload
+budget rate-limits attempts but does not by itself terminate a proxy that keeps
+flapping forever; per-tab left-generation history and one-shot target-generation
+authorization bound known finite cycles.
 
 **The remedy is one line — delete `Cache-Control` (and `Expires`) from
 `proxy_ignore_headers`:**
@@ -348,14 +457,9 @@ withhold the fix; it turns the fix into a flicker.
 proxy_ignore_headers Set-Cookie X-Accel-Expires;   # never Cache-Control
 ```
 
-That alone restores freshness: after the same bump, the shell and the generation
-endpoint both tracked the origin immediately.
-
-**Recommended on top of it** — exempt the two paths that must never be cached,
-which also buys back the client `304`s that any `proxy_cache` costs you (nginx
-strips `If-None-Match` / `If-Match` from the upstream request whenever caching is
-enabled for that location, so every navigation becomes a full download and
-`If-Match` stops returning `412`):
+Also exempt the paths whose freshness/validators must reach the origin. This
+preserves client conditional requests even when other Jellyfin responses use an
+nginx cache:
 
 ```nginx
 location = /web/           { proxy_cache off; proxy_pass http://jellyfin:8096; }
@@ -363,59 +467,39 @@ location = /web/index.html { proxy_cache off; proxy_pass http://jellyfin:8096; }
 location /RefreshKit/      { proxy_cache off; proxy_pass http://jellyfin:8096; }
 ```
 
-With both remedies the caching proxy scored the same 18/18 as no proxy at all.
-
 Simplest advice of all: **don't put `proxy_cache` in front of Jellyfin.** The
-official docs config has none, the assets that matter are already immutable per
-URL, and there is nothing left for a proxy cache to win.
+web client already gives its static assets stable cache identities.
 
-### Cloudflare and other CDNs
+### CDNs
 
-Cloudflare's defaults are safe. HTML is not cached by default, so `/web/` and
-`/RefreshKit/*` go to the origin and everything works exactly as it does with no
-CDN — the "Nginx Proxy Manager style" and "no proxy" rows describe it.
-
-A **"Cache Everything" Page Rule (or Cache Rule) is the adversarial row above**,
-with the same two failures: a pinned shell and a pinned generation endpoint. If
-you must run one, add a bypass rule for `/web/` and `/RefreshKit/*` — the same
-exemption as the nginx block, expressed in Cloudflare's terms. Cloudflare's
-"Respect Existing Headers" origin cache-control setting is the direct equivalent
-of not ignoring `Cache-Control`, and is the minimum.
-
-The same reasoning transfers to any CDN: this plugin's correctness needs exactly
-one guarantee from an intermediary — **that `no-cache` and `no-store` mean what
-they say on `/web/` and `/RefreshKit/`.** Every other path may be cached as
-aggressively as you like; the kit's stamping makes those URLs change whenever
-their content does.
+Whatever CDN is used, bypass broad “cache everything” rules for `/web/` and
+`/RefreshKit/`, or configure the CDN to honour the origin's `no-cache` and
+`no-store`. Product defaults change; verify the effective response and cache
+rules rather than relying on a brand-specific default claim here.
 
 ### Subpath / base URL
 
-Fully supported, no configuration. Set the base URL in
+Covered by the disposable subpath lab without Refresh Kit-specific
+configuration. Set the base URL in
 Dashboard → Networking (`BaseUrl`, e.g. `/jellyfin`) and proxy the prefix
 through unchanged. The injected tag uses **relative** URLs —
 `src="../RefreshKit/kit.js?v=…"`, `data-version-url="../RefreshKit/Generation"`
 — so from `/jellyfin/web/` they resolve to `/jellyfin/RefreshKit/…` with nothing
-to configure and nothing to rewrite. Verified end to end behind
-`location /jellyfin`: 18/18 on the freshness matrix, websocket up, login, and
-exactly one smart reload with the stamps updated.
+to configure and nothing to rewrite. The proxy harness's `subpath` leg exercises
+the shell matrix, websocket, login, and safe-reload path under that prefix.
 
-### Two things a proxy cannot fix
+### What a proxy cannot fix
 
-* **A plugin whose injection middleware runs OUTSIDE this one replaces the
-  shell's response headers**, and the `rk-` ETag goes with them — see
-  [the ordering caveat](#-the-ordering-caveat--read-this). Measured again here:
-  with Jellyfin Enhanced installed, *every* setup in the table (including no
-  proxy at all) serves the shell with no validator. Mechanisms 2 and 3 are
-  unaffected, which is why the reload column is green throughout. The freshness
-  matrix above was therefore run with third-party injectors parked; the suite
-  does that automatically.
-* **`password_entry` outlives the login form.** Jellyfin 10.11 keeps the login
-  view in the DOM after a successful sign-in, hidden, with the typed password
-  still sitting in `#txtManualPassword`. The kit's 2.4.0 `password_entry` gate
-  counts *any* password field holding a value, visible or not — so a tab that
-  signed in by typing a password refuses every auto-reload for the life of that
-  document, reporting `blockReason: "password_entry"`. Nothing to do with
-  proxies, and `state().shared.blockReason` names it immediately.
+* **An outer response owner changes the cache contract.** Refresh Kit returns
+  the complete transformed body as `no-store` without an `rk-` validator and
+  preserves the outer owner's final framing. A tag that the outer owner adds
+  after Refresh Kit's transform can remain unstamped — see
+  [the ordering caveat](#ordering-caveat).
+
+Jellyfin 10.11's populated login password retained in a hidden page is **not** a
+remaining proxy limitation: hidden/disabled/inert password fields and retained
+hidden dialogs no longer block. A visible interactive populated password or a
+rendered dialog still blocks intentionally.
 
 ---
 
@@ -445,67 +529,227 @@ Nothing about the copy-the-file path changes.
 
 ## Repository layout
 
-```
-manifest.json                                 plugin-repository manifest (root),
-                                              both ABIs, highest first
-plugin/build.sh                               build → 2 zips + meta.json + md5
+```text
+global.json / NuGet.Config                    pinned SDK and restore sources
+Directory.Build.props / Directory.Build.targets
+                                               deterministic shared build rules
+manifest.json                                  two-ABI plugin repository manifest
+test.sh                                        supported validation entry point
+scripts/                                       package/reproducibility/evidence checks
+plugin/build.sh                                locked dual-target package publisher
+plugin/.builds/                                read-only content-identified snapshots
+plugin/build                                  atomic symlink to one verified snapshot
 plugin/Jellyfin.Plugin.RefreshKit/
-    Jellyfin.Plugin.RefreshKit.csproj         net9.0 (JF 10.11) + net10.0 (JF 12)
-    Plugin.cs                                 plugin identity, embedded runtime
-    PluginServiceRegistrator.cs               wires all three mechanisms
-    PluginGenerationProvider.cs               the generation aggregator
-    ThirdPartyTagStamper.cs                   the ?rkv= stamping rules
-    Controllers/RefreshKitController.cs       generation / kit.js / diagnostics
-    Configuration/                            settings + dashboard page
-    RefreshKit.cs                             VENDORED from the repository root
+    Jellyfin.Plugin.RefreshKit.csproj          net9.0 (JF 10.11) + net10.0 (JF 12)
+    Plugin.cs                                  plugin identity, embedded runtime
+    PluginServiceRegistrator.cs                wires all three mechanisms
+    PluginGenerationProvider.cs                loaded-state generation aggregator
+    ThirdPartyTagStamper.cs                    the ?rkv= stamping rules
+    Controllers/RefreshKitController.cs        generation / kit.js / diagnostics
+    Configuration/                             settings + dashboard page
+    RefreshKit.cs                              VENDORED from the repository root
+plugin/Jellyfin.Plugin.RefreshKit.Tests/       net9/net10 xUnit tests
+tests/browser/                                 headless Chromium regressions
+tests/RefreshKit.Standalone.Compile/           root helper compile smoke
+e2e/jellyfin/                                  pinned JF10/JF12 lifecycle/browser lab
+e2e/proxy/                                     proxy/cache/websocket/subpath lab
+e2e/compat/                                    locked ecosystem + hostile fixtures
 ```
 
 `plugin/Jellyfin.Plugin.RefreshKit/RefreshKit.cs` is the root `RefreshKit.cs`
 with exactly three changes, each marked `STANDALONE-PLUGIN ADAPTATION`: the
-namespace, a new `RefreshKitOptions.HtmlPostProcess` hook, and the one call site
-that invokes it. To re-sync after the root file changes:
+namespace, compatible legacy/contextual `RefreshKitOptions` post-processing
+hooks plus their safe application method, and the one call site that invokes
+them. To re-sync after the root file changes:
 
 ```bash
 sed 's/^namespace JellyfinRefreshKit$/namespace Jellyfin.Plugin.RefreshKit/' \
     RefreshKit.cs > plugin/Jellyfin.Plugin.RefreshKit/RefreshKit.cs
-# then re-apply the HtmlPostProcess option and its call site
+# then re-apply the post-processing options/method and their call site
 ```
 
 It is vendored rather than `<Compile Link>`ed because those two hooks do not
 exist upstream and the root file belongs to the single-file adoption path.
+`scripts/verify-vendored-refreshkit.py` makes that three-change contract a
+static gate.
 
 ## Building
 
 ```bash
-export DOTNET_ROOT=$HOME/.dotnet
+export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}"
+bash plugin/build.sh
+```
+
+The build is serialized with a repository lock. It selects the exact SDK from
+`global.json`, restores the committed lock file in locked mode, records the
+actual Git revision/tree/dirty state and commit epoch, copies every
+package-producing input into a read-only compiler tree, builds both target
+frameworks, creates deterministic stored ZIPs, and runs mandatory package/ABI/
+provenance verification before publishing anything.
+
+It produces:
+
+```text
+plugin/build/jellyfin-refresh-kit_<version>.zip       net9 / JF 10.11
+plugin/build/jellyfin-refresh-kit_<version>_jf12.zip  net10 / JF 12
+plugin/build/stage/                                   DLL + PDB + meta.json
+plugin/build/stage-jf12/                              DLL + PDB + meta.json
+```
+
+The real output lives in a read-only snapshot under `plugin/.builds/`; only
+after both targets verify does the build atomically switch the `plugin/build`
+symlink. Existing consumers that already resolved an older snapshot can keep
+using it, while the Jellyfin, proxy, and compatibility labs resolve and verify
+one snapshot at startup and reuse that exact path for the entire run. The build
+prints MD5 and SHA-256 identities for both ZIPs.
+
+Updating local repository metadata is a distinct release action and is refused
+for a dirty checkout:
+
+```bash
 bash plugin/build.sh --update-manifest
 ```
 
-Produces one zip per server generation — `jellyfin-refresh-kit_<version>.zip`
-(`net9.0`) and `jellyfin-refresh-kit_<version>_jf12.zip` (`net10.0`), each a DLL
-plus its own `meta.json` — prints both MD5s, and writes each checksum and the
-timestamp into the matching root `manifest.json` entry, paired on
-(version, `targetAbi`) so the two builds cannot overwrite each other. Attach
-**both** zips to a GitHub release tagged `v<version>` so both `sourceUrl`s
-resolve.
+It pairs entries by `(version, targetAbi)`, verifies the candidate manifest,
+finalizes the local immutable snapshot first, and replaces `manifest.json` only
+after the local `plugin/build` pointer is durable. It does not upload a release.
+
+Release publication is deliberately ordered so unvalidated repository metadata
+never lands on `main`:
+
+1. Install the dispatch and post-release workflows on the default branch in an
+   earlier infrastructure commit. GitHub cannot dispatch a workflow that is not
+   already present on the default branch; the release candidate cannot
+   bootstrap itself.
+2. Create clean source commit `S` and its direct manifest-only child `M` locally.
+   After verifying the push URL is the writable
+   `4eh5xitv6787h645ebv/jellyfin-refresh-kit` repository and both the version tag
+   and candidate ref are absent, push only `M` to
+   `refs/heads/release-candidate/v<version>`. Never move or reuse this ref.
+3. Dispatch `release-validation.yml` from that exact candidate ref with `S`,
+   `M`, the version, and policy kind. Its five jobs separately retain the
+   fast/reproducibility/security, real-integration, and locked-compatibility
+   receipts; a final independent rebuild semantically verifies and merges them
+   under one checksum root. Every job is within GitHub's 360-minute hosted-job
+   limit, and the remote candidate plus absent tag are checked both before and
+   immediately after evidence assembly.
+4. When validation succeeds, recheck the ref and absent tag, tag `S`, and attach
+   **exactly two assets**: the two ZIPs retained under the final artifact's
+   `release-candidate/` directory. Then fast-forward remote `main` to the already
+   validated `M`; do not amend, merge, rebuild, or regenerate either commit.
+5. Dispatch `post-release-assets.yml` from `main` at `M` with the successful
+   validation run ID. It requires remote `main` to equal `M`, `M`'s sole parent
+   to equal `S`, the remote tag to resolve to `S`, the still-immutable candidate
+   ref to equal `M`, the release to contain exactly the two expected assets, and
+   all retained/rebuilt/published hashes to agree. Keep the candidate ref until
+   this read-only post-release check succeeds.
+
+The verifier derives milestone timing from the fixed campaign origin
+`1786193837` (2026-08-08 20:57:17 AWST), rejects a caller-selected boundary or
+pre-existing tag, and never publishes, tags, or moves a branch itself.
+
+## Validation workflow
+
+Use the repository entry point from the repository root:
+
+The full local prerequisites are Node.js 20 or newer (`.node-version` pins
+`22.20.0`), `npm ci` for locked Puppeteer/Chromium, the exact .NET SDK
+`10.0.302`, installed .NET Core and ASP.NET Core 9.x plus 10.x runtimes, Python
+3, and GNU/Linux shell tools including `curl`, `flock`, `sha256sum`, and `tar`.
+Static validation downloads a checksum-pinned `actionlint` archive into a
+temporary user cache on first use and needs Docker CLI with Compose; container
+suites need a Docker engine. `security-audit` also needs the live NuGet advisory
+feed.
+
+```bash
+./test.sh static           # syntax/JSON/XML/workflow/Compose/vendored checks
+./test.sh fast             # static + packages + both .NET targets + Chromium
+./test.sh dotnet           # root helper compile + xUnit on net9 and net10
+./test.sh browser          # focused headless-Chromium runtime regressions
+./test.sh package          # verify the current immutable package snapshot
+./test.sh reproducibility  # path-isolated byte identity + build-lock checks
+./test.sh security-audit   # locked NuGet graph against the live advisory feed
+./test.sh integration      # dual-Jellyfin lab, then the proxy/browser matrix
+./test.sh compatibility    # locked ecosystem and hostile-fixture matrices
+./test.sh all              # every gate above; intentionally long-running
+```
+
+The container suites have separate, project-scoped runners:
+
+* `e2e/jellyfin/run.sh all` builds/pins one snapshot, provisions digest-pinned
+  Jellyfin 10.11.11 and 12.0.0-rc4 servers, checks both transformed shells, runs
+  real Chromium login/navigation/multi-tab/restart/reconnect coverage, exercises
+  install, update, disable, enable, uninstall, reinstall, playback, logout, and
+  open-tab convergence through Jellyfin's own APIs, then runs the same
+  restart-bound lifecycle with genuine independently compiled third-party v1/v2
+  packages on both hosts. It also records the bounded net9-package-on-Jellyfin-12
+  experiment before restoring the proper net10 stage. The pinned RC4 result is
+  a coherent load, not an assumed ABI guarantee for future hosts. The browser
+  leg deliberately leaves Jellyfin 10.11's hidden populated login field intact.
+* `e2e/proxy/run.sh all` provisions a disposable Jellyfin 10.11 origin and the
+  proxy/cache/subpath matrix described above. It changes a loose `.js` file by
+  content; touching or staging a DLL is intentionally not used as a live
+  generation bump.
+* `e2e/compat/run.sh` provides container-free `static`, `list`, `coverage`, and
+  locked-archive `fetch` commands. Runtime `run`/`all` commands require explicit
+  `RK_COMPAT_ALLOW_CONTAINERS=1`; `./test.sh compatibility` supplies that gate,
+  builds one immutable snapshot, and runs the pinned third-party/hostile-fixture
+  matrices serially. The compatibility README records which expensive matrices
+  have or have not actually been launched. The read-only
+  **Locked ecosystem compatibility** workflow runs this gate weekly and also
+  accepts an optional exact 40-character source revision for manual dispatch;
+  its sanitized structured evidence is retained as a workflow artifact.
+
+`./test.sh integration` strictly checks and collects both self-lifecycle and
+third-party-lifecycle results for each host, plus structured dual-Jellyfin and
+proxy logs, into `test-results`; compatibility matrices retain their own
+per-matrix evidence.
+Commands and coverage describe what the harness asserts. Consult the retained
+artifacts/CI result before claiming a particular revision passed a heavy suite.
 
 ## Known limitations
 
+* **Runtime-created assets** — dynamic imports, `fetch()`, JavaScript-created
+  resources and CSS `url()` references do not exist in `index.html` for this
+  plugin to rewrite. The plugin that owns them should version them or adopt the
+  single-file kit directly.
+* **A directly retained pre-2.4.6 `document.createElement` wrapper stays inert
+  after handoff.** The released 2.4.2 closure cannot acquire a bridge
+  retroactively. Elements it returned before handoff and calls through the
+  current wrapper remain versioned; retained wrappers created by 2.4.6 and
+  newer forward to the newest manager.
 * **Ordering** — see the caveat above; tags injected by a middleware outside
-  this one are not stamped, and such a middleware can replace the shell's
-  response headers.
+  this one are not stamped. The two audited GetAvatar orders deliberately report
+  its one outer-owned tag as `PASS WITH LIMITATION`; an unchanged URL is not a
+  fresh-byte guarantee.
+* **A real `<noscript>` is a whole-transform boundary.** The server cannot know
+  whether the user agent has scripting enabled, and HTML parsing with scripting
+  disabled can make a `<base>` inside `<noscript>` effective. Rather than risk
+  changing a relative asset's origin, `ThirdPartyTagStamper` leaves that entire
+  stamping input byte-for-byte unchanged.
+* **A quoted legacy `PUBLIC`/`SYSTEM` doctype is a conservative transform
+  boundary.** The bounded tokenizer does not implement the complete HTML doctype
+  state machine, so that shell is served unchanged. Jellyfin's normal
+  `<!doctype html>` remains transformable.
+* **A real document `<base href>` disables runtime injection.** Refresh Kit's
+  own URL is relative so it follows Jellyfin's configured PathBase; any effective
+  base could redirect that URL to another path or origin. Bases inside inert
+  template content do not trigger this boundary.
+* **Nested outer response buffers** — the complete transformed shell is served
+  `no-store` without entity validators, using the outer owner's final framing.
+  This is safe freshness degradation, not strong-ETag/`304` compatibility.
 * **Cross-origin assets are never stamped.** A plugin loading its client code
   from a CDN (jsDelivr, unpkg) cannot be helped from here; the CDN's own
   `@latest` resolution TTL is invisible to both the server and the browser.
-* **The kit's own `<script>` tag is the one URL nobody can version from inside.**
-  It carries `?v=<generation>` from the server side, which is exactly the fix —
-  but it is served by this plugin, so if this plugin's own tag were ever cached
-  by a broken intermediary, the loader could go stale. It is small and stable.
-* **The generation is server-wide, not per-plugin.** Any plugin changing reloads
-  tabs once. That is the point (a reload costs unchanged plugins nothing but
-  cache hits), but it does mean a busy admin session can produce several
-  reloads — bounded by the client's reload budget and the config cooldown.
-* **A same-second in-place DLL replacement can be missed** if the filesystem
-  timestamp resolution and the 5s generation cache align badly. Restarting the
-  server always resolves it, and marketplace upgrades change the folder name
-  anyway.
+* **The generation is server-wide, not per-plugin.** Any monitored active
+  identity changing can reload eligible tabs once. Unchanged assets remain cache
+  hits; the client reload budget and configuration cooldown bound repeated work.
+* **Budget truncation is intentionally coarse.** An over-budget plugin receives
+  the stable truncation sentinel until it fits again; diagnostics expose that
+  state instead of pretending a partial scan is complete.
+* **Broken intermediary caching still wins.** A proxy or CDN configured to
+  ignore origin cache directives can pin the shell or generation endpoint.
+* **Safety probes are bounded.** Closed shadow roots and DRM/external-player
+  state are outside the light-DOM probes; a blocker there cannot be promised.
+* **Background browser scheduling can delay detection.** A browser may throttle
+  or freeze hidden tabs until it allows their JavaScript to run again.

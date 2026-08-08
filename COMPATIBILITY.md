@@ -1,672 +1,232 @@
-# Confirmed compatibility
-
-A living, evidence-backed list of plugins the jellyfin-refresh-kit has been
-tested against on live Jellyfin servers. The first two plugin sweeps below were
-run against v2.0.0; the multi-instance and C# evidence was re-proven on v2.1.0,
-v2.1.1 and v2.1.2; the ecosystem completion sweep and the widened kitchen-sink
-were run on v2.2.0; and the multi-copy/manager-handoff evidence is v2.3.0. The
-final section covers the standalone plugin. **Verdicts**: `coexists` = plugin fully
-functional with the kit present, zero kit-attributable errors, network-level
-non-interference proven; `adoptable` = additionally a candidate to *use* the kit
-for its own cache-busting/refresh. Every row cites the test environment that
-proved it. Nothing appears here without a passing run.
-
-## Jellyfin 10.11.11 — kitchen-sink environment (8 plugins + 2 kit instances + 3 concurrent index.html rewriters)
-
-| Plugin | Version tested | Class | Verdict | Notes |
-|---|---|---|---|---|
-| Jellyfin Enhanced (n00bcodr) | 12.1.0.0 | C#, own injection middleware + own `?v=` | **coexists** | JE's tag and cache-buster untouched by the kit; survived every kit-triggered reload; the two `?v=` schemes never crossed |
-| JavaScript Injector (n00bcodr) | 3.5.0.0 | C#, web-touching | **coexists** | its `public.js?v=<ticks>` untouched |
-| Jellyfin Tweaks (n00bcodr) | 3.1.0.0 | C#, web-touching | **coexists** | |
-| File Transformation (IAmParadox27) | 2.5.11.0 | C#, HTML rewriter | **coexists** | kit tags survive FT's Harmony transforms; served HTML idempotent across repeated fetches |
-| Plugin Pages (IAmParadox27) | 2.4.11.0 | C#, web-touching | **coexists** | `inject.js` untouched |
-| Custom Tabs (IAmParadox27) | 0.2.10.0 | C#, web-touching | **coexists** | |
-| Media Bar (IAmParadox27) | 2.4.12.0 | C#, web-touching (CDN assets) | **coexists** | DOM present before and after kit reloads; CDN `slideshowpure.js` untouched |
-| Home Screen Sections (IAmParadox27) | 2.5.11.0 | C#, web-touching | **coexists** | its own `?v=2.5.11.0&c=0` untouched |
-| KefinTweaks (ranaldsgift) | main @ 290b36f | JS collection | **coexists + adoptable** (kit's flagship adopter — bootstrap mode) | 37-39 sub-assets versioned per release, cache-hit convergence proven. Pre-existing KT bug (not kit-related, proven by kit-absent control): `homeScreen.js:761` calls `getUserViews` before user context resolves → 401/400 noise. Worth reporting upstream. |
-
-Environment: three independent HTML rewriters active at once (on-disk kit tags, JE middleware, File Transformation), real media library, kit-triggered reloads, mid-boot update stress, container-restart cycle with open tab (no reload storm, budget intact). 38/43 assertions passed; all 5 fails attributed to third-party issues via control experiments.
-
-## Jellyfin 10.11.11 — awesome-jellyfin breadth sweep (34 plugins + 2 kit instances)
-
-Web-touching plugins (each verified present-and-functional with the kit active, its own URLs untouched):
-
-| Plugin | Version tested | Verdict | Notes |
-|---|---|---|---|
-| Jellyfin Enhanced (n00bcodr) | 12.1.0.0 | **coexists** | second environment confirming the kitchen-sink result |
-| Intro Skipper | 1.10.11.22 | **coexists** | on 10.11+FT it rewrites the web *bundles*, not index.html — a fourth rewriting mechanism, unaffected |
-| File Transformation (IAmParadox27) | 2.5.11.0 | **coexists** | 10+ registered transformations served identically with kit tags present |
-| Plugin Pages (IAmParadox27) | 2.4.11.0 | **coexists** | |
-| Custom Tabs (IAmParadox27) | 0.2.10.0 | **coexists** | tabs rendered |
-| InPlayerEpisodePreview (Namo2) | 1.6.1.2 | **coexists** | |
-| Media Preview (spkesDE) | 0.3.1.0 | **coexists** | |
-| Editor's Choice (lachlandcp) | 1.5.2.0 | **coexists** | slider needs favourites config; absent identically pre-kit |
-| ActorPlus (Druidblack) | 1.0.0.0 | **coexists** | CSS+JS injection intact |
-| JMSFusion / MonWUI (G-grbz) | 3.7.0.0 | **coexists** | own `?v=3.7.0.0-…` untouched; its parked ambient `<video>` elements exercise the media safety gate. On 2.0.0/2.1.0 such a tab read `wouldBlockNow: 'media_element'` permanently — and, once an update was pending, layer 3 was starved for good. Since 2.1.1 a never-played element is not a session and does not block (re-proven live, see the 2.1.1 table) |
-| Seasonals (CodeDevMLH) | 3.1.0.0 | **coexists** | on-disk tags coexist with kit tags |
-| Ratings (K3ntas) | 1.0.359.0 | **coexists** | own `?v=` untouched |
-| StarTrack (ZL154) | 1.6.4.0 | **coexists** | own `?v=` untouched |
-| JavaScript Injector (n00bcodr) | 3.5.0.0 | coexists (plugin itself degraded) | its client loader never appeared in served HTML in this environment **with or without the kit** — environment/plugin quirk, not interference |
-
-Server-only plugins, all loaded clean alongside the kit (18): Trakt 30.0.0.0, Playback Reporting 17.0.0.0, TMDb Box Sets 13.0.0.0, Fanart 14.0.0.0, Open Subtitles 24.0.0.0, Webhook 21.0.0.0, Bookshelf 13.0.0.0, LDAP-Auth 23.0.0.0, SSO-Auth 4.0.0.4, Merge Versions 10.11.0.1, Theme Songs 10.11.0.2, Auto Collections 0.0.4.1, Streamyfin 0.67.0.0, Ani-Sync 4.4.0.0, ListenBrainz 6.3.1.2, Cinema Mode 0.6.0.0, Jellysleep 0.8.0.0, DiscontinueWatching 0.5.1.0. Plus Skin Manager 2.0.2.0 and Jellyfin Tweaks 3.1.0.0 (loaded; activation needs configuration — not exercised).
-
-Not tested, with reasons: SmartLists, HoverTrailer, NotifySync, Media Cleaner (no manifest at standard locations); TheIntroDB, GhostLibrary, Transcode Nag (10.9-only releases); Dedupe Continue Watching (10.10-only); Shokofin (manifest without parseable targetAbi).
-
-Test evidence: A0 pre-kit console baseline vs A1 diff (all new lines attributed to KefinTweaks' own pre-auth calls), zero kit-version URLs outside the two instances' patterns across the full network log, served index.html md5-stable across 5 fetches with 12 tracked tags exactly once each, one-reload convergence with 40/42 cache hits for the untouched instance, playback gate holding for a 40 s observed playback then converging ~1.4 s after stop, and a container restart with an open tab producing zero spurious reloads.
-
-## Jellyfin 12.0-rc3 — RefreshKit.cs (C# companion)
-
-| Host | Verdict | Notes |
-|---|---|---|
-| Demo plugin (clean-room JF12 example) | **works** | full curl matrix: idempotent injection, stale-tag scrub, `rk-` ETag + per-encoding 304/412, gzip/br, immutable scripts, DevMode live-flip, same-version DLL swap detected |
-| Jellyfin-Enhanced project (compile-only) | **compiles** | jf10 (net9.0) + jf12 (net10.0), zero warnings |
-
-Re-proven on 2.1.0 (same demo plugin, same host): the emitted tag now carries
-`data-boot-version="{CacheKey}"` alongside `version=`, and it matches the
-`CacheKey` the version endpoint reports byte for byte — injection stayed
-idempotent (md5-stable served HTML across 5 fetches, exactly one owned tag) and
-the `rk-` ETag still answers a conditional GET with 304. Both compile targets
-rebuilt with zero warnings.
-
-## Kit 2.1.0 — behavioural proofs (Jellyfin 10.11.11, two live kit instances)
-
-| Proof | Result |
-|---|---|
-| Two-instance load (KefinTweaks bootstrap + DemoPack) | 2 instances, **1** interceptor, 39 KT assets at `?v=`, DemoPack at its own version, only the loader itself unversioned |
-| One-sided convergence (bump one instance only) | one reload; all 39 unchanged sibling assets served from cache |
-| Overlapping `assetPatterns` | exactly one warning, first matching instance with a resolved version wins, page healthy |
-| Two physical kit copies, one page | both register through the contract, still one interceptor, URLs versioned exactly once |
-| `notify` + `auto` interplay | notify callback fired with no reload; a later auto update reloaded and converged both |
-| Budget-refused reload | deferred, not discarded: intent survived the refusal *and* an explicit `checkNow()`, and the reload landed once the 60 s window rolled |
-| Flapping version source (A→B→A) | exactly one reload, then one disarm line and no further reload across three polls |
-| `data-boot-version` seeding | baseline seeded from the document, the serve-vs-poll disagreement detected as an update; an unmovable seed then rejected once and the tab went stable |
-| Unversioned bootstrap entries + endpoint recovery | the recovered version was not adopted as a clean baseline; one guarded reload brought the entries back version-addressed |
-| Blocked reload past the ~10 min retry cap | update survived 11 minutes of `media_element` blocking; polling alone resumed it with no user input |
-| Duplicate/`#N` registration | a third identical tag deduped into `#2` instead of minting `#3`; the entry chain ran exactly once |
-| Keyed window config | reachable under the `instance-<N>` fallback name for a tag with no `data-*`; a keyed `versionUrl` no longer renames its instance |
-| Singular window config, two adopters | each adopter's inline config landed on its own tag's instance |
-| Manager global clobber attempt | `defineProperty`, assignment and `delete` all bounced; the later kit tag still registered |
-| Classic `mode: 'off'` | one version fetch, no polling, layer-2 versioning intact |
-
-## Kit 2.1.1 — behavioural proofs (same host, same two live kit instances)
-
-Every 2.1.0 proof above was re-run on 2.1.1 and stayed green (R0/R3/R4/R6/R7/R8
-plus budget-defer, flap-guard, boot-version and the keyed-config pair). New:
-
-| Proof | Result |
-|---|---|
-| Singular window config with a later pure-`data-*` adopter | adopter A kept its own inline config; adopter B kept its own endpoint, patterns and mode; exactly **one** skip warning. (On 2.1.0 B silently inherited A's whole config.) |
-| Keyed config under a `#N` final name | two adoptions deriving the same base name; `JellyfinRefreshKitConfigs['KefinTweaks#2']` applied to the suffixed instance **only** (mode/pollSeconds/versionUrl), and the base instance was untouched |
-| Keyed entry defined *below* the kit tags | still not applied (it cannot be), but now reported with one warning after the document parses instead of failing silently |
-| Retracted update | `1.0.0 → 2.0.0` detected and armed behind a `not_idle` gate, endpoint rolled back to `1.0.0` → one `RETRACTED` line, `updatePending` cleared, **zero** reloads; a later genuine `3.0.0` re-armed normally |
-| Hung version endpoint (request accepted, never answered) | timed out after 10 s with one warning and polling continued on cadence — 2 further polls at +15 s and +30 s, `polling: true` throughout. (On 2.1.0 the loop stopped for the life of the tab.) |
-| Parked, never-played `<video>` (`readyState 1`, `currentTime 0`, `played 0`) | `wouldBlockNow: null`; the pending update reloaded normally |
-| Played-then-paused `<video>` (`currentTime 1.2`, `played 1`) | `wouldBlockNow: 'media_element'`; the update stayed pending and the tab did not reload |
-| Frozen media starvation escape (same played-then-paused element, left alone) | blocked with `media_element` for the whole ladder (`shared.mediaBlockedForMs` tracking wall time 1:1, `blockedRetries` 1→600), then one `parked scenery` warning at 614 s and exactly one reload |
-| Blocked reload past the ~10 min retry cap (a *playing* video) | unchanged: 11 minutes of blocking, no starvation escape (playback progress resets the clock every probe), and polling alone resumed it |
-
-## Kit 2.1.2 — behavioural proofs (same host, same two live kit instances)
-
-Every 2.1.0 and 2.1.1 proof above was re-run on 2.1.2 and stayed green (R0/R3/R4/R6/R7/R8,
-budget-defer, flap-guard, boot-version, the keyed-config pair, R2a–R2f and the
-blocked-reload ladder). Each new proof below was run **twice — once against 2.1.1
-as a control** — so the row records both the fixed behaviour and the defect it
-replaces.
-
-| Proof | Result |
-|---|---|
-| `src`/`href` assigned a `URL` instance (`s.src = new URL('scripts/a.js', base)`) | versioned: `…/scripts/a.js?v=1.0.0`, through both the property accessor and `setAttribute`, for `<script src>` and `<link href>`. (On 2.1.1 all four came out bare while the plain-string control worked — layer 2 silently off for that idiom.) |
-| `src` assigned a boxed `String` | versioned, accessor and `setAttribute` alike (bare on 2.1.1) |
-| `src` assigned a plain object with a `toString` | forwarded **untouched** and unversioned, `toString` called exactly **once** (by the browser, not by the kit) — the same pass-through that keeps a `TrustedScriptURL` intact under a Trusted Types CSP |
-| Non-matching `URL` object | left bare, no `?v=` — pattern matching is unchanged by the coercion |
-| One nameless `window.JellyfinRefreshKitConfig` payload injected twice (two `data-*`-less tags) | **one** instance, `instance-1`. (On 2.1.1: two live instances, `instance-1` + `instance-2`, both polling the same endpoint.) |
-| Anonymous tag registering *after* a named sibling | still `instance-1`, so `JellyfinRefreshKitConfigs['instance-1']` reached it (mode `notify`, its keyed `versionUrl`). On 2.1.1 it was renamed `instance-2`, the keyed entry was silently dropped and the instance ran inert on defaults. |
-| `JellyfinRefreshKitConfigs` key matching no instance | exactly one warning naming the dead key and listing the live instances (`"KefinTweaks", "instance-1"`). 2.1.1 emitted nothing. |
-| Two auto instances arming in the same tick | **one** navigation, **one** `reloading to pick up` line, **one** budget stamp in both `sessionStorage` and `localStorage`; both instances still converged to `2.0.0`. (On 2.1.1: 2 stamps and 2 reload lines for the same single navigation — two thirds of the default budget spent on one reload.) |
-| Singular window config that names nobody (`assetPatterns` + `mode` only), with a later `data-*` adopter | adopter A kept it; adopter B kept `mode: 'auto'` and its own `/DemoPack/` patterns, with exactly **one** skip warning. (On 2.1.1 B inherited A's `mode: 'notify'` *and* A's `/KefinTweaks/` patterns — it stopped versioning its own folder and never auto-reloaded again.) |
-
-RefreshKit.cs on the same demo plugin (Jellyfin 12.0-rc3, :8104), 21/21 curl
-assertions: the **source-fallback** `304` (reached by making injection inactive —
-an oversized shell past `MaxTransformBodyBytes`) now keeps `Vary: Accept-Encoding`
-alongside its `ETag` and `Cache-Control`, and still drops `Content-Encoding`;
-its `412` still strips `Vary`, `ETag`, `Last-Modified` and `Content-Type` to
-reproduce the host's native shape. Verified against a pre-fix build of the same
-plugin, whose source-fallback `304` carried **no** `Vary` at all. Injected-path
-`200`/`304`/`412`, the `rk-` ETag and idempotent injection are unchanged. Both
-compile targets (jf10 net9.0, jf12 net10.0) rebuilt with zero warnings.
-
-## 2.1.1 C# evidence (unchanged)
-
-RefreshKit.cs on the same demo plugin (Jellyfin 12.0-rc3, :8104): a warm HEAD on
-a changed source now answers `304` with **no** `Content-Encoding` (and keeps
-`Vary`, as RFC 9110 §15.4.5 requires), and its `412` carries neither
-`Content-Encoding` nor `Content-Type` — the host's native shape. Injection,
-`rk-` ETag and conditional GET unchanged. `ApplyScriptCacheHeaders(Response)`
-(the new no-argument overload) served `immutable` with `DevMode` off and
-`no-store` with it on, matching the tag's `dev="true"`.
-
-## Jellyfin 10.11.11 — ecosystem completion sweep, kit 2.2.0 (103 additional plugin builds + 2 kit instances)
-
-Second breadth pass, covering everything in the awesome-jellyfin list and the
-official `repo.jellyfin.org` catalog that the first sweep did not reach. 103
-plugin builds installed cumulatively on one server (**102 third-party plugins
-Active at once**, alongside two live kit instances: `RKSweep` in bootstrap mode
-and `DemoPack` in classic mode). File Transformation 2.5.11.0, Plugin Pages
-2.4.11.0 and Home Screen Sections 2.5.11.0 were installed as infrastructure so
-the FT-dependent adopters actually inject.
-
-Web-touching plugins (each verified Active, its client assets served 200, and
-its own URLs untouched by the kit):
-
-| Plugin | Version tested | Verdict | Notes |
-|---|---|---|---|
-| Achievement Badges (ZL154) | 2.2.0.0 | **coexists** | three client-script tags at its own `?v=2.2.0.0-cdff799…` untouched; injects via File Transformation + Plugin Pages |
-| HoverTrailer (Fovty) | 0.3.1.0 | **coexists** | `/HoverTrailer/ClientScript` 200 (first ledger entry — previously listed "no manifest") |
-| GetAvatar (cedev-1) | 1.6.4.1 | **coexists** | `../GetAvatar/ClientScript` 200 |
-| SeerrFin (varunaditya-plus) | 1.6.5.1 | **coexists** | 5 JS + 4 CSS at its own `?v=1.6.5.1&c=0` untouched; `seerrFin*` globals live |
-| StreamLimiter (JellyboxAD) | 1.1.0.0 | **coexists** | `/StreamLimit/inject.js` tag survives alongside the kit tags |
-| LetterboxdSync (Gizmo091) | 2.2.0.0 | **coexists** | `ClientScript` 200 |
-| NotifySync (peterdu1109) | 5.7.19.0 | **coexists** | `/NotifySync/client.js` + `/NotifySync/Data` 200 (previously listed "no manifest") |
-| Jellyfin Security / TwoFactorAuth (ZL154) | 2.5.21.0 | **coexists** | its `?v=2.5.21.0-b7532c9b` cache-buster untouched; a fifth independent index.html rewriter |
-| Moonbase / Moonfin (Moonfin-Client) | 2.0.3.0 | **coexists** | `../Moonfin/Web/loader.js` 200; ~300 MB Flutter web payload served intact |
-| MDBList Ratings (Druidblack) | 1.0.0.7 | **coexists** | `__mdbListRatingsIconPatchApplied` global set, `WebClientSettings` 200 |
-| AniLiberty STRM (queukat) | 2.0.0.12 | **coexists** | own `?v=2.0.0.11.2` tag untouched |
-| Newsletters (Sanidhya30) | 1.6.4.0 | **coexists** | |
-| TeleJelly (hexxone) | 1.0.11 | **coexists** | login-page assets not exercised |
-| Local Posters (NooNameR) | 0.2.0.2 | **coexists** | |
-| The Dwarf's Hammer (Kamoba) | 1.0.0.0 | **coexists** | client script not injected in default config |
-| PhoenixAdult (DirtyRacer1337) | 2.7.0.47 | **coexists** | 10.8 targetAbi, loads and runs on 10.11.11 |
-| Privacy Mode / Remote Trailers / Thumbnail Previews / JellyTag (jellyfin-powertoys) | 1.3.0.0 | **coexists** | `powertoys/RemoteTrailers` global registered |
-| Gelato (lostb1t) | 0.26.15.1 | **coexists** | tested with Meilisearch removed — the two are mutually exclusive (see below) |
-| WhisperSubs (GeiserX) | 4.6.0.1 | **coexists** (plugin defect) | line 319 calls `MutationObserver.observe(document.body, …)` from a **synchronous `<head>` script**, so it throws `TypeError … parameter 1 is not of type 'Node'` on every load. Proven by a kit-absent control that throws identically. Worth reporting upstream |
-
-Admin-config-page-only plugins (dashboard JS/CSS, no index.html injection), all
-loaded clean with the kit and their config pages served 200: SmartLists
-10.11.30.2, Shokofin 6.0.5.11, Media Cleaner 3.2.0.0, Discord Notifier 1.8.0.0,
-Telegram Notifier 12.3.0.0, Mediathek Downloader 0.8.2.0, Xtream Library
-1.42.1.0, JellySTRMprobe 1.2.0.0, QualityGate 3.3.6.0, Jellyfin Oscars 1.0.6.0,
-Jellynext 1.3.0.0.
-
-Server-only plugins, all loaded clean alongside the kit (68): ACdb.tv 3.0.0.4,
-Air Times 0.0.2.0, AniDB 11.0.0.0, AniList 13.0.0.0, AniSearch 6.0.0.0, Anime
-Multi Source 1.0.5.0, AnimeThemes 6.0.0.0, Apple Music 3.0.6.2, Artwork 2.0.0.0,
-Artwork Multi Source 1.0.0.0, Cast Curator 1.3.0.0, Chapter Segments Provider
-4.0.0.0, Collection Import 0.48.0.0, Collection Sections 2.3.10.0, Comic Vine
-1.0.0.0, Continue Watching Deduplicator 1.0.1.0, Cover Art Archive 9.0.0.0, DLNA
-11.0.0.0, Discogs 2.0.0.0, Enigma2 6.0.0.0, Favorited Songs Playlist 1.0.0.2,
-GhostLibrary 1.0.0.14, Google Books 1.0.0.0, Harmonie 1.6.1.1, Hikka 1.0.2.0,
-IMDb Ratings 1.0.0.20, IMVDb 5.0.0.0, JF To Stash Sync 1.0.0.2, Jellyfin Ignore
-0.5.0.0, JustWatch 10.11.0.5, Kinopoisk 10.10.3.0, Kitsu 7.0.0.0, Kodi Sync
-Queue 15.0.0.0, Language Tags 0.5.3.0, Local Intros 4.0.0.0, Local
-Recommendations 0.6.1.0, LrcLib Lyrics 3.0.0.0, Meilisearch 1.11.1.15, Mind the
-Gaps 10.11.6.0, MusicTags 10.11.3.3, MyAnimeList 11.11.1.1, MyAnimeSync
-1.6.2.2, Newsletters (Cloud9) 0.6.5.0, NextPVR 13.0.0.0, OPDS 7.0.0.0, Playlist
-Generator 1.5.1.0, Plexyfin 0.6.3.0, ProviderStuff 1.2.0.0, RemoteUpload
-1.8.0.0, Reports 18.0.0.0, Session Cleaner 5.0.0.0, Shikimori 5.0.0.0, Simkl
-8.0.0.0, SmartCovers 7.3.2.0, Stash 1.2.0.3, Static Assets Manager 0.0.1.0,
-Studio Curator 1.3.0.0, Subtitle Extract 7.0.0.0, TVHeadend 13.0.0.0, TVmaze
-13.0.0.0, TheIntroDB 1.0.7.2, ThePornDB 1.6.0.11, TheTVDB 22.0.0.0, Transcode
-Killer 4.0.0.0, Transcode Nag 1.0.1.26, VGMdb 5.0.0.0, Watch History Janitor
-1.3.0.0, YouTube Metadata 1.0.3.15.
-
-Test evidence: 107 plugins loaded with **zero non-Active** entries and zero
-kit-attributed console lines across 9 kit runs and 6 kit-absent controls; the
-kit versioned exactly its own 6 assets and left all 13 third-party `?v=` URLs
-byte-identical; served `index.html` md5-stable across repeated fetches with five
-independent rewriters active (on-disk kit tags, File Transformation, Jellyfin
-Security, Achievement Badges, Moonfin); 150/150 plugin configuration pages served
-200; and a version bump converged in 18 s with one reload while the untouched
-sibling instance's assets all came back from cache.
-
-Retractions from the previous sweep's "not tested" list: **SmartLists,
-HoverTrailer, NotifySync, Media Cleaner, TheIntroDB, GhostLibrary, Transcode
-Nag, Dedupe Continue Watching and Shokofin are all testable and all pass.** A
-`targetAbi` below the server version is not a blocker — Jellyfin only requires
-`targetAbi ≤ server`, so the 10.8/10.9/10.10-ABI plugins above load and run on
-10.11.11.
-
-Not tested, with reasons: **jellyfin-icon-metadata** (bare CSS snippets, not a
-compiled plugin — no release or manifest); **jellyfin-plugin-onepace** (latest
-release carries zero assets); **jellyfin-rpc** ×2 (standalone Discord apps, not
-server plugins). Attempted and failed for upstream reasons, not kit-related:
-**Jellyscrub 2.1.0.0** (`TypeLoadException: Jellyfin.Data.Entities.TrickplayInfo`
-— removed in 10.11; Jellyfin deletes the plugin directory) and **Wikipedia
-Episode Order 1.0.26.0** (its own release zip ships 1 DLL while its `meta.json`
-declares 4 assemblies → *Malfunctioned*). Also found: **Gelato and Meilisearch
-cannot coexist** — both decorate `IItemRepository` and the server refuses to
-start with an `InvalidCastException`; each passes on its own.
-
-## Jellyfin 10.11.11 — kitchen-sink revalidation, kit 2.2.0 (22 plugins + 2 kit instances)
-
-The kitchen-sink environment rebuilt on 2.2.0 and widened from 8 concurrent
-plugins to 22. All 22 targets installed and passing **at once** (27 plugins
-Active including the bundled ones), with two live kit instances: `KefinTweaks`
-in bootstrap mode, self-hosted from `main @ 290b36f` with 38 sub-assets, and
-`DemoPack` in classic mode. Contract version 2.
-
-| Plugin | Version tested | Verdict | Notes |
-|---|---|---|---|
-| Jellyfin Enhanced (n00bcodr) | 12.1.0.0 | **coexists** | third environment confirming the earlier results |
-| JavaScript Injector (n00bcodr) | 3.5.0.0 | **coexists** | fully functional here (unlike the breadth sweep): its loader appeared and its custom script executed |
-| Jellyfin Tweaks (n00bcodr) | 3.1.0.0 | **coexists** | |
-| File Transformation (IAmParadox27) | 2.5.11.0 | **coexists** | rewrites index.html *and* the main web bundle; the kit tags survive both, exactly once each |
-| Plugin Pages (IAmParadox27) | 2.4.11.0 | **coexists** | |
-| Custom Tabs (IAmParadox27) | 0.2.10.0 | **coexists** | the `RKSinkTab` test tab renders |
-| Media Bar (IAmParadox27) | 2.4.12.0 | **coexists** | see the ambient-video finding below |
-| Home Screen Sections (IAmParadox27) | 2.5.11.0 | **coexists** | 20 sections rendered |
-| Intro Skipper | 1.10.11.22 | **coexists** | |
-| InPlayerEpisodePreview (Namo2) | 1.6.1.2 | **coexists** | |
-| Media Preview (spkesDE) | 0.3.1.0 | **coexists** | |
-| Editor's Choice (lachlandcp) | 1.5.2.0 | **coexists** | |
-| ActorPlus (Druidblack) | 1.0.0.0 | **coexists** (partial exercise) | injection intact; the library held no Person records to decorate |
-| JMSFusion / MonWUI (G-grbz) | 3.7.0.0 | **coexists** | its 3 parked, never-played `<video>` elements correctly do **not** hold the media gate (the 2.1.1 fix, re-proven) |
-| Seasonals (CodeDevMLH) | 3.1.0.0 | **coexists** | |
-| Ratings (K3ntas) | 1.0.359.0 | **coexists** | |
-| StarTrack (ZL154) | 1.6.4.0 | **coexists** | |
-| KefinTweaks (ranaldsgift) | main @ 290b36f | **coexists + adoptable** | bootstrap mode, 38 sub-assets |
-| Trakt / Playback Reporting / Webhook / Open Subtitles / TMDb Box Sets | as bundled | **coexists** | admin config pages all render |
-
-Kit-level evidence: two instances behind one interceptor with **four**
-independent index.html rewriters live; a KefinTweaks `1.0.0 → 2.0.0` bump
-produced **exactly one** reload with 38/38 sub-assets refetched at `?v=2.0.0`
-and a single budget stamp, while the untouched sibling converged one-sidedly
-from cache; 75 s and 120 s idle soaks produced **zero** reloads; **zero**
-kit-version URL leakage across 1259 logged requests; served HTML byte-idempotent
-across repeated fetches (the only delta being JavaScript Injector's own
-per-request nonce); a container restart with an open tab produced no reload
-storm; and zero kit console errors, warnings or exceptions. Assertion sweeps
-53/54 and 16/16 — both nominal failures were harness selector artefacts,
-identical in the kit-absent controls.
-
-**Behavioural finding, actioned in 2.3.0.** Media Bar's ambient backdrop is a
-muted, looping, controls-less autoplay `<video>`. On 2.2.0 it held the media
-safety gate open forever on `#/home`: `blockReason: media_element` with
-`blockedRetries` climbing 1 → 176 over 160 s, and the starvation clock resetting
-on every playback-progress probe, so the layer-3 escape never fired for a tab
-simply sitting on Home. That is within the documented design — the gate cannot
-tell decoration from viewing by state alone — but it is the wrong answer in
-practice. 2.3.0 adds an ambient-video exemption: muted + looping + no controls
-does not block, while real playback still does.
-
-Also reproduced (documented limitation, unchanged): a classic-mode bootstrap
-that creates its sub-assets **synchronously at parse time** emits them bare;
-deferring creation until `ApiClient` exists lands all of them at `?v=`.
-
-Third-party defects, each proven with 4 kit-present vs 4 kit-absent runs
-yielding identical error sets: Media Bar issues `GET /Items/undefined` (400) and
-throws null `Type`/`classList` TypeErrors; JMSFusion makes a pre-auth call to
-`gmmp/state` (401) plus an aborted ping; jellyfin-web/Home Screen Sections
-throws `t.getScrollSlider` 2–4 times per load; KefinTweaks intermittently throws
-on an undefined watchlist and in `getItemsHtml`.
-
-## Kit 2.3.0 — multi-copy coexistence and the newest-wins manager handoff
-
-The scenario this release exists for: **several plugins each shipping their own
-copy of `jellyfin-refresh-kit.js`, at different versions, on the same page.**
-Live-tested with 2, 3 and 4 concurrent copies of mixed versions on one server.
-
-The multi-copy result on 2.2.0 was already good — every configuration produced
-**one manager, one reload engine, one shared budget, one navigation per update,
-and zero page errors**, with each copy keeping its own config, patterns and
-mode. But the test also exposed the flaw the release fixes: the manager was
-**first-loaded-wins**. Whichever copy registered first ran the show for the life
-of the tab, so a server whose plugins were mid-upgrade could be driven by the
-*oldest* kit on the page indefinitely — every bug fix in every newer copy
-inert until a full page load happened to reorder the tags.
-
-2.3.0 raises the wire contract to **revision 3** and makes the manager
-**newest-wins**: an arriving copy compares its `KIT_VERSION` numerically,
-segment by segment, against the incumbent manager's, and if it is newer it takes
-over — the incumbent deactivates and hands across its live state (budget
-accounting, pending-update arming, flip/convergence bookkeeping, registered
-instances) rather than restarting from zero.
-
-| Proof | Result |
-|---|---|
-| 2 / 3 / 4 concurrent mixed-version copies | one manager, one reload engine, one shared budget, one navigation per update, zero page errors, per-copy config preserved (re-run on 2.3.0) |
-| Older copy loads first, newer copy second | the newer copy takes the manager role; the older one deactivates and registers as a plain instance |
-| Chained handoffs (three ascending versions in load order) | each handoff transfers cleanly; the final manager is the newest copy, with **one** manager alive at every point in the chain |
-| Budget continuity across a handoff | the successor inherits the spent budget — a reload already charged before the handoff is not charged twice, and the budget cap still holds |
-| Flip / convergence continuity across a handoff | pending-update arming and flip bookkeeping survive the transfer; the update converges with exactly one navigation |
-| Handoff **during** an in-flight reload sequence | the successor resumes the sequence; still one navigation, no double-reload, no orphaned timer |
-| Newer copy arriving with an equal version | no handoff (numeric comparison is strictly-greater), incumbent keeps the role — no churn from identical copies |
-| Ambient-video media-gate exemption | a muted + looping + controls-less backdrop no longer reports `media_element`; a real playing element still blocks (see the 2.2.0 kitchen-sink finding) |
-
-**Distribution note.** Because the handoff is what makes mixed-version pages
-safe, and pre-2.3.0 copies can only ever lose the argument by load order,
-**copies older than 2.3.0 must not be shipped publicly.** Any plugin embedding
-the kit should ship 2.3.0 or newer.
-
-## Standalone plugin — Jellyfin Refresh Kit 1.0.0.0 (Jellyfin 10.11.11)
-
-The standalone plugin — install one plugin, and cache/hard-refresh behaviour is
-fixed for every other plugin on the server, none of which need to know it
-exists. Validated on 10.11.11 against a set of adopters that deliberately
-**do not ship the kit themselves**: Jellyfin Enhanced, Media Bar, File
-Transformation and InPlayerEpisodePreview.
-
-| Proof | Result |
-|---|---|
-| Third-party tag stamping | precise and idempotent: exactly the unversioned third-party script/stylesheet tags gained `?rkv=`, plugins carrying their own cache-buster were left byte-identical, and repeated fetches of the served HTML produced the same stamps |
-| Plugin DLL touched (binary timestamp changes) | generation changes → **one** reload in the open tab, and the reloaded page carries the new stamps |
-| Jellyfin Enhanced admin setting changed (adds visible UI) | **one** reload, and the new tab is live in the open tab afterwards — the config path works end to end without a server restart |
-| Per-user Jellyfin Enhanced preference saves | **zero** generation bumps. Per-user preferences live outside the watched admin configuration XML, so one user changing their own settings never reloads anybody's tab |
-| Debounce | a burst of configuration writes collapses to one generation change after the 10 s debounce |
-| Per-plugin cooldown | a plugin that has just bumped cannot bump again for 5 minutes — a chatty plugin cannot turn into a reload treadmill |
-| Admin toggle | configuration watching switched off ⇒ no config-driven generation changes at all (binary/version changes still counted) |
-| Exclusion list | a named plugin's configuration writes produce no generation change while the rest continue to |
-
-The configuration signal is deliberately narrow: the plugin watches only each
-plugin's configuration XML, never its data directory, and pays for that with the
-debounce and cooldown above. The tradeoff is stated in `plugin/README.md` — a
-settings change reaches open clients within seconds rather than instantly, in
-exchange for a signal that cannot be spammed by ordinary plugin activity.
-
-### Leading-edge cooldown (live re-verification on 10.11.11)
-
-The cooldown originally re-armed its window on *every* publish, including a
-publish that had itself been held back. Live testing showed the cost: a plugin
-that rewrites its own configuration on server start opens a window before anyone
-touches anything, and the admin's first real save then sits unseen for up to five
-minutes. The gate is now leading-edge — the change that opens a window publishes
-at once, only changes arriving inside the window are held and coalesced, and a
-held publish **closes** the window instead of re-arming it.
-
-Re-verified end to end on the demo server (34 third-party plugins, three kit
-instances, one open admin tab, Jellyfin Enhanced as the plugin under test):
-
-| Phase | Action | Result |
-|---|---|---|
-| A | one admin save (`HiddenContentEnabled` off) with no window open | generation moved **+24 s**, **one** reload at **+48 s**, the Hidden Content tab disappeared |
-| B | two saves 2 s apart, inside the window A opened | generation **unchanged** 2 s later; the pair coalesced into **one** bump at **+255 s** (the window's end) and **one** reload at +275 s |
-| C | one admin save (`HiddenContentEnabled` on) right after B's held publish | generation moved **+20 s**, **one** reload at **+40 s**, the Hidden Content tab was live again |
-
-Phase C is the decisive one: under the old rule B's publish would have re-armed a
-five-minute window and C would have waited it out. Zero page errors across all
-three phases, and one reload per phase — never two.
-
-## Reverse proxies & CDNs — kit 2.4.0 + standalone plugin 1.0.0.0 (Jellyfin 10.11.11)
-
-One throwaway 10.11.11 origin (the standalone plugin + Jellyfin Enhanced 12.1.0.0,
-a real serve-time injector), seven proxies in front of it, one port each. Rig:
-[`e2e/proxy/`](e2e/proxy/README.md) — `./run.sh all` rebuilds the whole thing from
-nothing. Legs per setup: an 18-assertion curl freshness matrix, a websocket
-upgrade check, generation propagation timing, and a puppeteer run that logs in,
-touches a plugin binary and requires exactly one reload.
-
-| Setup | Matrix | Propagation | Browser E2E | Websocket | Evidence |
-|---|---|---|---|---|---|
-| No proxy (baseline) | **18/18** | 5 s | **PASS** | PASS | `ETag: "rk-ddc665b9…"`, `If-None-Match → 304`, bad `If-Match → 412`, gzip and br each one `Content-Encoding` and their own representation ETag |
-| nginx, official jellyfin.org docs config | **18/18** | 5 s | **PASS** | PASS | identical header set through `location /` and the docs' `location = /web/ → /web/index.html` rewrite; `kit.js?v=2p-77e58f59e87f1452` after the bump |
-| Nginx Proxy Manager style | **18/18** | 5 s | **PASS** | PASS | NPM's "Cache Assets" block (`immutable`, 1 y) never matches `.html`, and the `?rkv=`/`?v=` stamps make the JS it *does* match safe to freeze |
-| Caddy 2 (`reverse_proxy` two-liner) | **17/17** | 5 s | **PASS** | PASS | Go transport asks upstream for gzip and decodes it, so an identity response carries the gzip representation's ETag; `Vary: Accept-Encoding` preserved, `304` still returned |
-| Traefik v3.5 | **17/17** | 5 s | **PASS** | PASS | same Go-transport behaviour as Caddy; file provider (v3's docker provider negotiates API 1.24, refused by Docker Engine 28) |
-| HAProxy 2.9 | **18/18** | 5 s | **PASS** | PASS | plain `mode http` backend, `timeout tunnel 1h`; conditionals and both codings pass through byte-for-byte |
-| nginx subpath, `location /jellyfin` + `BaseUrl=/jellyfin` | **18/18** | ✓ | **PASS** | PASS | the injected tag is relative (`src="../RefreshKit/kit.js?v=…"`, `data-version-url="../RefreshKit/Generation"`) so it resolves under any prefix with nothing to rewrite; post-reload stamp `/jellyfin/RefreshKit/kit.js?v=2p-e4fb80b94d4fd14d` |
-| **nginx `proxy_cache` + `proxy_ignore_headers Cache-Control`** | **12/15 FAIL** | **never** | **FAIL — 2 reloads** | PASS | shell pinned at `2p-2d97f20279f50075` across two origin bumps; the `no-store` `/RefreshKit/Generation.txt` pinned at `1p-2a25c5859e324865`; ETag stripped from the cached entry |
-| nginx `proxy_cache` honouring `Cache-Control` | 14/18 | 5 s | — | PASS | fresh (`no-cache` is respected, nothing is stored) but nginx strips `If-None-Match`/`If-Match` upstream whenever caching is on for the location: client `304`→`200`, `412`→`200` |
-| nginx `proxy_cache` + remedy 1 only | 14/18 | 5 s | — | PASS | `proxy_ignore_headers Set-Cookie X-Accel-Expires;` — freshness restored, conditionals still lost |
-| nginx `proxy_cache` + remedy 1 **and** the `proxy_cache off` exemption | **18/18** | 5 s | **PASS** | PASS | `location = /web/`, `location = /web/index.html`, `location /RefreshKit/` each `proxy_cache off` → full parity with no proxy |
-
-### The adversarial case, in order
-
-1. Prime the naive cache; it serves the shell stamped `2p-2d97f20279f50075`.
-2. `touch` a plugin binary. Origin generation moves to `1p-5bb1bb155b35267f`,
-   then again to `1p-3fb374ceeb89ca0a`.
-3. The naive proxy still serves the *original* stamp and still reports the
-   *original* generation. Both halves of the update loop are frozen at once: no
-   new shell, and no way to learn one exists.
-4. Browser leg through the same proxy: **two** reloads, not one — the reloaded
-   tab was handed the cached shell, found its boot version still behind the
-   endpoint, and armed again. Bounded only by the client's reload budget.
-5. Delete `Cache-Control` from `proxy_ignore_headers` → the next bump propagates
-   in 5 s, shell and endpoint together.
-6. Add `proxy_cache off` for `/web/`, `/web/index.html` and `/RefreshKit/` →
-   18/18, and one bump gives exactly one reload again.
-
-### Two findings that are not the proxy's fault
-
-* **A serve-time injector running OUTSIDE this plugin's middleware replaces the
-  shell's response headers**, taking the `rk-` ETag with them. With Jellyfin
-  Enhanced installed, *every* row above — including "no proxy" — serves
-  `/web/` with no validator; parking it restores the ETag on the same origin,
-  same request. This is the documented ordering caveat, re-measured; mechanisms 2
-  and 3 are unaffected, which is why every reload column stays green. The matrix
-  leg therefore parks third-party injectors automatically.
-* **`password_entry` outlives the login form.** Jellyfin 10.11 keeps the login
-  view in the DOM after sign-in (`class="… hide"`) with the typed password still
-  in `#txtManualPassword` (observed: `len 11`, `offsetParent null`). The 2.4.0
-  `password_entry` gate counts any password field holding a value regardless of
-  visibility, so a tab that signed in by typing refuses every auto-reload for the
-  life of that document — `blockReason: "password_entry"` held for the full 70 s
-  observation window with an update pending. `jellyfin-refresh-kit.js:2462`
-  (`hasTypedPassword`), refusal at `:2632`.
-
-## Installation types — native non-root Linux, non-root Docker, Windows (standalone plugin 1.0.0.0, Jellyfin 10.11.11)
-
-Everything above was measured on the same kind of host: the official Docker
-image, running as root, with config at `/config`. That is one installation type
-out of several, and the plugin touches the filesystem — it walks the plugins
-directory to build the generation — so "works there" is not the same as "works
-anywhere". Two other install types were reproduced end to end, and the third,
-Windows, was audited at the source level because this environment cannot run it.
-
-### Native non-root Linux (generic `amd64` tarball, port 8130)
-
-`jellyfin_10.11.11-amd64.tar.xz` from `repo.jellyfin.org`, extracted into a
-scratch directory and started **entirely as an unprivileged user** (uid 1000, no
-`sudo`, no service manager) with `--datadir`/`--configdir`/`--cachedir`/`--webdir`
-pointing inside that directory. No `/config` anywhere on the box.
-
-* The server's plugin loader looks in **`<datadir>/plugins/`** — the same
-  `Name_version` folder layout, just not at `/config`:
-  `Loaded assembly Jellyfin.Plugin.RefreshKit, Version=1.0.0.0 … from
-  …/native-jf/data/plugins/Jellyfin Refresh Kit_1.0.0.0/Jellyfin.Plugin.RefreshKit.dll`.
-  The plugin derives its own plugins path from `Assembly.Location`, so it needs
-  no configuration to find it.
-* Dashboard → Plugins: **Jellyfin Refresh Kit 1.0.0.0 — Active**.
-* `GET /RefreshKit/Generation` → `200`,
-  `{"Version":"1.0.0.0","BuildId":"96dde118…","CacheKey":"1p-ff64c681b3280b7d"}`.
-* `GET /web/index.html` → `200` with `ETag: "rk-e1e370…"` and
-  `Cache-Control: no-cache`; the same ETag replayed as `If-None-Match` → **304**;
-  a stale `"rk-deadbeef"` → **200**. `/web/` and `/web/index.html` agree on the
-  validator, and the ETag is stable across repeated requests (three GETs, one
-  value; byte-identical shells).
-* Browser (headless Chrome, signed in as `rk_admin`): the shell carries
-  `<script src="../RefreshKit/kit.js?v=1p-ff64c681b3280b7d">`, and
-  `window.JellyfinRefreshKit.instances()` returns **1** — `name:
-  "RefreshKitPlugin"`, `kitVersion: "2.4.0"`, `mode: "auto"`, boot version equal
-  to the endpoint's.
-* `touch`ing the plugin DLL bumped the generation
-  (`1p-ff64c681b3280b7d` → `1p-3fb4a2000688b104`) and the open tab performed
-  **exactly one** navigation, after which the kit was alive again on the same
-  URL.
-
-The point this proves is not that a tarball works. It is that the plugin makes
-**no `/config` assumption, needs no root, and needs no writable web root** — the
-shell is rewritten in the response, not on disk, so a read-only `jellyfin-web`
-owned by another user is fine.
-
-### Non-root Docker (`--user 1000:1000`, port 8131)
-
-`jellyfin/jellyfin:10.11.11` with `--user 1000:1000` and a host bind mount owned
-by that uid. Plugin dropped into `/config/plugins/Jellyfin Refresh Kit_1.0.0.0/`
-from the host side.
-
-* `Loaded plugin: Jellyfin Refresh Kit 1.0.0.0`; Dashboard status **Active**.
-* `GET /RefreshKit/Generation` → `200`, `CacheKey: 1p-3e82a2e7e561e530` — a
-  different value from the native host, as it must be: the fingerprint includes
-  each plugin's binary timestamp.
-* `GET /web/index.html` → `200` with `ETag: "rk-47524f…"`; replay → **304**.
-* Browser: one kit instance registered; `touch` on the DLL bumped
-  `1p-3e82a2e7e561e530` → `1p-02d4ab737bb40b27` and produced **exactly one**
-  reload.
-
-Dropping root changes nothing, because nothing in the plugin writes outside the
-paths the server already handed it — it only *reads* the plugins directory.
-
-### Windows — source audit, not a run
-
-No Windows host was available, so this is an audit of `plugin/*.cs` and
-`RefreshKit.cs` rather than a measurement, and it is recorded as such.
-
-* **Paths.** No filesystem path is ever built by string concatenation; every one
-  goes through `Path.Combine`/`Path.Get*`. The remaining `'/'` literals are URL
-  paths (`../{base}/{script}`), which are correct on every OS.
-* **Case.** Every comparison that could bite on a case-insensitive filesystem is
-  already `OrdinalIgnoreCase` — `.dll`, client-asset extensions, the
-  `configurations` folder name, `</body>`, `text/html`, the index URL path. The
-  `Ordinal` comparisons are on non-path data (hex cache keys, GUIDs, literal
-  markup) or are deliberate deterministic sorts.
-* **File locking — the interesting one.** Windows locks a loaded assembly against
-  *write and delete*, not against reads. The generation walk never opens another
-  plugin's DLL at all: it stats them (`FileInfo.LastWriteTimeUtc`, `Length`).
-  The one place a DLL is opened is `File.OpenRead(assembly.Location)` on the
-  plugin's *own* binary to derive `BuildId`, which asks for read access
-  compatible with the CLR's own mapping, and is wrapped in `try`/`catch` with a
-  `ModuleVersionId` fallback that remains a valid per-build identity.
-* **`meta.json` reads** are wrapped and fall back to the previous snapshot, so a
-  transient Windows sharing violation cannot poison the generation. The narrow
-  gap is the *first* read of a folder with no prior snapshot: it degrades to an
-  empty snapshot, and the next scan produces one spurious bump — self-correcting,
-  one reload, bounded by the client's reload budget.
-* **No `FileSystemWatcher`**, by design: the scan is request-driven and TTL-cached
-  (5 s), and the client polls (`PollSeconds` 60). Nothing depends on inotify.
-* **Hashing** uses a literal `'\n'` separator and `InvariantCulture` throughout,
-  so a CRLF checkout changes the ETag's *value* and nothing else. All clocks are
-  UTC. No `chmod`, no `Environment.NewLine`, no culture-sensitive `ToLower()`, no
-  process or uid assumptions.
-
-One real fix came out of the audit: `ScanPlugins` drained
-`Directory.EnumerateDirectories` lazily *outside* its `try`, so an error raised
-from `MoveNext` — a folder vanishing mid-walk, or a Windows sharing violation
-during an install — would escape a `Generation` property documented never to
-throw. The enumeration is now materialised inside the `try`.
-
-**Status: expected-compatible, unverified.** Nothing found would break on
-Windows, but nobody has run it there.
-
----
-
-## Jellyfin 12.0.0 — the standalone plugin, second server generation (plugin 1.0.0.0, kit 2.4.1)
-
-Jellyfin 12 is a different host from 10.11 in the two ways a plugin can feel:
-it runs a `net10.0` runtime instead of `net9.0`, and its web client is a
-React/MUI rewrite. Both were tested against a throwaway
-`jellyfin/jellyfin:unstable` container reporting `"Version":"12.0.0"`, with the
-`net10.0` build installed, and every check below was run again on a
-`jellyfin/jellyfin:10.11.11` container with the `net9.0` build to prove nothing
-regressed.
-
-### What the server side does
-
-| Check | Jellyfin 12.0.0 | Jellyfin 10.11.11 |
-|---|---|---|
-| Plugin loads | **PASS** — `Loaded plugin: Jellyfin Refresh Kit 1.0.0.0` | **PASS** |
-| Dashboard status | **PASS** — `Active` | **PASS** |
-| `GET /RefreshKit/Generation` | **PASS** — 200, `{Version, BuildId, CacheKey}` | **PASS** |
-| `GET /RefreshKit/Generation.txt` | **PASS** — 200, plain generation | **PASS** |
-| `GET /RefreshKit/kit.js` | **PASS** — 200, `public, max-age=31536000, immutable` | **PASS** |
-| `GET /RefreshKit/Diagnostics` (admin) | **PASS** — 200, per-plugin rows | **PASS** |
-| `index.html` injected exactly once | **PASS** — one owned tag before `</body>` | **PASS** |
-| Strong `rk-` ETag | **PASS** — `"rk-9be430b1…"` | **PASS** — `"rk-509b20b7…"` |
-| Conditional GET → 304 | **PASS** | **PASS** |
-| Per-encoding ETag → gzip 304 | **PASS** — distinct `rk-` ETag, 304 | **PASS** |
-| Jellyfin's own bundle tags left alone | **PASS** — **0** `?rkv=` stamps on the 30-odd webpack tags, which already carry `?<build-hash>`; percent-encoded names (`node_modules.%40mui.material.bundle.js`) intact | **PASS** |
-
-`assemblies` binding is exact rather than tolerated: the `net10.0` build
-references `MediaBrowser.Common/Controller/Model` **12.0.0.0**, and the
-assemblies in the `jellyfin/jellyfin:unstable` image are **12.0.0.0**.
-
-One 12-only observation, not a defect: Jellyfin 12 ships bundled plugins
-(AudioDB, MusicBrainz, OMDb, TMDb, Studio Images, ListenBrainz) that live inside
-the server image rather than in the plugins directory, so they do not appear in
-the generation's `Diagnostics` rows and cannot move the generation. They can
-only change when the server itself is replaced, which restarts every tab anyway.
-
-### One manifest, two server generations
-
-Both builds are published under one `manifest.json` and one repository URL.
-Proven by adding that manifest as a plugin repository on each server and
-installing **without pinning a version**, letting the server choose:
-
-| Server | Versions offered by the catalogue | Installed | Verdict |
-|---|---|---|---|
-| Jellyfin 12.0.0 | both (`12.0.0.0`, `10.11.0.0`) | `targetAbi 12.0.0.0` — the `net10.0` zip | **PASS** |
-| Jellyfin 10.11.11 | **only** `10.11.0.0` — the 12 entry is filtered out by ABI | `targetAbi 10.11.0.0` — the `net9.0` zip | **PASS** |
-
-Both `sourceUrl`s resolve (HTTP 200) and both published `checksum`s match the
-downloaded bytes.
-
-The asymmetry is the thing to understand. A 10.11 server is protected by the ABI
-filter alone. A 12 server can run **both** entries, and they carry the **same
-version number**, so the only thing that separates them is that Jellyfin sorts
-with `OrderByDescending(VersionNumber)` — a stable sort, which preserves the
-manifest's own order among equals — and installs the first. Highest `targetAbi`
-first is therefore load-bearing, and `build.sh` fails the build rather than
-write the entries in an order that would hand a 12 server a `net9.0` build it
-cannot load.
-
-### What the client runtime does on the React client
-
-Puppeteer, headless Chrome, against the real web client. The identical suite ran
-on both servers: **15/15 on Jellyfin 12.0.0, 15/15 on Jellyfin 10.11.11.**
-
-| Proof | Jellyfin 12.0.0 | Jellyfin 10.11.11 |
-|---|---|---|
-| Kit registers on the React client | **PASS** — one instance `RefreshKitPlugin`, `polling: true`, `#reactRoot` rendered | **PASS** |
-| Zero kit-attributed page errors | **PASS** — the only console errors are Jellyfin's own pre-auth `ws://…/socket` 403s | **PASS** — zero errors at all |
-| `#/login` is still a hash route | **PASS** — `#/login?serverid=…&url=%2Fhome` | **PASS** |
-| `#/video` still hits the playback gate | **PASS** — `wouldBlockNow: 'playback_route'` | **PASS** |
-| Media gate, genuinely playing `<video src>` | **PASS** — `wouldBlockNow: 'media_element'` (`paused:false, currentTime:3.01, played:1, readyState:4`) | **PASS** |
-| Clean home screen permits a reload | **PASS** — `wouldBlockNow: null` | **PASS** |
-| Plugin DLL touched → generation moves | **PASS** | **PASS** |
-| …→ exactly ONE document load | **PASS** — 1, converged to the new generation, `updatePending: false` | **PASS** |
-| …→ no reload storm 8 s later | **PASS** — still exactly 1 | **PASS** |
-
-The 12 client's DOM turned out to be the same DOM: `#txtManualName` /
-`#txtManualPassword` on the login form, plain `<video>`/`<audio>` on
-`document.body`, `.dialog`/`.dialogContainer` for modals, `screensaver-noScroll`
-still applied to `<body>` (present in both the served `index.html` and
-`main.jellyfin.bundle.js`), and navigation still by `pushState`, which fires
-neither `hashchange` nor `popstate`. The login view is a *legacy* view inside the
-React shell, byte-identical to 10.11's. No version-sniffing was needed anywhere
-in the client runtime.
-
-### The one bug this found — and it was never a 12 bug
-
-Testing the login route on 12 surfaced a defect that had been live on **both**
-generations since 2.4.0: `wouldBlockNow: 'active_editor'` on an untouched login
-page, idle, with nothing typed — permanently.
-
-2.4.0 relaxed the idle requirement on `#/login` and `#/selectserver` on the
-grounds that they hold nothing a user can lose. That relaxation was unreachable.
-Jellyfin's login controller calls `.focus()` on the username field as the form
-appears (`controllers/session/login/index.js`, identical on 10.11 and 12), so
-`document.activeElement` is an `INPUT` for the entire life of a parked login
-tab, and `active_editor` refused two gates earlier. The page a stale tab is most
-likely to be sitting on, and can sit on for days, was the one page that could
-never take an update.
-
-Fixed in kit **2.4.1**: `active_editor` no longer fires for a field the user has
-typed *nothing* into, and only on an empty route. Verified in both directions, on
-both servers:
-
-| Proof | Result |
-|---|---|
-| Untouched, auto-focused login field | `wouldBlockNow: null` — was `'active_editor'` before 2.4.1 |
-| Username with text typed into it | `wouldBlockNow: 'active_editor'` — still refuses |
-| Password typed, focus moved away | `wouldBlockNow: 'password_entry'` — still refuses |
-
-### Not covered
-
-* Real Jellyfin playback of a library item. The media gate was exercised with a
-  genuine decoding `<video src>` of the shape `htmlVideoPlayer` builds
-  (`document.body > div.videoPlayerContainer > video.htmlvideoplayer`), not with
-  a transcoded session from a seeded library.
-* Third-party plugins on 12. The ecosystem sweeps above are all 10.11; nothing
-  here says how a 12-native plugin ecosystem coexists with the kit.
-* `12.0.0` here is the `unstable` image. The NuGet packages the `net10.0` build
-  compiles against are `12.0.0-rc4`, the newest published at the time; the
-  assembly versions match exactly (`12.0.0.0`), but a later 12.x that breaks the
-  plugin surface would need a rebuild.
+# Compatibility and validation evidence
+
+This file describes the compatibility contract and the evidence that supports
+it. It deliberately separates a test harness's coverage from a retained result:
+the existence of a command, fixture, or assertion is not a claim that the
+current release candidate passed it.
+
+## Evidence rules
+
+The terms used here are intentionally narrow:
+
+- **PASS** means a retained structured result is bound to the exact source
+  revision/tree, immutable package snapshot, package digests, host-image digest,
+  and completed test phases named by that result.
+- **PASS WITH LIMITATION** means the required behavior passed and the result
+  also preserves a specific, machine-checked limitation. It is not folded into
+  a generic pass.
+- **Diagnostic only** means useful evidence exists, but it was produced from a
+  dirty or superseded tree, or a later product defect invalidated it as release
+  evidence.
+- **Quarantined** means the artifact can be inspected but an external service,
+  incompatible ABI, destructive mode, or untestable integration is deliberately
+  excluded from the runtime verdict.
+- **Unsupported** means there is no defensible artifact for that host line.
+- **Pending** means the harness exists but no exact current-candidate receipt is
+  claimed here.
+
+Release evidence is promoted only from the exact immutable snapshot selected at
+the start of a run. Browser, server, proxy, and compatibility results must agree
+on that identity; stale success markers and results from a different source tree
+are rejected by the harnesses.
+
+## Current evidence ledger
+
+| Evidence family | Current status | What may be claimed |
+| --- | --- | --- |
+| Fast/static, dual-runtime xUnit, and Chromium suites | Consult the CI/release-validation receipt for the candidate revision | The commands and assertions are documented below; no unbound local count is a release result. |
+| Jellyfin 10.11.11 and 12.0.0-rc4 self lifecycle | **Pending** exact post-epoch candidate receipt | The lab covers real install/update/disable/enable/uninstall/reinstall APIs, restarts, playback gating, and open-tab convergence; that coverage is not itself a pass. |
+| Genuine third-party v1/v2 lifecycle | **Pending** exact post-epoch candidate receipt | The lab requires automatic `G0 → G1 → G2 → G0 → G2 → G0` convergence, exact process epochs, real assemblies/assets, and no manual-reload fallback. |
+| Reverse-proxy/browser matrix | Consult the retained integration receipt for the candidate revision | The harness covers the ordinary strong-validator path, common proxies, subpaths, websockets, a real loose-asset content change, and adversarial caching. |
+| Locked nine-matrix ecosystem campaign | **Diagnostic only** for the retained `e7fd…` run; replacement candidate receipt pending | Seven full passes and two `PASS WITH LIMITATION` results were recorded, but the snapshot predates the process-epoch rollback fix and is not release evidence. |
+
+The retained nine-matrix diagnostic ran on 2026-08-09 from source tree
+`e7fd674aa36c38996316c52581c477116f6009e16516b23b5269e9771469937a`
+and immutable snapshot
+`v1.0.1.0-3f1c6b835f9facdc698121610d25eb8c53ba03c1-e7fd674aa36c38996316c52581c477116f6009e16516b23b5269e9771469937a-1786198450-true`.
+Its net9 ZIP SHA-256 was
+`80e3ae63a964ddc31ce4b6eccf9097a9b83b6838a25365b29e65c8132290aa80`;
+its net10 ZIP SHA-256 was
+`f2af45428a901b916214e8eee2d0ca779d928ccf297c013340b809161250866b`.
+The working-session diagnostic copy is under
+`test-results/compat-failures/e7fd-pre-browser-fix-nine-matrix-20260809/`.
+`test-results` is intentionally ignored, so that local path is not a durable CI
+artifact and must not be cited as release evidence. The summary here documents
+the server-side and ordering findings without certifying the current product.
+
+## Declared hosts and exact validation pins
+
+The standalone plugin declares Jellyfin **10.11.x** and **12.x** support. Builds
+and live labs use exact inputs:
+
+| Declared line | Package references | Framework / ABI | Pinned live image |
+| --- | --- | --- | --- |
+| Jellyfin 10.11.x | Controller + Model `10.11.11` | `net9.0` / `10.11.0.0` | `jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db` |
+| Jellyfin 12.x | Controller + Model `12.0.0-rc4` | `net10.0` / `12.0.0.0` | `jellyfin/jellyfin:12.0-rc4@sha256:db1df1d111c27ba1f10bb8fce6630892f66eb66b12c2b24e79011453ac18b3db` |
+
+A declared minor range does not imply that every future host minor has already
+run. The Jellyfin 12 RC4 result is evidence for that exact host/package pair,
+not a promise that a future ABI-breaking host will load the same binary.
+
+## Locked ecosystem coverage
+
+The compatibility lock contains **24 immutable archives** representing **23
+catalog projects**. It is derived from catalog commit
+`a60d3d24fe0e16e59518f95ea4743d8996fa81c9` at cutoff
+`2026-08-08T14:17:00Z`; the source audit SHA-256 is
+`b9b5431eca9377f5f15b9636775f989f632bf89ae1554db9df68778f26d9bff2`.
+
+The machine-enforced classifications are:
+
+| Runtime | Testable | Quarantined | Unsupported |
+| --- | ---: | ---: | ---: |
+| Jellyfin 10.11.11 | 19 | 2 | 2 |
+| Jellyfin 12.0.0-rc4 | 1 | 1 | 21 |
+
+Jellyfin 12 testable coverage is intentionally limited to the dedicated net10
+Jellyfin Enhanced artifact. Seasonals is quarantined on 12 because its archive
+claims a net9/10.11 ABI, and the remaining catalog artifacts have no defensible
+12-native package. File Transformation is a separately locked dependency used
+throughout the callback stacks.
+
+Six hostile static fixtures exercise bounded behaviors without pretending to
+load incompatible plugins:
+
+- `branding-css`
+- `dynamic-static-assets`
+- `javascript-broker`
+- `jf12-synthetic`
+- `legacy-direct-writer`
+- `transformation-chain`
+
+Nine runtime matrices exercise the selected real artifacts and orderings:
+
+- `jf10-transform-core`
+- `jf10-transform-hover`
+- `jf10-transform-player`
+- `jf10-transform-editors`
+- `jf10-transform-actor`
+- `jf10-middleware-forward`
+- `jf10-middleware-reverse`
+- `jf10-registration-broker`
+- `jf12-enhanced`
+
+The exact artifacts, URLs, digests, metadata, expected tags, quarantine reasons,
+and install order live in `e2e/compat/ecosystem.lock.json` and
+`e2e/compat/matrices.json`. `e2e/compat/README.md` documents how a retained
+runtime result is produced and analyzed.
+
+## Cache and middleware-order contract
+
+There are two valid cache outcomes; they must not be conflated.
+
+### Ordinary final-response ownership
+
+When Refresh Kit owns the final representation on ordinary Kestrel, a safely
+transformed identity/gzip/Brotli shell receives a strong body-derived `rk-`
+ETag. Matching `If-None-Match` can return `304`, a failed `If-Match` can return
+`412`, and `HEAD` uses the selected representation metadata.
+
+### Nested outer-response-buffer ownership
+
+Exactly three locked matrices contain a known outer response owner and use the
+statically enforced `safe-degrade` expectation:
+
+- `jf10-middleware-forward`
+- `jf10-middleware-reverse`
+- `jf12-enhanced`
+
+The complete injected/stamped body must still be returned, but Refresh Kit must
+not claim a validator for bytes the outer middleware owns. Primary and stale
+conditional responses are therefore full `200` responses with
+`Cache-Control: no-store`, no `ETag` or `Last-Modified`, and no stale digest,
+signature, trailer, or connection-nominated entity metadata. The outer owner's
+final content type and coding remain authoritative.
+
+For the lab's captured HTTP/1.1 responses, the analyzer additionally requires
+exactly one unambiguous framing mode: a single decimal `Content-Length` equal to
+the body with no `Transfer-Encoding`, or exactly `Transfer-Encoding: chunked`
+with no `Content-Length`. HTTP/2 and HTTP/3 use different transport framing and
+are not represented by this header-level check.
+
+### Candid outer-owner limitation
+
+In both Jellyfin 10 middleware-order matrices, Seasonals' eligible tags must be
+stamped with the current `rkv`. GetAvatar adds one eligible tag after Refresh
+Kit's transform boundary; the analyzer requires that tag to be present exactly
+once and unstamped, and reports the matrix as `PASS WITH LIMITATION`. An
+automatic shell reload does not guarantee fresh bytes for that unchanged,
+outer-owned URL. The limitation cannot be reclassified as a pass merely because
+the page stayed healthy.
+
+## Lifecycle and browser contract
+
+The Jellyfin lab uses the real 10.11.11 and 12.0.0-rc4 plugin repository/package
+APIs, real v1/v2 third-party assemblies and assets, and authenticated browser
+tabs kept open across required restarts. Staged install, disable, and uninstall
+state must remain invisible until restart activates a different loaded MVID and
+asset set.
+
+The standalone endpoint supplies an opaque generation plus a process epoch. A
+process epoch is stable for one loaded server process, changes after restart,
+and never enters generation identity, asset URLs, ETags, or injected HTML. The
+browser requires two observations of a fresh exact generation/epoch pair and a
+verified per-tab claim before granting one-shot authorization to an already-left
+target generation. That authorization remains attached to the target while a
+reload is safety-blocked, even if polls rotate through other process epochs
+serving the same generation; replica rotation is not a new release or update. A
+same-generation restart is recorded without reloading. Invalid, missing, seen,
+corrupt, unwritable, or saturated epoch state fails closed to the legacy flap
+refusal. A permanent per-tab coverage record also blocks an epoch override for
+any generation left before its epoch was durably known; an unresolved baseline
+creates an instance-wide tombstone because no exact historical generation can
+be named safely. This permits legitimate finite `A → B → A` lifecycle
+rollback when its evidence is complete without turning incomplete history or a
+finite mixed-node cycle into an endless reload loop.
+
+The reload probes cover observable light-DOM playback routes/media, fullscreen
+and picture-in-picture, rendered native/Jellyfin/ARIA dialogs, active editors,
+password fields, idle time, hidden-tab settling, and a shared rolling budget.
+They do not prove state inside closed shadow roots or external/DRM players.
+Background timer throttling or freezing can delay detection.
+
+## Known scope limits
+
+- Runtime-created imports, `fetch()` URLs, JavaScript-created resources, and CSS
+  `url()` references remain the owning plugin's responsibility unless it adopts
+  the client kit directly.
+- Cross-origin resources and CDN resolution caches are not rewritten.
+- Middleware ordering limits which serve-time tags are visible to the stamper;
+  the GetAvatar result above is the exact retained example.
+- A same-version loaded DLL replacement is detected through module MVID. A PE
+  byte change that preserves the MVID is not a generation input.
+- External services such as ARR, Seerr, OAuth, avatar packs, fonts, and CDNs are
+  deliberately unreachable in the isolated compatibility runtime and remain
+  quarantined where applicable.
+- The lifecycle lab does not perform an in-place Jellyfin host upgrade and does
+  not claim Firefox, WebKit, DRM, or external-player coverage.
+- A proxy configured to ignore origin `Cache-Control` can still pin both the
+  shell and generation endpoint. The client budget rate-limits reloads; it is
+  not a repair for a permanently broken intermediary.
+
+## Reproducing and promoting evidence
+
+Use the supported repository entry point:
+
+```bash
+./test.sh fast
+./test.sh integration
+./test.sh compatibility
+./test.sh all
+```
+
+The heavy commands require their documented Docker gate and exact prerequisites.
+Read each lab README before running it. Release claims must cite the retained
+CI/release-validation artifact for the exact candidate rather than copying a
+terminal summary from another tree.
+
+The pre-2.4.6 chronological compatibility diary described useful earlier
+experiments, including v2.0–2.4.1 browser behavior and standalone plugin 1.0.0
+installation probes. Those records remain available in Git history and release
+tags, but they are historical evidence and are not presented as current
+candidate certification here.
