@@ -3,7 +3,7 @@
  * client-script plugins and script collections.
  *
  * MIT License
- * Copyright (c) 2026 <YOUR NAME HERE>
+ * Copyright (c) 2026 4eh5xitv6787h645ebv
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal

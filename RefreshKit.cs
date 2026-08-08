@@ -3,7 +3,7 @@
 //
 //  MIT License
 //
-//  Copyright (c) 2026 <YOUR NAME HERE>
+//  Copyright (c) 2026 4eh5xitv6787h645ebv
 //
 //  Permission is hereby granted, free of charge, to any person obtaining a copy
 //  of this software and associated documentation files (the "Software"), to deal
@@ -904,13 +904,30 @@ namespace JellyfinRefreshKit
 
             // A cold HEAD passes straight through: the transform needs the body bytes
             // and HEAD never carries them, so there is no way to produce transformed
-            // metadata without issuing our own internal GET. Serving the host's native
-            // metadata (source ETag/Last-Modified/Content-Length) keeps uptime monitors
-            // and proxy health checks working; a warm HEAD below still answers with the
-            // transformed representation's metadata.
+            // metadata without issuing our own internal GET. Letting the host answer
+            // keeps uptime monitors and proxy health checks working; a warm HEAD below
+            // still answers with the transformed representation's metadata.
+            //
+            // ...but the host's answer describes the SOURCE file, not what a GET
+            // through this middleware would return. Its ETag, Last-Modified and
+            // Content-Length all belong to the untransformed shell — a different
+            // length, a different entity, and validators a GET would never issue.
+            // RFC 9110 §9.3.2 asks a HEAD to send the field values a GET would have
+            // sent, and §8.6 defines Content-Length on a HEAD as the size the GET
+            // representation WOULD have had; passing the source values through breaks
+            // both, and hands the client a strong validator it can legitimately replay
+            // in If-None-Match or If-Range against an entity that never existed at
+            // this URL.
+            //
+            // The same section permits the honest alternative: a server MAY omit
+            // header fields "for which a value is determined only while generating the
+            // content", which is exactly these three. So the response still carries
+            // status, content type and cache policy — everything a health check reads
+            // — and simply stays silent about the representation it cannot describe.
             if (isHead && cached == null)
             {
                 ReleaseRepresentationGate(ref ownsRepresentationGate, representationGate);
+                SuppressRepresentationValidators(context.Response);
                 await nextMw().ConfigureAwait(false);
                 return;
             }
@@ -1749,6 +1766,42 @@ namespace JellyfinRefreshKit
                 ownsRepresentationGate = false;
                 representationGate.Release();
             }
+        }
+
+        /// <summary>
+        /// Drops the validators that describe a representation this response is not
+        /// going to describe correctly — used on a cold HEAD, where the host answers
+        /// about the SOURCE shell while a GET at the same URL would return the
+        /// transformed one.
+        /// <para>
+        /// It has to run as an <c>OnStarting</c> callback: the host writes these
+        /// headers while producing its response, so they do not exist yet at the
+        /// point the decision is made, and are frozen once the response has
+        /// started. Removing them here is the last moment they can be reached.
+        /// </para>
+        /// <para>
+        /// Never throws: a HEAD carrying a stale validator is a far smaller
+        /// problem than a HEAD that 500s, and this whole middleware is fail-open.
+        /// </para>
+        /// </summary>
+        private static void SuppressRepresentationValidators(HttpResponse response)
+        {
+            response.OnStarting(static state =>
+            {
+                try
+                {
+                    var headers = ((HttpResponse)state).Headers;
+                    headers.Remove("ETag");
+                    headers.Remove("Last-Modified");
+                    headers.Remove("Content-Length");
+                }
+                catch
+                {
+                    // Headers already frozen by another component; nothing to do.
+                }
+
+                return Task.CompletedTask;
+            }, response);
         }
 
         private static void SetOrRemove(IHeaderDictionary headers, string name, string? value)
