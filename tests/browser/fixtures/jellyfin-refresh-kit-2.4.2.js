@@ -55,11 +55,9 @@
  * Since 2.0.0 the kit is no longer a singleton. window.JellyfinRefreshKit is a
  * MANAGER owning a registry of named INSTANCES — one instance per adopting
  * plugin / script collection. Each <script> tag of this file registers exactly
- * ONE instance. A CLASSIC script tag is configured from its own data-*
- * attributes; module-script evaluation has no document.currentScript, so a kit
- * loaded with type="module" must use window.JellyfinRefreshKitConfig instead.
- * Two, three, N plugins can each ship their own copy of the kit (even different
- * kit versions) and they compose on one page:
+ * ONE instance, configured from that tag's own data-* attributes. Two, three,
+ * N plugins can each ship their own copy of the kit (even different kit
+ * versions) and they compose on one page:
  *
  *   • THE NEWEST COPY MANAGES THE PAGE (2.3.0). The first copy to execute
  *     installs the machinery, but a copy that arrives afterwards and is
@@ -168,9 +166,8 @@
  *     instance's own configuration).
  *
  *     The manager runs the SAME rule as a fallback for copies that cannot read
- *     the global themselves (pre-2.1 copies, module-loaded copies, and eval'd
- *     copies with no currentScript) — per registration, bounded by the same
- *     one-time claim.
+ *     the global themselves (pre-2.1 copies, and eval'd copies with no
+ *     currentScript) — per registration, bounded by the same one-time claim.
  *     For targeted config use the keyed form: window.JellyfinRefreshKitConfigs
  *     = { "KefinTweaks": {...}, "DemoPack": {...} } — each entry merges over
  *     (and wins against) the matching instance's tag attributes, and is looked
@@ -207,9 +204,8 @@
  *     shared page machinery, then registers its own instance. It KEEPS that
  *     role until a strictly newer copy takes it over under clause 2b.
  *  2. Every copy, at the top of its IIFE, synchronously captures its own
- *     <script> tag config (classic-script document.currentScript data-*; a
- *     module-loaded kit uses window.JellyfinRefreshKitConfig instead) and then
- *     inspects window.JellyfinRefreshKit:
+ *     <script> tag config (document.currentScript data-*) and then inspects
+ *     window.JellyfinRefreshKit:
  *       a. absent            → become the manager (clause 1).
  *       b. present AND has a function-valued __registerInstance → compare
  *          KIT_VERSION with the manager's `kitVersion`, NUMERICALLY, segment by
@@ -249,8 +245,7 @@
  *          silently stranding every later copy.
  *  3. manager.__registerInstance(config, kitVersion) → handle | null:
  *       • config: a PLAIN OBJECT of tag-level options using the documented
- *         option names (name, versionUrl, versionJsonField,
- *         versionEpochJsonField (2.4.6), getVersion,
+ *         option names (name, versionUrl, versionJsonField, getVersion,
  *         pollSeconds, idleSeconds, assetPatterns, entryScripts,
  *         entryTimeoutMs, mode, onUpdateAvailable, reloadBudget, bootVersion,
  *         hiddenReload, hiddenSettleSeconds (2.4.0) —
@@ -303,24 +298,18 @@
  *         points off, so a version request already in flight cannot act),
  *         cancels the shared retry ladder, the keyed-config audit and the
  *         reload-survival watchdog, and removes every page listener;
- *       • flips its createElement wrapper to a permanent INERT DELEGATE.
+ *       • flips its createElement wrapper to a permanent INERT PASS-THROUGH.
  *         The wrapper cannot be uninstalled — third-party code may hold a
  *         reference to it, and restoring the native function would strip the
  *         new manager's wrapper off the page — so the new manager stacks its
- *         own on top. Calls through that wrapper chain are equipped once by
- *         the new manager. A direct call through a retained wrapper CREATED BY
- *         2.4.6 OR NEWER forwards its new element through the additive internal
- *         __interceptCreatedElement bridge, so it cannot bypass interception.
- *         The already-released 2.4.2 wrapper predates that bridge; a direct
- *         retained reference to it remains an inert pass-through after handoff.
+ *         own on top and the old one creates elements without touching them.
  *         Elements the old wrapper ALREADY handed out keep their per-element
  *         accessors, which from now on delegate their versioning decision to
  *         the current manager;
  *       • becomes a permanent INERT DELEGATE: every member of its api object
  *         (__registerInstance, versionedUrl, checkNow, get, instances, state,
- *         version, latestVersion, kitVersion, __contractVersion,
- *         __interceptCreatedElement, __handoffTo itself) forwards to the new
- *         manager. This is what makes the handoff
+ *         version, latestVersion, kitVersion, __contractVersion, __handoffTo
+ *         itself) forwards to the new manager. This is what makes the handoff
  *         possible at all, because window.JellyfinRefreshKit is installed
  *         NON-CONFIGURABLE (clause 2 RECOVERY) and can never be re-pointed:
  *         the retired object stays the page's entry point and answers for the
@@ -330,12 +319,6 @@
  *         claim it records is page-level either way (a marker on the config
  *         object, or a WeakSet on `window`), and forwarding it would build a
  *         cycle.
- *       • keeps every per-instance handle it previously returned live. A
- *         retained handle resolves its name through the inert manager's
- *         delegate and forwards version/latestVersion, versionedUrl(),
- *         checkNow() and state() to the replacement instance. The retired
- *         instance closure stays deactivated; the frozen handle gains no
- *         mutable property or new public member.
  *     THE TRANSFER RECORD is a plain object:
  *       { contractVersion, kitVersion, handoffs, lineage[], anonymousCount,
  *         lateKeys{}, instances: [ { name, anonymous, keyedConfigKey,
@@ -382,13 +365,10 @@
  *
  * Sequence: resolve the instance's version FIRST → then append each entry in
  * order, each carrying ?v=<version> → the entry code then creates its
- * sub-assets, which the createElement interceptor versions as usual. Every
- * configured entry URL and DOM-created sub-asset is now version-addressed. A
- * native ES-module import graph is the exception: browser import resolution
- * does not pass through createElement and a root module's query is not inherited
- * by relative imports, so module authors must bundle or self-version that graph.
- * The ONLY unavoidable unversioned file is this kit — a small, stable loader
- * that changes rarely (see LIMITATIONS).
+ * sub-assets, which the createElement interceptor versions as usual.
+ * Everything under the collection's folder is now version-addressed. The ONLY
+ * file left unversioned is this kit — a small, stable loader that changes
+ * rarely (see LIMITATIONS).
  *
  * Rules the entry loader follows, in priority order:
  *   • Never load an entry before the instance's version resolves...
@@ -396,23 +376,14 @@
  *     The first version fetch is raced against entryTimeoutMs (default 3s); on
  *     failure or timeout the entries load UNVERSIONED and the kit logs exactly
  *     one warning. Availability beats freshness.
- *   • Strict load-settlement order WITHIN an instance. Entry N+1 is appended
- *     only after entry N's load/error event. Classic scripts and synchronous
- *     module graphs therefore finish evaluation before the next entry starts.
- *     A module's top-level-await continuation can outlive its load event and
- *     overlap a later entry; do not use TLA where execution order is required.
- *     (script.async = false is also set, belt and braces.) Different instances'
- *     chains run concurrently — they are independent collections.
- *   • An entry element that reports a load error (a 404 or failed module graph)
- *     is logged and SKIPPED; the remaining entries still load. A classic
- *     script's runtime exception is reported by the page, not its element's
- *     load/error events, so the loader cannot classify that as a load failure.
- *   • Path-ending .css entries become <link rel="stylesheet">; path-ending
- *     .mjs entries become <script type="module">; everything else is a classic
- *     <script>. Query values and fragments never decide an entry's type.
- *   • Only the root .mjs entry receives ?v=. Its static/dynamic imports do not
- *     inherit that query and bypass the DOM interceptor; bundle them or put a
- *     version in their own specifiers when immutable freshness is required.
+ *   • Strict order WITHIN an instance. Entry N+1 is appended only after entry
+ *     N settles, so a config script is guaranteed to have executed before the
+ *     injector that reads it. (script.async = false is also set, belt and
+ *     braces.) Different instances' chains run concurrently — they are
+ *     independent collections.
+ *   • An entry that 404s or throws is logged and SKIPPED; the remaining entries
+ *     still load. One bad file must not take the page down with it.
+ *   • .css entries become <link rel="stylesheet">, everything else <script>.
  *
  * Bootstrap mode is opt-in and purely additive: with no entryScripts configured
  * the instance behaves exactly as it did before, so existing adoptions keep
@@ -516,12 +487,6 @@
  * • Bootstrap mode adds one round-trip of latency before the entries start
  *   loading (the version fetch, bounded by entryTimeoutMs). It is a small
  *   same-origin JSON GET, but it is not free.
- * • A path-ending `.mjs` bootstrap entry is loaded as an ES module and its root
- *   URL is versioned. Native imports inside it do not inherit that version and
- *   never touch the createElement interceptor; bundle or self-version the
- *   module graph. The browser also fires a module element's load event before
- *   a top-level-await continuation completes, so TLA can overlap the following
- *   entry even though ordinary synchronous module evaluation remains ordered.
  * • MULTI-INSTANCE: which instance versions an ambiguous URL is decided by
  *   REGISTRATION ORDER, which is the document order of the kit <script> tags.
  *   Keep assetPatterns disjoint (they name your own folder — they naturally
@@ -561,9 +526,8 @@
  *   per-container DLL mtimes make one release look like three, a rolling
  *   deploy) would otherwise reload the tab once per poll forever, because each
  *   reload is inside its own budget window and so is always affordable. Two
- *   defences: a candidate identity must earn TWO observations before it arms a
- *   reload (consecutive generation readings for legacy sources; bounded exact
- *   generation/epoch evidence for 2.4.6 JSON sources), and a tab REFUSES to auto-reload to any
+ *   defences: a candidate version must be seen on TWO consecutive observations
+ *   before it arms a reload (2.1.0), and a tab REFUSES to auto-reload to any
  *   version it has already reloaded AWAY FROM (2.2.0 — the per-tab record lives
  *   in sessionStorage, so it survives the reloads it is policing). The second
  *   defence used to be pair-based ("I went X → Y, so I refuse Y → X"), which
@@ -798,34 +762,8 @@
      *           discarded; CSS-hidden retained dialogs no longer block; and a
      *           stuck bootstrap entry times out with explicit diagnostics and
      *           stops the remaining ordered chain.
-     *   2.4.3 — MODULE BOOTSTRAP: a path-ending .mjs entry is loaded with
-     *           type=module; entry type inference for .mjs/.css is path-only
-     *           (query values/fragments cannot opt in), while the
-     *           contract now states the browser boundaries explicitly: only
-     *           the root module URL is stamped, imported graphs must version
-     *           themselves, and top-level-await continuations can outlive the
-     *           element load event and overlap the next entry.
-     *   2.4.4 — BOUNDED VERSION INPUT: HTTP version bodies are streamed under
-     *           a decoded-byte cap and cancelled on error/timeout (including
-     *           legacy engines without AbortController); late headers cannot
-     *           resurrect abandoned work; callback results reject a raw string
-     *           over 200 characters before trimming, then require a non-empty,
-     *           non-HTML trimmed identity.
-     *   2.4.5 — RETAINED INSTANCE HANDLES SURVIVE NEWEST-WINS HANDOFFS. A
-     *           handle returned before a newer kit copy takes over now forwards
-     *           every existing getter/method to the replacement instance,
-     *           including across chained handoffs. The retired closure remains
-     *           deactivated and the frozen public handle shape is unchanged.
-     *   2.4.6 — PROCESS-INCARNATION EPOCHS let a genuinely restarted server
-     *           revisit a historical generation once without weakening the
-     *           LEFT-version flap guard. Exact version/epoch pairs are
-     *           confirmed twice, claimed in a strict saturating per-tab set,
-     *           and never participate in asset URLs or generation identity.
-     *           Retained createElement wrappers created by 2.4.6+ also forward
-     *           freshly-created elements through the newest manager; the exact
-     *           released 2.4.2 wrapper remains inert when called directly.
      */
-    var KIT_VERSION = '2.4.6';
+    var KIT_VERSION = '2.4.2';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -873,36 +811,11 @@
      *
      * Asking "have I already left the version I am being asked to go to?"
      * closes cycles of ANY length: A → B is allowed, B → C is allowed, C → A is
-     * refused because A was abandoned. A legitimate operator rollback can also
-     * revisit A; 2.4.6 permits that only when the JSON endpoint supplies a fresh
-     * process epoch, the exact (A, epoch) pair confirms twice, and this tab can
-     * claim the epoch in the strict saturating set below.
+     * refused because A was abandoned. A genuine release chain only ever moves
+     * to versions this tab has never run, so it is unaffected.
      * @type {string}
      */
     var LEFT_KEY = 'jellyfin-refresh-kit-left-v1';
-
-    /**
-     * Strict, saturating per-tab set of process epochs already observed for a
-     * baseline generation or claimed to authorize one historical-generation
-     * revisit. Entries are [instanceName, epoch] tuples. Unlike flip history,
-     * this set NEVER evicts: forgetting an older epoch would make a finite
-     * replica cycle reload forever. Unavailable, corrupt, full or unverifiable
-     * storage therefore fails the historical override closed.
-     * @type {string}
-     */
-    var EPOCH_KEY = 'jellyfin-refresh-kit-epochs-v1';
-
-    /**
-     * Strict per-tab set of [instanceName, generation] baselines that were
-     * departed before any process epoch for that running generation was known.
-     * [instanceName, null] is a collision-free instance tombstone for a shared
-     * reload that departed while that instance's first version fetch was still
-     * unresolved. A later epoch cannot prove freshness in either case — it may
-     * be the exact process this tab previously ran — so gaps saturate and
-     * permanently veto unsafe auto-reloads.
-     * @type {string}
-     */
-    var EPOCH_GAP_KEY = 'jellyfin-refresh-kit-epoch-gaps-v1';
 
     /**
      * Per-TAB record of one-shot recoveries already spent this browsing
@@ -924,45 +837,6 @@
 
     /** @type {number} Cap on remembered flip records (per tab, all instances). */
     var MAX_FLIP_RECORDS = 24;
-
-    /** @type {number} Strict saturating cap for one-shot recovery markers. */
-    var MAX_RECOVERY_RECORDS = 24;
-
-    /** @type {number} Bound one instance-scoped recovery marker. */
-    var MAX_RECOVERY_MARKER_LENGTH = 512;
-
-    /** @type {number} Hard character cap before parsing/writing recoveries. */
-    var MAX_RECOVERY_STORAGE_CHARS = 16384;
-
-    /** @type {number} Strict saturating cap for versions this tab has left. */
-    // A shared page can legitimately host dozens of independently versioned
-    // adopters. LEFT remains bounded/saturating, but its cap must cover that
-    // topology because one page reload departs every registered baseline.
-    var MAX_LEFT_RECORDS = 128;
-
-    /** @type {number} Bound one canonical instance/version LEFT record. */
-    var MAX_LEFT_RECORD_LENGTH = 512;
-
-    /** @type {number} Hard character cap before parsing/writing LEFT history. */
-    var MAX_LEFT_STORAGE_CHARS = 65536;
-
-    /** @type {number} Saturating cap for epoch tuples (per tab, all instances). */
-    var MAX_EPOCH_RECORDS = 48;
-
-    /** @type {number} Bound each tuple's instance-key component. */
-    var MAX_EPOCH_INSTANCE_NAME_LENGTH = 200;
-
-    /** @type {number} Hard character cap before parsing/writing epoch history. */
-    var MAX_EPOCH_STORAGE_CHARS = 65536;
-
-    /** @type {number} Saturating cap for unknown-baseline epoch coverage gaps. */
-    var MAX_EPOCH_GAP_RECORDS = 128;
-
-    /** @type {number} Hard character cap for typed gap tuples. */
-    var MAX_EPOCH_GAP_STORAGE_CHARS = 65536;
-
-    /** @type {number} Bounded in-memory epoch candidates for one generation. */
-    var MAX_CANDIDATE_EPOCHS = 24;
 
     /** @type {number} Rolling window for the reload budget, in ms. */
     var BUDGET_WINDOW_MS = 60000;
@@ -1054,12 +928,13 @@
     var MEDIA_STARVATION_MS = MAX_BLOCKED_RETRIES * RETRY_MS;
 
     /**
-     * Delay before the prompt second observation of a freshly-sighted
-     * candidate. Legacy sources require two consecutive generation readings;
-     * JSON epoch sources retain a bounded count for each exact tuple while the
-     * generation stays the same. Waiting a whole pollSeconds for the next
+     * Delay before the confirmation fetch that promotes a freshly-sighted
+     * candidate version into a real update. A candidate must be seen TWICE in
+     * a row (with no sighting of the baseline in between) before it can arm a
+     * reload, which is what stops an oscillating version source from reloading
+     * the tab once per poll. Waiting a whole pollSeconds for that second
      * observation would double every adopter's update latency, so the kit
-     * schedules one confirmation itself shortly after the first sighting.
+     * schedules the confirmation itself, shortly after the first sighting.
      * @type {number}
      */
     var VERSION_CONFIRM_MS = 1500;
@@ -1075,16 +950,6 @@
      * @type {number}
      */
     var VERSION_FETCH_TIMEOUT_MS = 10000;
-
-    /**
-     * Maximum decoded bytes accepted from a version endpoint. A valid
-     * generation is capped at 200 characters below; this larger envelope
-     * leaves room for the small JSON object used by the standalone plugin
-     * without buffering an arbitrary proxy error page, compression bomb, or
-     * endless chunked response.
-     * @type {number}
-     */
-    var MAX_VERSION_RESPONSE_BYTES = 4096;
 
     /**
      * Bootstrap mode only: how long to wait for the FIRST version fetch before
@@ -1241,13 +1106,12 @@
      * @property {string}   [name]              Instance name. Default: derived from versionUrl's parent folder, else "instance-<index>".
      * @property {string}   [versionUrl]        Endpoint returning the current version. Required for polling.
      * @property {string}   [versionJsonField]  If set, the response is parsed as JSON and this field is read (e.g. "version").
-     * @property {string}   [versionEpochJsonField] Optional JSON sidecar naming an opaque server-process incarnation. It can authorize one otherwise-historical generation after two exact pair observations; it never changes asset versioning.
      * @property {string}   [bootVersion]       Identity of the build that SERVED this document, stamped into the tag by the server. Seeds the baseline so an update landing between page-serve and the first poll is detected instead of absorbed. Must name the same identity the version endpoint reports.
-     * @property {() => Promise<string>} [getVersion] Config-object only. Overrides versionUrl entirely. The raw string result must be at most 200 characters; after trimming it must be non-empty and must not begin with `<`.
+     * @property {() => Promise<string>} [getVersion] Config-object only. Overrides versionUrl entirely.
      * @property {number}   [pollSeconds]       Poll interval while visible. Default 60, clamped 15–3600.
      * @property {number}   [idleSeconds]       Required user-idle time before an auto reload. Default 5, clamped 0–300. Page-level reloads use the MAX among instances wanting one.
      * @property {Array<string|RegExp>} [assetPatterns] Substrings/regexes; matching script/link URLs get ?v=<this instance's version>.
-     * @property {string[]} [entryScripts] BOOTSTRAP MODE. URLs the kit loads itself one at a time after this instance's version resolves. Path-ending .mjs entries are modules; their imports are not auto-versioned and top-level await can outlive load settlement. Empty = classic mode.
+     * @property {string[]} [entryScripts] BOOTSTRAP MODE. URLs the kit loads itself, IN ORDER, after this instance's version resolves. Empty = classic mode.
      * @property {number}   [entryTimeoutMs] Max wait for the first version fetch before loading entries unversioned. Default 3000, clamped 250–30000.
      * @property {'auto'|'notify'|'off'} [mode] Default 'auto'.
      * @property {(newV: string, oldV: string) => void} [onUpdateAvailable] Called once per detected version change.
@@ -1261,7 +1125,6 @@
         name: '',
         versionUrl: '',
         versionJsonField: '',
-        versionEpochJsonField: '',
         bootVersion: '',
         getVersion: null,
         pollSeconds: 60,
@@ -1280,15 +1143,13 @@
      * Read `data-*` attributes off THIS copy's own <script> tag.
      *
      * document.currentScript is only valid during the SYNCHRONOUS execution of
-     * a CLASSIC script, which is exactly where this runs — so we capture it now
-     * and never rely on it again. A classic `defer`/`async` tag still reports
-     * currentScript correctly. Module-script evaluation, eval() and injected
-     * text do not; a kit loaded with type="module" must put its options in
-     * window.JellyfinRefreshKitConfig instead of data-* attributes.
+     * the script, which is exactly where this runs — so we capture it now and
+     * never rely on it again. Note that a `defer`/`async` tag still reports
+     * currentScript correctly; only eval()/injected-text execution does not,
+     * which is why the window-config path exists as an escape hatch.
      *
      * Attribute names are the kebab-case form of the option names:
-     *   data-name, data-version-url, data-version-json-field,
-     *   data-version-epoch-json-field, data-boot-version,
+     *   data-name, data-version-url, data-version-json-field, data-boot-version,
      *   data-poll-seconds, data-idle-seconds, data-asset-patterns
      *   (comma-separated), data-mode, data-reload-budget, data-entry-scripts
      *   (comma-separated, ORDER MATTERS), data-entry-timeout-ms
@@ -1304,7 +1165,6 @@
         if (d.name) out.name = d.name;
         if (d.versionUrl) out.versionUrl = d.versionUrl;
         if (d.versionJsonField) out.versionJsonField = d.versionJsonField;
-        if (d.versionEpochJsonField) out.versionEpochJsonField = d.versionEpochJsonField;
         if (d.bootVersion) out.bootVersion = d.bootVersion;
         if (d.pollSeconds) out.pollSeconds = Number(d.pollSeconds);
         if (d.idleSeconds) out.idleSeconds = Number(d.idleSeconds);
@@ -1339,10 +1199,9 @@
         return out;
     }
 
-    // Capture this classic copy's tag config NOW, while currentScript is still
-    // valid — regardless of whether this copy ends up being the manager or a
-    // mere registrant. Module execution has no currentScript and uses the
-    // window-config path instead (REGISTRATION CONTRACT clause 2).
+    // Capture this copy's tag config NOW, while currentScript is still valid —
+    // regardless of whether this copy ends up being the manager or a mere
+    // registrant (REGISTRATION CONTRACT clause 2).
     var tagConfig = safe(readScriptTagConfig, {}) || {};
 
     /**
@@ -1556,8 +1415,8 @@
      *   • the TAG-SIDE merge every 2.1+ copy performs at its own <script>
      *     position (`ownConfig` below), and
      *   • the MANAGER-SIDE fallback that serves copies which cannot read the
-     *     global themselves — pre-2.1 copies, module-loaded copies, and eval'd
-     *     copies with no currentScript (applySingularWindowConfigFallback).
+     *     global themselves — pre-2.1 copies and eval'd copies with no
+     *     currentScript (applySingularWindowConfigFallback).
      *
      * Before 2.2.0 these were two copies of an accumulating matrix of
      * name/versionUrl agreement special cases, and the matrix leaked a critical
@@ -1727,10 +1586,10 @@
      *
      * `__singularApplied` tells the manager this copy already SETTLED the
      * singular global for its own tag — whether by merging it or by declining
-     * it — so the manager's fallback (which serves pre-2.1, module-loaded and
-     * eval'd copies) does not apply it a second time somewhere else; an older
-     * manager simply ignores the unknown key, which leaves the pre-2.1
-     * behaviour exactly as it was.
+     * it — so the manager's fallback (which serves pre-2.1 and eval'd copies)
+     * does not apply it a second time somewhere else; an older manager simply
+     * ignores the unknown key, which leaves the pre-2.1 behaviour exactly as
+     * it was.
      */
     var ownConfig = (function () {
         var out = {};
@@ -1901,8 +1760,6 @@
         if (typeof cfg.onUpdateAvailable !== 'function') cfg.onUpdateAvailable = null;
         cfg.versionUrl = typeof cfg.versionUrl === 'string' ? cfg.versionUrl : '';
         cfg.versionJsonField = typeof cfg.versionJsonField === 'string' ? cfg.versionJsonField : '';
-        cfg.versionEpochJsonField = typeof cfg.versionEpochJsonField === 'string'
-            ? cfg.versionEpochJsonField : '';
         cfg.bootVersion = typeof cfg.bootVersion === 'string' ? cfg.bootVersion.trim() : '';
         // A boot identity that does not look like one (an HTML error page
         // stamped into the attribute, a template placeholder) is worse than
@@ -1958,8 +1815,7 @@
      * @returns {boolean}
      */
     function configsEquivalent(a, b) {
-        var scalar = ['versionUrl', 'versionJsonField', 'versionEpochJsonField', 'bootVersion',
-            'pollSeconds', 'idleSeconds',
+        var scalar = ['versionUrl', 'versionJsonField', 'bootVersion', 'pollSeconds', 'idleSeconds',
             'entryTimeoutMs', 'mode', 'reloadBudget', 'getVersion', 'onUpdateAvailable',
             'hiddenReload', 'hiddenSettleSeconds'];
         for (var i = 0; i < scalar.length; i++) {
@@ -2071,17 +1927,6 @@
     var mediaBlockSince = null;
     /** @type {string|null} Progress fingerprint the streak above is measured against. */
     var mediaBlockSignature = null;
-    /**
-     * Stable, non-retaining identities for srcObject-backed media. A source
-     * swap at the same paused/time values is still playback progress from the
-     * safety gate's point of view and must restart the starvation clock.
-     * @type {WeakMap<Object,number>|null}
-     */
-    var mediaObjectSourceIds = safe(function () {
-        return typeof WeakMap === 'function' ? new WeakMap() : null;
-    }, null);
-    /** @type {number} */
-    var nextMediaObjectSourceId = 1;
     /** @type {boolean} One-shot latch for the parked-media starvation-escape log. */
     var warnedMediaStarvation = false;
     /** @type {string|null} Last recorded reason a reload was refused (diagnostics). */
@@ -2094,10 +1939,6 @@
      * @type {boolean}
      */
     var warnedBudgetRefusal = false;
-    /** @type {boolean} One-shot latch for strict LEFT-history refusal. */
-    var warnedSafetyHistoryRefusal = false;
-    /** @type {boolean} One-shot latch for unverifiable baseline-epoch history. */
-    var warnedEpochHistoryRefusal = false;
     /**
      * ONE NAVIGATION, ONE RESERVATION. `location.reload()` does not stop the
      * page: script keeps running until the new document commits, which is a
@@ -2118,8 +1959,6 @@
      * @type {boolean}
      */
     var reloadCommitted = false;
-    /** @type {boolean} A failed reload is awaiting a fresh endpoint observation. */
-    var reloadRevalidationPending = false;
     /** @type {number|null} setTimeout handle for the reload-survival watchdog. */
     var reloadWatchdogTimer = null;
     /**
@@ -2144,21 +1983,6 @@
     /** @type {boolean} True once the single createElement wrapper is installed. */
     var interceptorInstalled = false;
     /**
-     * Elements this manager has already equipped with its URL accessors.
-     *
-     * A wrapper created by 2.4.6 or newer can still be called through a
-     * reference captured by third-party code after it retires. It delegates
-     * that freshly-created element to the current manager, and the current
-     * document.createElement wrapper then
-     * sees the same element while unwinding its wrapper chain. The WeakSet
-     * makes those two paths one installation without retaining the elements.
-     * Older engines without WeakSet merely repeat the idempotent installation.
-     * @type {WeakSet<Element>|null}
-     */
-    var interceptedElements = safe(function () {
-        return typeof WeakSet === 'function' ? new WeakSet() : null;
-    }, null);
-    /**
      * The NEWER manager this copy handed the page over to (REGISTRATION
      * CONTRACT clause 7), or null while this copy still owns the page.
      *
@@ -2179,12 +2003,10 @@
      * handoff. The wrapper cannot be UNINSTALLED — `document.createElement` may
      * have been captured by any amount of third-party code by then, and
      * restoring the native function would strip a newer manager's wrapper right
-     * off the page — so it has a permanent delegate mode instead. Calls made
-     * through the wrapper chain are handled once by the new manager's wrapper;
-     * calls through a retained 2.4.6+ reference ask that manager to equip the
-     * new element directly. A pre-2.4.6 retained wrapper lacks that additive
-     * bridge and stays inert. Accessors installed BEFORE handoff keep
-     * delegating their versioning decision through versionUrlForPage().
+     * off the page — so it has a permanent inert-delegate mode instead: it
+     * creates the element and touches nothing, while the per-element accessors
+     * it installed BEFORE the handoff keep working by delegating their
+     * versioning decision to the current manager (see versionUrlForPage).
      * @type {boolean}
      */
     var interceptorInert = false;
@@ -2417,35 +2239,6 @@
     }
 
     /**
-     * Equip one freshly-created script/link using THIS manager's interception
-     * rules. It is shared by the live wrapper and by retired 2.4.6+ wrappers
-     * invoked through references captured before a newest-wins handoff.
-     * @param {Element} el
-     * @param {*} tagName
-     * @returns {boolean} True when this manager handled or already handled it.
-     */
-    function interceptCreatedElement(el, tagName) {
-        if (!el || typeof tagName !== 'string') return false;
-        var tag = tagName.toLowerCase();
-        if (tag !== 'script' && tag !== 'link') return false;
-        if (interceptedElements && interceptedElements.has(el)) return true;
-
-        if (tag === 'script') {
-            interceptUrlProperty(el, 'src');
-            interceptSetAttribute(el, 'src');
-        } else {
-            // Only stylesheets are worth versioning; but `rel` is often
-            // assigned AFTER href, so we cannot filter on it here. The
-            // assetPatterns check is the real filter, and it keeps this from
-            // touching favicons/preconnects that don't match.
-            interceptUrlProperty(el, 'href');
-            interceptSetAttribute(el, 'href');
-        }
-        if (interceptedElements) interceptedElements.add(el);
-        return true;
-    }
-
-    /**
      * Wrap document.createElement so that <script> and <link> elements come back
      * with the URL interceptors already installed. Installed ONCE per page, by
      * the manager — later kit copies register instances instead of re-wrapping
@@ -2498,22 +2291,25 @@
 
         var wrapper = function (tagName) {
             var el = nativeCreateElement.apply(this, arguments);
-            if (interceptorInert) {
-                // A 2.4.6+ wrapper retained before handoff bypasses the new
-                // wrapper stacked on document.createElement. Give the element
-                // to the live manager explicitly; when this call came THROUGH
-                // that wrapper instead, its WeakSet makes the later installation
-                // a no-op. Future managers forward this internal method too, so
-                // a chain made entirely of bridge-aware wrappers reaches the
-                // newest copy.
-                safe(function () {
-                    if (delegate && typeof delegate.__interceptCreatedElement === 'function') {
-                        delegate.__interceptCreatedElement(el, tagName);
-                    }
-                });
-                return el;
-            }
-            safe(function () { interceptCreatedElement(el, tagName); });
+            // Inert-delegate mode: this copy handed the page over, so it must
+            // not touch the element. The manager stacked above us has already
+            // installed (or is about to install) its own interceptors on it.
+            if (interceptorInert) return el;
+            safe(function () {
+                if (typeof tagName !== 'string') return;
+                var tag = tagName.toLowerCase();
+                if (tag === 'script') {
+                    interceptUrlProperty(el, 'src');
+                    interceptSetAttribute(el, 'src');
+                } else if (tag === 'link') {
+                    // Only stylesheets are worth versioning; but `rel` is often
+                    // assigned AFTER href, so we cannot filter on it here. The
+                    // assetPatterns check is the real filter, and it keeps this
+                    // from touching favicons/preconnects that don't match.
+                    interceptUrlProperty(el, 'href');
+                    interceptSetAttribute(el, 'href');
+                }
+            });
             return el;
         };
         safe(function () {
@@ -2651,17 +2447,12 @@
         try {
             // Ambient backdrop decoration is not a session anybody is having.
             if (isAmbientVideo(el)) return false;
-            // srcObject (MediaStream/MediaSource/Blob) is the active source for
-            // many live/transcoded/plugin players and deliberately leaves
-            // currentSrc and the src attribute empty.
-            var objectSource = el.srcObject;
-            var hasObjectSource = objectSource !== null && objectSource !== undefined;
             var src = el.currentSrc || el.getAttribute('src') || '';
-            if (!src && !hasObjectSource) {
+            if (!src) {
                 var sourceEl = el.querySelector('source[src]');
                 src = sourceEl ? (sourceEl.getAttribute('src') || '') : '';
             }
-            if (!src && !hasObjectSource) return false;
+            if (!src) return false;
             if (el.ended) return false;
             if (!el.paused) return true;                                  // playing
             if (typeof el.currentTime === 'number' && el.currentTime > 0) return true;
@@ -2895,8 +2686,7 @@
         lastSeenHash = hash;
         lastSeenHashAt = now;
         if (prev === null || prev === hash) return;
-        var sampleAge = now - prevAt;
-        if (sampleAge < 0 || sampleAge > MASKED_SAMPLE_MAX_AGE_MS) return;
+        if ((now - prevAt) > MASKED_SAMPLE_MAX_AGE_MS) return;
         if (!isPlaybackRoute(prev) || isPlaybackRoute(hash)) return;
         maskedTransitionUntil = now + MASKED_TRANSITION_MS;
         safe(function () {
@@ -2906,22 +2696,9 @@
         });
     }
 
-    /** @returns {number} Remaining valid masked post-playback time in ms. */
-    function maskedTransitionRemainingMs() {
-        var remaining = maskedTransitionUntil - Date.now();
-        // A wall-clock rollback must not bank this deliberately short window.
-        // The only valid remaining interval is one this process could have
-        // created from the current timeline.
-        if (remaining <= 0 || remaining > MASKED_TRANSITION_MS) {
-            maskedTransitionUntil = 0;
-            return 0;
-        }
-        return remaining;
-    }
-
     /** @returns {boolean} Is the masked post-playback window open right now? */
     function maskedTransitionActive() {
-        return maskedTransitionRemainingMs() > 0;
+        return Date.now() < maskedTransitionUntil;
     }
 
     /**
@@ -3001,8 +2778,7 @@
             // Open modal/dialog: the user is mid-task and probably mid-write.
             if (!screensaver) {
                 var dialogs = document.querySelectorAll(
-                    '.dialog.opened, .actionSheet.opened, dialog[open], ' +
-                    '[role="dialog" i], [role="alertdialog" i], [aria-modal="true" i]'
+                    '.dialog.opened, .actionSheet.opened, [role="dialog"], [aria-modal="true"]'
                 );
                 for (var i = 0; i < dialogs.length; i++) {
                     // Jellyfin and plugins retain closed dialogs in several
@@ -3166,9 +2942,8 @@
      *
      * sessionStorage is normally described as per-tab, but window.open() starts
      * a same-origin child with a COPY of the opener's store. Flip, left-version,
-     * epoch, recovery and session-budget records in that copy describe
-     * observations/navigations the new tab never made. Comparing the copied
-     * identity with the opener lets us
+     * recovery and session-budget records in that copy describe navigations the
+     * new tab never made. Comparing the copied identity with the opener lets us
      * distinguish that first child document from an ordinary reload, on which
      * the child's newly-issued identity must remain stable with all its history.
      * localStorage's budget is intentionally untouched because it is the shared
@@ -3188,26 +2963,7 @@
         }, null);
 
         if (ownId && openerId && ownId === openerId) {
-            // Establish and PROVE the child's distinct identity before touching
-            // any copied safety history. Some embedded storage shims silently
-            // ignore setItem; clearing first in that case leaves the opener ID
-            // in place, so every child reload is mistaken for a fresh clone and
-            // erases history that the child itself subsequently earned.
-            var nextId = newTabId();
-            if (nextId === openerId) nextId += '-child';
-            var identityVerified = safe(function () {
-                ss.setItem(TAB_ID_KEY, nextId);
-                return ss.getItem(TAB_ID_KEY) === nextId;
-            }, false) === true;
-            if (!identityVerified) {
-                safe(function () {
-                    console.debug(LOG, 'kept opener-cloned sessionStorage history because a distinct tab identity could not be verified');
-                });
-                return;
-            }
-            ownId = nextId;
-
-            [FLIP_KEY, LEFT_KEY, EPOCH_KEY, EPOCH_GAP_KEY, RECOVERY_KEY, BUDGET_KEY].forEach(function (key) {
+            [FLIP_KEY, LEFT_KEY, RECOVERY_KEY, BUDGET_KEY].forEach(function (key) {
                 safe(function () {
                     if (typeof ss.removeItem === 'function') ss.removeItem(key);
                 });
@@ -3218,6 +2974,7 @@
                     safe(function () { ss.setItem(key, '[]'); });
                 }
             });
+            ownId = null;
             safe(function () {
                 console.debug(LOG, 'discarded sessionStorage history cloned from the opener tab');
             });
@@ -3270,12 +3027,9 @@
             var list = readable[r].history;
             for (var i = 0; i < list.length; i++) {
                 var stamp = list[i];
-                // Expire only stamps that are definitely older than the
-                // rolling window. A previously-written stamp in our future is
-                // what a backward wall-clock adjustment looks like; it remains
-                // a spent slot. Dropping it would grant exactly the free reload
-                // this fail-closed budget exists to prevent.
-                if (stamp < now - BUDGET_WINDOW_MS) continue;
+                // Keep only live stamps inside the rolling window; drop future
+                // stamps entirely (a clock change must not grant free reloads).
+                if (stamp < now - BUDGET_WINDOW_MS || stamp > now) continue;
                 if (!seen[stamp]) { seen[stamp] = true; combined.push(stamp); }
             }
         }
@@ -3299,9 +3053,10 @@
 
     /**
      * Read a string-array from sessionStorage. sessionStorage — not local — on
-     * purpose: flip diagnostics describe THIS TAB's history, must survive the
-     * reload they explain, and must not leak into a freshly opened tab. Safety
-     * histories use their stricter readers below.
+     * purpose: both of these facts are properties of THIS TAB's history ("this
+     * tab already reloaded for that transition", "this tab already spent its
+     * one recovery"), they must survive the reloads they are policing, and they
+     * must not leak into a tab the user opened fresh.
      * @param {string} key
      * @returns {string[]} Always an array; [] when absent, unreadable or corrupt.
      */
@@ -3315,209 +3070,6 @@
             if (!Array.isArray(parsed)) return [];
             return parsed.filter(function (s) { return typeof s === 'string'; });
         }, []) || [];
-    }
-
-    /**
-     * Normalize an optional opaque process epoch. Epochs intentionally use the
-     * same small identity envelope as versions, but remain a sidecar: callers
-     * never append them to URLs or fold them into generation/cache identity.
-     * JSON epochs must be strings; accepting objects via String() would turn a
-     * malformed response into the shared token "[object Object]".
-     * @param {*} value
-     * @returns {string|null}
-     */
-    function normalizeEpoch(value) {
-        if (typeof value !== 'string' || value.length > 200) return null;
-        var epoch = value.trim();
-        if (!epoch || epoch.charAt(0) === '<') return null;
-        return epoch;
-    }
-
-    /** @returns {boolean} */
-    function validEpochInstanceName(value) {
-        return typeof value === 'string' && value.length > 0 &&
-            value.length <= MAX_EPOCH_INSTANCE_NAME_LENGTH;
-    }
-
-    /**
-     * Strictly read the saturating epoch set. Unlike the diagnostic flip ring,
-     * every malformed or unverifiable state is reported as failure so it can
-     * never authorize a historical generation.
-     * @returns {{ok:boolean,storage:Storage|null,records:Array<string[]>}}
-     */
-    function readEpochSet() {
-        try {
-            var ss = safeStorage('sessionStorage');
-            if (!ss) return { ok: false, storage: null, records: [] };
-            var raw = ss.getItem(EPOCH_KEY);
-            if (raw === null) return { ok: true, storage: ss, records: [] };
-            if (raw.length > MAX_EPOCH_STORAGE_CHARS) {
-                return { ok: false, storage: ss, records: [] };
-            }
-            var parsed = JSON.parse(raw);
-            if (!Array.isArray(parsed) || parsed.length > MAX_EPOCH_RECORDS) {
-                return { ok: false, storage: ss, records: [] };
-            }
-            var seen = Object.create(null);
-            for (var i = 0; i < parsed.length; i++) {
-                var tuple = parsed[i];
-                if (!Array.isArray(tuple) || tuple.length !== 2 ||
-                    !validEpochInstanceName(tuple[0]) ||
-                    normalizeEpoch(tuple[1]) !== tuple[1]) {
-                    return { ok: false, storage: ss, records: [] };
-                }
-                var key = JSON.stringify(tuple);
-                if (seen[key]) return { ok: false, storage: ss, records: [] };
-                seen[key] = true;
-            }
-            return { ok: true, storage: ss, records: parsed };
-        } catch (_) {
-            return { ok: false, storage: null, records: [] };
-        }
-    }
-
-    /** @returns {boolean} */
-    function epochSetContains(records, name, epoch) {
-        for (var i = 0; i < records.length; i++) {
-            if (records[i][0] === name && records[i][1] === epoch) return true;
-        }
-        return false;
-    }
-
-    /**
-     * Add an epoch without eviction and verify the exact serialized write.
-     * `freshOnly` is the historical-rollback claim: an epoch previously seen
-     * at the baseline or spent by an earlier rollback must be refused.
-     * @param {string} name
-     * @param {string} epoch
-     * @param {boolean} freshOnly
-     * @returns {boolean}
-     */
-    function claimEpoch(name, epoch, freshOnly) {
-        if (!validEpochInstanceName(name) || normalizeEpoch(epoch) !== epoch) return false;
-        var current = readEpochSet();
-        if (!current.ok || !current.storage) return false;
-        if (epochSetContains(current.records, name, epoch)) return !freshOnly;
-        if (current.records.length >= MAX_EPOCH_RECORDS) return false;
-
-        try {
-            var next = current.records.slice();
-            next.push([name, epoch]);
-            var serialized = JSON.stringify(next);
-            if (serialized.length > MAX_EPOCH_STORAGE_CHARS) return false;
-            current.storage.setItem(EPOCH_KEY, serialized);
-            if (current.storage.getItem(EPOCH_KEY) !== serialized) return false;
-            var verified = readEpochSet();
-            return verified.ok && verified.records.length === next.length &&
-                epochSetContains(verified.records, name, epoch);
-        } catch (_) {
-            return false;
-        }
-    }
-
-    /** @returns {boolean} */
-    function validEpochGapVersion(value) {
-        return typeof value === 'string' && value.length > 0 && value.length <= 200 &&
-            value.trim() === value && value.charAt(0) !== '<';
-    }
-
-    /**
-     * Strictly read the saturating unknown-baseline coverage-gap set.
-     * @returns {{ok:boolean,storage:Storage|null,records:Array<string[]>}}
-     */
-    function readEpochGapSet() {
-        try {
-            var ss = safeStorage('sessionStorage');
-            if (!ss) return { ok: false, storage: null, records: [] };
-            var raw = ss.getItem(EPOCH_GAP_KEY);
-            if (raw === null) return { ok: true, storage: ss, records: [] };
-            if (raw.length > MAX_EPOCH_GAP_STORAGE_CHARS) {
-                return { ok: false, storage: ss, records: [] };
-            }
-            var parsed = JSON.parse(raw);
-            if (!Array.isArray(parsed) || parsed.length > MAX_EPOCH_GAP_RECORDS) {
-                return { ok: false, storage: ss, records: [] };
-            }
-            var seen = Object.create(null);
-            for (var i = 0; i < parsed.length; i++) {
-                var tuple = parsed[i];
-                if (!Array.isArray(tuple) || tuple.length !== 2 ||
-                    !validEpochInstanceName(tuple[0]) ||
-                    (tuple[1] !== null && !validEpochGapVersion(tuple[1]))) {
-                    return { ok: false, storage: ss, records: [] };
-                }
-                var key = JSON.stringify(tuple);
-                if (seen[key]) return { ok: false, storage: ss, records: [] };
-                seen[key] = true;
-            }
-            return { ok: true, storage: ss, records: parsed };
-        } catch (_) {
-            return { ok: false, storage: null, records: [] };
-        }
-    }
-
-    /** @returns {boolean} */
-    function epochGapContains(records, name, version) {
-        for (var i = 0; i < records.length; i++) {
-            if (records[i][0] === name &&
-                (records[i][1] === null || records[i][1] === version)) return true;
-        }
-        return false;
-    }
-
-    /**
-     * Permanently record incomplete epoch coverage for one running generation.
-     * The gap is a fact about observation history, not about whether the next
-     * navigation succeeds, so watchdog/budget refusal never retracts it.
-     * @returns {boolean}
-     */
-    function claimEpochGaps(gaps) {
-        var current = readEpochGapSet();
-        if (!current.ok || !current.storage) return false;
-        var next = current.records.slice();
-        for (var i = 0; i < gaps.length; i++) {
-            var tuple = gaps[i];
-            if (!Array.isArray(tuple) || tuple.length !== 2 ||
-                !validEpochInstanceName(tuple[0]) ||
-                (tuple[1] !== null && !validEpochGapVersion(tuple[1]))) {
-                return false;
-            }
-            if (!epochGapContains(next, tuple[0], tuple[1])) {
-                if (next.length >= MAX_EPOCH_GAP_RECORDS) return false;
-                next.push([tuple[0], tuple[1]]);
-            }
-        }
-        if (next.length === current.records.length) return true;
-        try {
-            var serialized = JSON.stringify(next);
-            if (serialized.length > MAX_EPOCH_GAP_STORAGE_CHARS) return false;
-            current.storage.setItem(EPOCH_GAP_KEY, serialized);
-            if (current.storage.getItem(EPOCH_GAP_KEY) !== serialized) return false;
-            var verified = readEpochGapSet();
-            if (!verified.ok || verified.records.length !== next.length) return false;
-            for (var j = 0; j < next.length; j++) {
-                if (verified.records[j][0] !== next[j][0] ||
-                    verified.records[j][1] !== next[j][1]) return false;
-            }
-            return true;
-        } catch (_) {
-            return false;
-        }
-    }
-
-    /** @returns {boolean} */
-    function claimEpochGap(name, version) {
-        return claimEpochGaps([[name, version]]);
-    }
-
-    /** @returns {{reliable:boolean,found:boolean}} */
-    function inspectEpochGap(name, version) {
-        if (!validEpochInstanceName(name) || !validEpochGapVersion(version)) {
-            return { reliable: false, found: true };
-        }
-        var current = readEpochGapSet();
-        if (!current.ok) return { reliable: false, found: true };
-        return { reliable: true, found: epochGapContains(current.records, name, version) };
     }
 
     /**
@@ -3552,13 +3104,6 @@
      * @param {string} entry
      */
     function removeFromTabList(key, entry) {
-        if (key === LEFT_KEY) {
-            // LEFT is a safety history, not a diagnostic ring. A failed
-            // watchdog retraction may conservatively leave its marker behind,
-            // but must never reinterpret corrupt/unreadable state as empty.
-            releaseLeftRecord(entry);
-            return;
-        }
         safe(function () {
             var ss = safeStorage('sessionStorage');
             if (!ss) return;
@@ -3583,23 +3128,18 @@
      * @returns {string} The canonical left-version record string.
      */
     function leftRecord(name, version) {
-        // The legacy delimiter form is retained for storage compatibility.
-        // Opaque delimiter collisions can only merge two records into the same
-        // conservative "already left" fact; claimLeftBaselines reports an
-        // existing collision as not-new, so a watchdog never retracts evidence
-        // that predated its own navigation attempt.
         return name + '|' + version;
     }
 
     /**
-     * Remember the directed transition for diagnostics. The authoritative
-     * LEFT safety record is claimed separately, atomically for every pending
-     * instance, before the shared reload is committed.
+     * Remember that this tab reloaded `name` from `from` to `to`: the directed
+     * PAIR (kept for the log message, so a refusal can say what the tab
+     * actually did) and the fact that `from` has now been LEFT (the guard).
      * @param {string} name
      * @param {string} from
      * @param {string} to
-     * @returns {string[][]} The diagnostic [key, entry] records this call newly
-     *   wrote, for the reload-survival watchdog to retract if navigation fails.
+     * @returns {string[][]} The [key, entry] records this call newly wrote, for
+     *   the reload-survival watchdog to retract if the navigation never lands.
      */
     function rememberFlip(name, from, to) {
         // `from === to` is not a transition. It can only be reached from a
@@ -3611,139 +3151,26 @@
         if (pushTabList(FLIP_KEY, flipRecord(name, from, to), MAX_FLIP_RECORDS)) {
             written.push([FLIP_KEY, flipRecord(name, from, to)]);
         }
+        if (pushTabList(LEFT_KEY, leftRecord(name, from), MAX_FLIP_RECORDS)) {
+            written.push([LEFT_KEY, leftRecord(name, from)]);
+        }
         return written;
     }
 
     /**
-     * Validate one canonical LEFT record. Instance/version strings remain
-     * opaque; the delimiter check only rejects malformed stored entries.
-     * @param {*} entry
+     * Has this tab already reloaded AWAY FROM the version it is now being asked
+     * to reload TO? Then the endpoint is oscillating, not releasing — two nodes
+     * behind a round-robin proxy, three replicas with per-container DLL mtimes,
+     * a rolling deploy. Each such reload sits in its own budget window, so the
+     * reload budget can never catch it; this is the only thing that can, and
+     * unlike the pre-2.2 pair test it terminates cycles of any length.
+     * @param {string} name
+     * @param {string} to Candidate version.
      * @returns {boolean}
      */
-    function validLeftRecord(entry) {
-        if (typeof entry !== 'string' || !entry || entry.length > MAX_LEFT_RECORD_LENGTH) {
-            return false;
-        }
-        var divider = entry.indexOf('|');
-        return divider > 0 && divider < entry.length - 1;
-    }
-
-    /**
-     * Strictly read the saturating LEFT set. A malformed or unreadable history
-     * cannot mean "this tab never left that version"; callers fail closed.
-     * @returns {{ok:boolean,storage:Storage|null,records:string[]}}
-     */
-    function readLeftSet() {
-        try {
-            var ss = safeStorage('sessionStorage');
-            if (!ss) return { ok: false, storage: null, records: [] };
-            var raw = ss.getItem(LEFT_KEY);
-            if (raw === null) return { ok: true, storage: ss, records: [] };
-            if (raw.length > MAX_LEFT_STORAGE_CHARS) {
-                return { ok: false, storage: ss, records: [] };
-            }
-            var parsed = JSON.parse(raw);
-            if (!Array.isArray(parsed) || parsed.length > MAX_LEFT_RECORDS) {
-                return { ok: false, storage: ss, records: [] };
-            }
-            var seen = Object.create(null);
-            for (var i = 0; i < parsed.length; i++) {
-                if (!validLeftRecord(parsed[i]) || seen[parsed[i]]) {
-                    return { ok: false, storage: ss, records: [] };
-                }
-                seen[parsed[i]] = true;
-            }
-            return { ok: true, storage: ss, records: parsed };
-        } catch (_) {
-            return { ok: false, storage: null, records: [] };
-        }
-    }
-
-    /**
-     * Has this tab already reloaded away from `to`? `reliable:false` means the
-     * safety history could not be proved and therefore must refuse, including
-     * refusing an epoch override.
-     * @param {string} name
-     * @param {string} to
-     * @returns {{reliable:boolean,found:boolean}}
-     */
-    function inspectLeftVersion(name, to) {
-        if (!to) return { reliable: false, found: true };
-        var current = readLeftSet();
-        if (!current.ok) return { reliable: false, found: true };
-        return {
-            reliable: true,
-            found: current.records.indexOf(leftRecord(name, to)) !== -1
-        };
-    }
-
-    /**
-     * Add every known running baseline in one verified, saturating write. A
-     * page reload departs all registered adopters, including one whose endpoint
-     * response lands during the unload window, so pre-claiming the whole
-     * registry is what makes late observations safe to freeze. No evidence is
-     * evicted. The return lists only records newly added by this attempt so a
-     * failed-navigation watchdog can retract exactly those.
-     * @param {Object[]} instances
-     * @returns {{ok:boolean,added:string[]}}
-     */
-    function claimLeftBaselines(instances) {
-        var current = readLeftSet();
-        if (!current.ok || !current.storage) return { ok: false, added: [] };
-
-        var next = current.records.slice();
-        var added = [];
-        for (var i = 0; i < instances.length; i++) {
-            var p = instances[i];
-            var from = p && p.getBaselineVersion();
-            if (!from) continue;
-            var entry = leftRecord(p.name, from);
-            if (!validLeftRecord(entry)) return { ok: false, added: [] };
-            if (next.indexOf(entry) === -1) {
-                if (next.length >= MAX_LEFT_RECORDS) return { ok: false, added: [] };
-                next.push(entry);
-                added.push(entry);
-            }
-        }
-        if (added.length === 0) return { ok: true, added: [] };
-
-        try {
-            var serialized = JSON.stringify(next);
-            if (serialized.length > MAX_LEFT_STORAGE_CHARS) return { ok: false, added: [] };
-            current.storage.setItem(LEFT_KEY, serialized);
-            if (current.storage.getItem(LEFT_KEY) !== serialized) {
-                return { ok: false, added: [] };
-            }
-            var verified = readLeftSet();
-            if (!verified.ok || verified.records.length !== next.length) {
-                return { ok: false, added: [] };
-            }
-            for (var j = 0; j < next.length; j++) {
-                if (verified.records[j] !== next[j]) return { ok: false, added: [] };
-            }
-            return { ok: true, added: added };
-        } catch (_) {
-            return { ok: false, added: [] };
-        }
-    }
-
-    /** Verified exact removal; failure conservatively leaves the marker. */
-    function releaseLeftRecord(entry) {
-        if (!validLeftRecord(entry)) return false;
-        var current = readLeftSet();
-        if (!current.ok || !current.storage) return false;
-        if (current.records.indexOf(entry) === -1) return true;
-        try {
-            var next = current.records.filter(function (item) { return item !== entry; });
-            var serialized = JSON.stringify(next);
-            current.storage.setItem(LEFT_KEY, serialized);
-            if (current.storage.getItem(LEFT_KEY) !== serialized) return false;
-            var verified = readLeftSet();
-            return verified.ok && verified.records.length === next.length &&
-                verified.records.indexOf(entry) === -1;
-        } catch (_) {
-            return false;
-        }
+    function hasLeftVersion(name, to) {
+        if (!to) return false;
+        return readTabList(LEFT_KEY).indexOf(leftRecord(name, to)) !== -1;
     }
 
     /**
@@ -3762,158 +3189,26 @@
         return '';
     }
 
-    /** @returns {boolean} */
-    function validRecoveryMarker(marker) {
-        return typeof marker === 'string' && marker.length > 0 &&
-            marker.length <= MAX_RECOVERY_MARKER_LENGTH;
-    }
-
     /**
-     * Strictly read the saturating recovery set. A recovery causes a reload, so
-     * unreadable/corrupt state cannot mean "empty": that interpretation is the
-     * exact fail-open that turns a permanent boot mismatch into one reload per
-     * document forever.
-     * @returns {{ok:boolean,storage:Storage|null,records:string[]}}
-     */
-    function readRecoverySet() {
-        try {
-            var ss = safeStorage('sessionStorage');
-            if (!ss) return { ok: false, storage: null, records: [] };
-            var raw = ss.getItem(RECOVERY_KEY);
-            if (raw === null) return { ok: true, storage: ss, records: [] };
-            if (raw.length > MAX_RECOVERY_STORAGE_CHARS) {
-                return { ok: false, storage: ss, records: [] };
-            }
-            var parsed = JSON.parse(raw);
-            if (!Array.isArray(parsed) || parsed.length > MAX_RECOVERY_RECORDS) {
-                return { ok: false, storage: ss, records: [] };
-            }
-            var seen = Object.create(null);
-            for (var i = 0; i < parsed.length; i++) {
-                if (!validRecoveryMarker(parsed[i]) || seen[parsed[i]]) {
-                    return { ok: false, storage: ss, records: [] };
-                }
-                seen[parsed[i]] = true;
-            }
-            return { ok: true, storage: ss, records: parsed };
-        } catch (_) {
-            return { ok: false, storage: null, records: [] };
-        }
-    }
-
-    /**
-     * Claim a named one-shot recovery with an exact verified write. The set is
-     * saturating: it never forgets an older recovery to admit a newer loop.
+     * Claim a named one-shot recovery for this tab, returning false when it was
+     * already spent. Recoveries reload the page to repair a boot that went
+     * wrong; without a per-tab latch a permanently broken endpoint would repair
+     * itself into a reload loop.
      * @param {string} marker
-     * @returns {boolean} True only when this call durably added the marker.
+     * @returns {boolean} True when the caller may proceed.
      */
     function claimRecovery(marker) {
-        if (!validRecoveryMarker(marker)) return false;
-        var current = readRecoverySet();
-        if (!current.ok || !current.storage ||
-            current.records.indexOf(marker) !== -1 ||
-            current.records.length >= MAX_RECOVERY_RECORDS) return false;
-        try {
-            var next = current.records.concat([marker]);
-            var serialized = JSON.stringify(next);
-            if (serialized.length > MAX_RECOVERY_STORAGE_CHARS) return false;
-            current.storage.setItem(RECOVERY_KEY, serialized);
-            if (current.storage.getItem(RECOVERY_KEY) !== serialized) return false;
-            var verified = readRecoverySet();
-            return verified.ok && verified.records.length === next.length &&
-                verified.records.indexOf(marker) !== -1;
-        } catch (_) {
-            return false;
-        }
+        if (readTabList(RECOVERY_KEY).indexOf(marker) !== -1) return false;
+        pushTabList(RECOVERY_KEY, marker, MAX_FLIP_RECORDS);
+        return true;
     }
 
     /**
      * @param {string} marker
-     * @returns {boolean} True when spent OR storage cannot prove it unspent.
+     * @returns {boolean} True when this recovery was already spent in this tab.
      */
     function recoverySpent(marker) {
-        if (!validRecoveryMarker(marker)) return true;
-        var current = readRecoverySet();
-        return !current.ok || current.records.indexOf(marker) !== -1;
-    }
-
-    /**
-     * Recognize a recovery written by the released delimiter encoding and
-     * replace the raw string with a typed LEGACY TOMBSTONE in one verified
-     * write. It cannot be rewritten as the current exact tuple: the old
-     * `kind|name|version` form is ambiguous, so one raw marker may represent
-     * multiple name/version interpretations. The tombstone stays spent for
-     * all of them and is never released by exact current-marker reconvergence.
-     * Replacement preserves saturation capacity and removes raw legacy debris.
-     * Any migration failure is still "spent" — blocking storage cannot earn a
-     * second recovery after upgrade.
-     * @param {string} marker
-     * @param {string} legacyMarker
-     * @returns {boolean}
-     */
-    function recoverySpentWithLegacy(marker, legacyMarker) {
-        if (!validRecoveryMarker(marker) || !validRecoveryMarker(legacyMarker)) return true;
-        var current = readRecoverySet();
-        if (!current.ok || !current.storage) return true;
-        var tombstone = JSON.stringify(['legacy-recovery', legacyMarker]);
-        if (!validRecoveryMarker(tombstone)) return true;
-        var tombstoneIndex = current.records.indexOf(tombstone);
-        var legacyIndex = current.records.indexOf(legacyMarker);
-        if (legacyIndex === -1) {
-            return tombstoneIndex !== -1 || current.records.indexOf(marker) !== -1;
-        }
-
-        try {
-            var next = [];
-            var wroteTombstone = false;
-            for (var i = 0; i < current.records.length; i++) {
-                var item = current.records[i];
-                if (item === legacyMarker || item === tombstone) {
-                    if (!wroteTombstone) {
-                        next.push(tombstone);
-                        wroteTombstone = true;
-                    }
-                } else {
-                    next.push(item);
-                }
-            }
-            var serialized = JSON.stringify(next);
-            if (serialized.length > MAX_RECOVERY_STORAGE_CHARS) return true;
-            current.storage.setItem(RECOVERY_KEY, serialized);
-            if (current.storage.getItem(RECOVERY_KEY) !== serialized) return true;
-            var verified = readRecoverySet();
-            if (!verified.ok || verified.records.length !== next.length) return true;
-            for (var j = 0; j < next.length; j++) {
-                if (verified.records[j] !== next[j]) return true;
-            }
-            return true;
-        } catch (_) {
-            return true;
-        }
-    }
-
-    /**
-     * Release one exact recovery marker after proven reconvergence, with
-     * verified read-back. Other instances/boot identities remain untouched.
-     * @param {string} marker
-     * @returns {boolean}
-     */
-    function releaseRecovery(marker) {
-        if (!validRecoveryMarker(marker)) return false;
-        var current = readRecoverySet();
-        if (!current.ok || !current.storage) return false;
-        if (current.records.indexOf(marker) === -1) return true;
-        try {
-            var next = current.records.filter(function (item) { return item !== marker; });
-            var serialized = JSON.stringify(next);
-            current.storage.setItem(RECOVERY_KEY, serialized);
-            if (current.storage.getItem(RECOVERY_KEY) !== serialized) return false;
-            var verified = readRecoverySet();
-            return verified.ok && verified.records.length === next.length &&
-                verified.records.indexOf(marker) === -1;
-        } catch (_) {
-            return false;
-        }
+        return readTabList(RECOVERY_KEY).indexOf(marker) !== -1;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -4100,38 +3395,6 @@
     }
 
     /**
-     * Identify the source the media element is actually using. srcObject takes
-     * precedence over URL spellings, matching HTMLMediaElement behavior.
-     * WeakMap identity makes replacing one object-backed stream with another
-     * observable without retaining either stream; the generic marker is the
-     * conservative fallback on engines without WeakMap.
-     * @param {HTMLMediaElement} el
-     * @returns {string}
-     */
-    function mediaSourceSignature(el) {
-        var objectSource = el.srcObject;
-        if (objectSource !== null && objectSource !== undefined) {
-            if (mediaObjectSourceIds &&
-                (typeof objectSource === 'object' || typeof objectSource === 'function')) {
-                var objectId = mediaObjectSourceIds.get(objectSource);
-                if (!objectId) {
-                    objectId = nextMediaObjectSourceId++;
-                    mediaObjectSourceIds.set(objectSource, objectId);
-                }
-                return 'object:' + objectId;
-            }
-            return 'object';
-        }
-
-        var src = el.currentSrc || el.getAttribute('src') || '';
-        if (!src) {
-            var sourceEl = el.querySelector('source[src]');
-            src = sourceEl ? (sourceEl.getAttribute('src') || '') : '';
-        }
-        return 'url:' + src;
-    }
-
-    /**
      * A fingerprint of every media element's playback position. Two identical
      * consecutive readings mean nothing about the page's media moved between
      * them — no playback, no seek, no source change.
@@ -4150,7 +3413,7 @@
                 // be what is holding the gate — it does not block — so it has
                 // no business in the fingerprint of what does.
                 if (isAmbientVideo(el)) continue;
-                out += mediaSourceSignature(el) + '@' +
+                out += (el.currentSrc || el.getAttribute('src') || '') + '@' +
                     (el.paused ? 'p' : 'r') + ':' +
                     (typeof el.currentTime === 'number' ? el.currentTime.toFixed(1) : '?') + '|';
             }
@@ -4229,12 +3492,6 @@
         // two engines calling location.reload() is exactly the double-fire the
         // one-navigation-one-slot latch exists to prevent.
         if (handedOff) return;
-        // A blocked/ignored navigation must reconcile a fresh endpoint read
-        // before stale intent is allowed back through the safety gates.
-        if (reloadRevalidationPending) {
-            lastBlockReason = 'reload_revalidation';
-            return;
-        }
 
         // Read the route before anything else decides. This is one of exactly
         // two places the kit samples it (the other is onDiscreteInteraction),
@@ -4242,11 +3499,31 @@
         // moments the engine is awake anyway. See sampleRoute().
         safe(sampleRoute);
 
-        // The navigation is already committed; endpoint decisions are frozen
-        // until it either lands or the survival watchdog reopens this document.
-        // Every baseline that existed at commit was atomically pre-claimed in
-        // LEFT, so there is no unsafe, storage-dependent "ride along" path.
-        if (reloadCommitted) return;
+        // The navigation is already committed; this document is on its way out.
+        // Anything that arms between here and unload is served by the reload
+        // that is already in flight, so it must not reserve a second slot of
+        // the shared budget (nor log a second "reloading to pick up" line).
+        if (reloadCommitted) {
+            // It IS going to be picked up, though — so record its transition
+            // with the same evidence value the committing instances got, or the
+            // flap guard would have no memory of a reload that did happen.
+            var late = pendingInstances();
+            for (var l = 0; l < late.length; l++) {
+                safe(function (p) {
+                    return function () {
+                        console.debug(LOG, 'reload already committed; ' + p.name + ' ' +
+                            p.getBaselineVersion() + ' → ' + p.getLatestVersion() +
+                            ' rides the navigation already in flight.');
+                        noteReloadTransition(p);
+                    };
+                }(late[l]));
+                // Ride-along instances join the disarmed set, so a navigation
+                // that never lands rearms them too.
+                reloadDisarmed.push(late[l]);
+                late[l].updatePending = false;
+            }
+            return;
+        }
 
         var pending = pendingInstances();
         if (pending.length === 0) return;
@@ -4330,65 +3607,7 @@
         lastBlockReason = null;
         clearRetry();
 
-        // Before this page leaves, every non-null process epoch most recently
-        // observed at each running baseline must be durably present. Earlier
-        // onVersion writes are opportunistic; this is the transaction boundary
-        // that repairs a transient silent-noop store or fails closed before it
-        // can make that old process look fresh on a later historical return.
-        var epochHistoryReliable = true;
-        var epochGaps = [];
-        for (var eh = 0; eh < registry.length; eh++) {
-            var coverage = registry[eh].prepareBaselineEpochCoverage();
-            if (!coverage.ok) {
-                epochHistoryReliable = false;
-                break;
-            }
-            if (coverage.gap) epochGaps.push(coverage.gap);
-        }
-        if (epochHistoryReliable && !claimEpochGaps(epochGaps)) epochHistoryReliable = false;
-        if (!epochHistoryReliable) {
-            if (!warnedEpochHistoryRefusal) {
-                warnedEpochHistoryRefusal = true;
-                safe(function () {
-                    console.warn(LOG, 'reload refused because a running baseline process epoch ' +
-                        'could not be durably verified in strict per-tab storage. The pending update ' +
-                        'is kept; storage recovery can safely repair the epoch before a later retry. ' +
-                        '(Warned once.)');
-                });
-            }
-            lastBlockReason = 'epoch_history';
-            scheduleRetry(BUDGET_WINDOW_MS);
-            return;
-        }
-
-        // LEFT is the durable proof that this tab departed each running
-        // generation. A shared page reload departs EVERY registered instance,
-        // not only those whose update triggered it, so atomically pre-claim all
-        // known baselines before spending a reload-budget slot. This also lets
-        // endpoint responses be frozen safely throughout the unload window.
-        var leftClaim = claimLeftBaselines(registry);
-        if (!leftClaim.ok) {
-            if (!warnedSafetyHistoryRefusal) {
-                warnedSafetyHistoryRefusal = true;
-                safe(function () {
-                    console.warn(LOG, 'reload refused because the strict per-tab left-version ' +
-                        'history is unavailable, corrupt, full or not verifiably writable. The ' +
-                        'pending update is kept, but no navigation is safe without durable cycle ' +
-                        'evidence. (Warned once.)');
-                });
-            }
-            lastBlockReason = 'safety_history';
-            scheduleRetry(BUDGET_WINDOW_MS);
-            return;
-        }
-
         if (!reserveReload()) {
-            // The navigation was not authorized, so retract only the LEFT
-            // records this attempt added. A failed removal remains safely
-            // conservative; it can cause refusal, never an unrecorded cycle.
-            for (var lr = 0; lr < leftClaim.added.length; lr++) {
-                releaseLeftRecord(leftClaim.added[lr]);
-            }
             // DEFERRED, NOT DISCARDED. The refusal is a property of a 60-second
             // rolling window (or of storage we could not verify), not of the
             // update — the tab that lost the race is still running stale code
@@ -4413,9 +3632,6 @@
             return;
         }
         warnedBudgetRefusal = false;
-        for (var c = 0; c < leftClaim.added.length; c++) {
-            reloadRecordsWritten.push([LEFT_KEY, leftClaim.added[c]]);
-        }
 
         safe(function () {
             console.log(LOG, 'reloading to pick up: ' + pending.map(function (p) {
@@ -4513,69 +3729,6 @@
     }
 
     /**
-     * Force/join one fresh observation for each rearmed instance, then and only
-     * then reopen the retry ladder. This asynchronous barrier is what prevents
-     * an ignored reload from retrying a target the endpoint already withdrew.
-     * @param {Object[]} instances
-     * @param {boolean} emitWarning
-     */
-    function beginFailedReloadRevalidation(instances, emitWarning) {
-        var unique = [];
-        for (var i = 0; i < instances.length; i++) {
-            if (instances[i] && unique.indexOf(instances[i]) === -1) unique.push(instances[i]);
-        }
-        reloadRevalidationPending = unique.length > 0;
-
-        var tasks = [];
-        for (i = 0; i < unique.length; i++) {
-            var task = safe(unique[i].revalidateFailedReload, Promise.resolve());
-            tasks.push(task && typeof task.then === 'function' ? task : Promise.resolve());
-        }
-
-        var finish = function () {
-            // A newer manager inherited the barrier and owns its replacement
-            // observations; this retired copy must not reopen any engine.
-            if (handedOff) return;
-            reloadRevalidationPending = false;
-            var stillPending = pendingInstances().map(function (p) { return p.name; });
-
-            if (emitWarning && !warnedReloadSurvived) {
-                warnedReloadSurvived = true;
-                safe(function () {
-                    console.warn(LOG, 'location.reload() did not navigate — this document is still here ' +
-                        (RELOAD_SURVIVAL_WATCHDOG_MS / 1000) + 's later, so the host blocked, ignored or ' +
-                        'cancelled the reload. The transition recorded for the navigation that never ' +
-                        'happened was retracted and a fresh endpoint observation was reconciled before ' +
-                        (stillPending.length
-                            ? 'retrying the still-pending update for ' + stillPending.join(', ')
-                            : 'discarding the withdrawn/stale update') + '. One reload-budget slot was ' +
-                        'spent and is not refunded (that is what keeps a host which refuses reloads ' +
-                        'from being asked once a second). (Warned once.)');
-                });
-            }
-
-            blockedRetries = 0;
-            if (stillPending.length > 0) {
-                if (document.visibilityState === 'hidden') {
-                    // scheduleRetry() begins with clearRetry(), which cancels
-                    // the hidden-settle shot. A retry then sees
-                    // `hidden_settling` and assumes that shot still exists,
-                    // stranding the update until visibility wakes the page.
-                    // Re-enter the dedicated hidden scheduler instead,
-                    // preserving the original hiddenSince deadline.
-                    clearRetry();
-                    onHidden();
-                } else {
-                    scheduleRetry();
-                }
-            } else releaseEngineIfIdle();
-        };
-
-        if (tasks.length === 0) finish();
-        else Promise.all(tasks).then(finish, finish);
-    }
-
-    /**
      * The watchdog fired (or reload() threw): this document is still here, so
      * the navigation did not happen. Undo the commit completely — re-open the
      * latch, re-arm the instances it disarmed, retract the flip records this
@@ -4597,27 +3750,30 @@
         }
         reloadRecordsWritten = [];
 
+        var rearmed = [];
         for (i = 0; i < reloadDisarmed.length; i++) {
             var p = reloadDisarmed[i];
             if (registry.indexOf(p) === -1) continue;
             p.updatePending = true;
+            if (rearmed.indexOf(p.name) === -1) rearmed.push(p.name);
         }
         reloadDisarmed = [];
 
-        // Start the async barrier before anything can re-enter tryReload(). A
-        // response retained during commit is applied; otherwise this forces a
-        // fresh ordinary poll. Revalidate every live instance: a non-triggering
-        // sibling may have had its confirmation response frozen during commit
-        // even though it was never in reloadDisarmed. Fetch failure
-        // conservatively keeps any old intent.
-        beginFailedReloadRevalidation(registry.slice(), true);
-
-        // A registration or transferred instance that arrived during the
-        // unload window was deliberately never started. The navigation failed,
-        // so it now joins the live document exactly once.
-        for (i = 0; i < registry.length; i++) {
-            if (registry[i].startDeferredByReload) safe(registry[i].start);
+        if (!warnedReloadSurvived) {
+            warnedReloadSurvived = true;
+            safe(function () {
+                console.warn(LOG, 'location.reload() did not navigate — this document is still here ' +
+                    (RELOAD_SURVIVAL_WATCHDOG_MS / 1000) + 's later, so the host blocked, ignored or ' +
+                    'cancelled the reload. Re-arming the pending update' +
+                    (rearmed.length ? ' for ' + rearmed.join(', ') : '') + ' and retrying; the version ' +
+                    'transition recorded for the navigation that never happened has been retracted. ' +
+                    'One reload-budget slot was spent and is not refunded (that is what keeps a host ' +
+                    'which refuses reloads from being asked once a second). (Warned once.)');
+            });
         }
+
+        blockedRetries = 0;
+        scheduleRetry();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -4774,11 +3930,7 @@
          * instance's boot seed disagrees with its own version endpoint.
          * @type {string}
          */
-        // Typed JSON encoding keeps opaque names/versions unambiguous. A
-        // delimiter concatenation lets ("a|b","c") collide with
-        // ("a","b|c") and one instance release another's recovery.
-        var BOOT_SEED_MARKER = JSON.stringify(['boot-seed', name, cfg.bootVersion]);
-        var LEGACY_BOOT_SEED_MARKER = 'boot-seed|' + name + '|' + cfg.bootVersion;
+        var BOOT_SEED_MARKER = 'boot-seed|' + name + '|' + cfg.bootVersion;
 
         /**
          * Should we trust `bootVersion`? The seed is the identity of the build
@@ -4797,10 +3949,7 @@
          * the pre-2.1 first-poll baseline. Cost of a misconfiguration: one
          * reload per tab session, then correct (if blind-spotted) behaviour.
          */
-        var bootSeedRejected = !!cfg.bootVersion &&
-            recoverySpentWithLegacy(BOOT_SEED_MARKER, LEGACY_BOOT_SEED_MARKER);
-        /** @type {boolean} This document durably claimed its boot-mismatch recovery. */
-        var bootRecoveryAuthorized = false;
+        var bootSeedRejected = !!cfg.bootVersion && recoverySpent(BOOT_SEED_MARKER);
         // A restored instance already logged this (or not) under the previous
         // manager; a handoff must not re-say anything the page has been told.
         if (bootSeedRejected && !restored) {
@@ -4821,16 +3970,10 @@
          * never detected. Otherwise established by the first successful fetch.
          */
         var baselineVersion = (cfg.bootVersion && !bootSeedRejected) ? cfg.bootVersion : null;
-        /** @type {string|null} Latest process epoch observed at the baseline generation. */
-        var baselineEpoch = null;
-        /** @type {boolean} A baseline epoch was missing or could not be durably claimed. */
-        var baselineEpochCoverageUnreliable = false;
         /** @type {boolean} True while the baseline is the un-confirmed document seed. */
         var baselineFromBootSeed = baselineVersion !== null;
         /** @type {string|null} Most recent version seen on this instance's server endpoint. */
         var latestVersion = baselineVersion;
-        /** @type {string|null} Most recent valid HTTP-JSON process epoch. */
-        var latestEpoch = null;
         /** @type {number} Timestamp of the last version fetch attempt. */
         var lastFetchAt = 0;
         /** @type {number|null} setTimeout handle for this instance's poll loop. */
@@ -4842,43 +3985,16 @@
          * @type {string|null}
          */
         var notifiedVersion = null;
-        /** @type {string|null} Epoch paired with notifiedVersion. */
-        var notifiedEpoch = null;
         /**
-         * The non-baseline generation whose bounded tuple evidence is being
-         * collected. A different generation or the baseline clears it; process
-         * epochs rotating within this generation retain independent counts.
+         * A version seen once that differs from the baseline, waiting for a
+         * second consecutive sighting before it is believed. Reset the moment
+         * the baseline is observed again, which is what makes an A→B→A→B
+         * oscillation never confirm anything.
          * @type {string|null}
          */
         var candidateVersion = null;
-        /** @type {string|null} Epoch on the most recent candidate observation. */
-        var candidateEpoch = null;
-        /**
-         * Bounded evidence retained across polls for the same generation. A
-         * round-robin A/B/A/B can therefore confirm each exact tuple without
-         * permitting an unbounded stream of one-use random epochs to grow
-         * memory or ever confirm.
-         * @type {Array<{epoch:string,count:number}>}
-         */
-        var candidateEpochEvidence = [];
-        /** @type {number} Consecutive missing/invalid-epoch observations. */
-        var candidateLegacyStreak = 0;
-        /** @type {boolean} Whether the previous candidate observation had an epoch. */
-        var lastCandidateHadEpoch = false;
-        /** @type {string|null} Historical pair claimed before its reload was armed. */
-        var authorizedVersion = null;
-        /** @type {string|null} Historical pair claimed before its reload was armed. */
-        var authorizedEpoch = null;
         /** @type {number|null} One-shot timer for the confirmation fetch. */
         var confirmTimer = null;
-        /** @type {number} Wall-clock deadline for the live confirmation timer. */
-        var confirmDueAt = 0;
-        /** @type {boolean} A handoff carried an earned confirmation not yet fired. */
-        var confirmationPendingFromHandoff = false;
-        /** @type {boolean} A discarded in-flight observation needs one replacement. */
-        var observationPendingFromHandoff = false;
-        /** @type {boolean} The discarded observation was the earned confirmation. */
-        var observationPendingWasConfirm = false;
         /**
          * True once this poll cycle has spent its one confirmation fetch. Reset
          * by any ordinary (non-confirmation) poll, which is what starts a new
@@ -4894,12 +4010,6 @@
          * @type {Promise<void>|null}
          */
         var fetchInFlight = null;
-        /** @type {boolean} Whether fetchInFlight is the earned confirmation. */
-        var fetchInFlightIsConfirm = false;
-        /** @type {{version:string,epoch:string|null}|null} Latest response frozen during navigation. */
-        var deferredReloadObservation = null;
-        /** @type {boolean} Suppress immediate navigation while watchdog state is reconciled. */
-        var reconcilingReloadObservation = false;
         /** @type {boolean} One-shot latch for the flap-disarm log line. */
         var warnedFlap = false;
         /** @type {string|null} The version pair auto-reload was disarmed for. */
@@ -4960,23 +4070,6 @@
             return out;
         }
 
-        /** @returns {Array<{epoch:string,count:number}>} */
-        function copyCandidateEpochEvidence(value) {
-            if (!Array.isArray(value)) return [];
-            var out = [];
-            for (var i = 0; i < value.length && out.length < MAX_CANDIDATE_EPOCHS; i++) {
-                var item = value[i];
-                var epoch = item && normalizeEpoch(item.epoch);
-                if (!epoch || (item.count !== 1 && item.count !== 2)) continue;
-                var duplicate = false;
-                for (var j = 0; j < out.length; j++) {
-                    if (out[j].epoch === epoch) { duplicate = true; break; }
-                }
-                if (!duplicate) out.push({ epoch: epoch, count: item.count });
-            }
-            return out;
-        }
-
         /** @returns {Object} Immutable-by-copy result for handoff observers. */
         function entryChainSummary() {
             return {
@@ -5000,36 +4093,12 @@
         // ── Handoff: resume the previous manager's instance, don't restart it ──
         if (restored) {
             baselineVersion = typeof restore.baselineVersion === 'string' ? restore.baselineVersion : null;
-            baselineEpoch = normalizeEpoch(restore.baselineEpoch);
-            baselineEpochCoverageUnreliable = restore.baselineEpochCoverageUnreliable === true;
             baselineFromBootSeed = restore.baselineFromBootSeed === true;
             latestVersion = typeof restore.latestVersion === 'string' ? restore.latestVersion : baselineVersion;
-            latestEpoch = normalizeEpoch(restore.latestEpoch);
             notifiedVersion = typeof restore.notifiedVersion === 'string' ? restore.notifiedVersion : null;
-            notifiedEpoch = normalizeEpoch(restore.notifiedEpoch);
             candidateVersion = typeof restore.candidateVersion === 'string' ? restore.candidateVersion : null;
-            candidateEpoch = normalizeEpoch(restore.candidateEpoch);
-            candidateEpochEvidence = copyCandidateEpochEvidence(restore.candidateEpochEvidence);
-            candidateLegacyStreak = typeof restore.candidateLegacyStreak === 'number' &&
-                restore.candidateLegacyStreak > 0 ? Math.min(2, restore.candidateLegacyStreak) : 0;
-            lastCandidateHadEpoch = restore.lastCandidateHadEpoch === true;
-            observationPendingFromHandoff = restore.observationInFlight === true;
-            observationPendingWasConfirm = observationPendingFromHandoff &&
-                restore.observationInFlightIsConfirm === true;
-            confirmationPendingFromHandoff = !observationPendingFromHandoff &&
-                restore.confirmationPending === true;
-            confirmDueAt = typeof restore.confirmDueAt === 'number' && isFinite(restore.confirmDueAt)
-                ? restore.confirmDueAt : 0;
-            authorizedVersion = typeof restore.authorizedVersion === 'string'
-                ? restore.authorizedVersion : null;
-            authorizedEpoch = normalizeEpoch(restore.authorizedEpoch);
-            if (!authorizedVersion || !authorizedEpoch) {
-                authorizedVersion = null;
-                authorizedEpoch = null;
-            }
             lastFetchAt = typeof restore.lastFetchAt === 'number' ? restore.lastFetchAt : 0;
             bootSeedRejected = restore.bootSeedRejected === true;
-            bootRecoveryAuthorized = restore.bootRecoveryAuthorized === true;
             // One-shot latches, so the page is not told the same thing twice by
             // two different copies of the same kit.
             warnedFlap = restore.warnedFlap === true;
@@ -5037,17 +4106,6 @@
             warnedFetchFailure = restore.warnedFetchFailure === true;
             warnedConfirmChurn = restore.warnedConfirmChurn === true;
             confirmSpentThisCycle = restore.confirmSpentThisCycle === true;
-            if (restore.deferredReloadObservation &&
-                typeof restore.deferredReloadObservation.version === 'string') {
-                var restoredDeferredVersion = restore.deferredReloadObservation.version;
-                if (restoredDeferredVersion && restoredDeferredVersion.length <= 200 &&
-                    restoredDeferredVersion.charAt(0) !== '<') {
-                    deferredReloadObservation = {
-                        version: restoredDeferredVersion,
-                        epoch: normalizeEpoch(restore.deferredReloadObservation.epoch)
-                    };
-                }
-            }
             // Entry-chain progress. `entriesStarted` is the load-bearing one:
             // loadEntries() is a one-shot latched on it, so carrying it across
             // is what stops a handoff from re-executing a collection's entry
@@ -5118,8 +4176,7 @@
          *   • ?_=<timestamp>      — defeats caches that ignore no-store anyway
          *                           (some proxies, some embedded WebViews).
          *
-         * @returns {Promise<{version:string,epoch:string|null}>} Resolves to a
-         *   non-empty generation plus an optional HTTP-JSON process sidecar.
+         * @returns {Promise<string>} Resolves to a non-empty version string.
          */
         function fetchVersion() {
             lastFetchAt = Date.now();
@@ -5129,19 +4186,9 @@
                     Promise.resolve()
                         .then(function () { return cfg.getVersion(); })
                         .then(function (v) {
-                            if (typeof v !== 'string') {
-                                throw new Error('getVersion() returned a non-string version');
-                            }
-                            var raw = v;
-                            if (raw.length > 200) {
-                                throw new Error('getVersion() result does not look like a version');
-                            }
-                            var s = raw.trim();
+                            var s = String(v == null ? '' : v).trim();
                             if (!s) throw new Error('getVersion() returned an empty version');
-                            if (s.charAt(0) === '<') {
-                                throw new Error('getVersion() result does not look like a version');
-                            }
-                            return { version: s, epoch: null };
+                            return s;
                         }),
                     VERSION_FETCH_TIMEOUT_MS,
                     'getVersion()');
@@ -5157,220 +4204,40 @@
             var controller = safe(function () {
                 return typeof AbortController === 'function' ? new AbortController() : null;
             }, null);
-            var fetchAbandoned = false;
-            var cancelLockedBody = null;
             var init = { cache: 'no-store', credentials: 'same-origin' };
             if (controller) init.signal = controller.signal;
             return withTimeout(fetch(url, init)
                 .then(function (res) {
-                    // With no AbortController, headers may arrive only after
-                    // withTimeout has already abandoned this attempt. Do not
-                    // start a reader (or legacy response.text()) at that point:
-                    // release the still-unlocked body and keep the late chain
-                    // inert instead of leaking work behind the settled poll.
-                    if (fetchAbandoned) {
-                        cancelUnreadResponseBody(res);
-                        throw new Error('version fetch completed after timeout');
-                    }
-                    if (!res.ok) {
-                        // A response promise settles as soon as its headers
-                        // arrive. Abort here as well as on timeout so an error
-                        // endpoint with an endless body cannot keep the
-                        // connection occupied after we reject its status.
-                        if (controller) controller.abort();
-                        cancelUnreadResponseBody(res);
-                        throw new Error('HTTP ' + res.status);
-                    }
-                    return readBoundedVersionResponse(res, function () {
-                        if (controller) controller.abort();
-                    }, function (cancel) {
-                        cancelLockedBody = cancel;
-                    });
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    return res.text();
                 })
                 .then(function (text) {
                     var value = text;
-                    var epoch = null;
                     if (cfg.versionJsonField) {
                         var parsed = JSON.parse(text);
                         value = parsed ? parsed[cfg.versionJsonField] : '';
-                        if (cfg.versionEpochJsonField) {
-                            epoch = normalizeEpoch(parsed
-                                ? parsed[cfg.versionEpochJsonField] : null);
-                            }
-                        }
-                    if (typeof value !== 'string') {
-                        throw new Error('version response does not contain a string version');
                     }
-                    var s = value.trim();
+                    var s = String(value == null ? '' : value).trim();
                     if (!s) throw new Error('empty version response');
                     // Guard against an HTML error page being read as a "version".
                     if (s.length > 200 || s.charAt(0) === '<') throw new Error('version response does not look like a version');
-                    return { version: s, epoch: epoch };
+                    return s;
                 }),
                 VERSION_FETCH_TIMEOUT_MS,
                 'version fetch',
-                function () {
-                    fetchAbandoned = true;
-                    if (controller) controller.abort();
-                    if (cancelLockedBody) safe(cancelLockedBody, null);
-                });
-        }
-
-        /**
-         * Cancel a response whose stream has not been locked by our reader.
-         * This is the legacy fallback when AbortController is unavailable.
-         * @param {Response} response
-         */
-        function cancelUnreadResponseBody(response) {
-            safe(function () {
-                var body = response && response.body;
-                if (!body || body.locked || typeof body.cancel !== 'function') return;
-                var cancellation = body.cancel();
-                if (cancellation && typeof cancellation.catch === 'function') {
-                    cancellation.catch(function () {});
-                }
-            }, null);
-        }
-
-        /**
-         * Read a version response without letting an unauthenticated endpoint,
-         * broken proxy, or HTML error stream allocate without bound.
-         * Modern Jellyfin browsers expose a ReadableStream. A legacy no-stream
-         * fallback is used only for an identity response with a finite, bounded
-         * Content-Length; compressed or indeterminate responses fail closed
-         * because response.text() would otherwise inflate/buffer without a
-         * enforceable decoded-size bound.
-         *
-         * @param {Response} response
-         * @param {() => void} abort
-         * @param {(cancel: () => void) => void} [registerCancellation]
-         * @returns {Promise<string>}
-         */
-        function readBoundedVersionResponse(response, abort, registerCancellation) {
-            var declaredHeader = response.headers && response.headers.get
-                ? response.headers.get('Content-Length')
-                : null;
-            var encodingHeader = response.headers && response.headers.get
-                ? response.headers.get('Content-Encoding')
-                : null;
-            var declaredText = declaredHeader === null ? '' : String(declaredHeader).trim();
-            var declared = /^\d+$/.test(declaredText) ? Number(declaredText) : NaN;
-            if (isFinite(declared) && declared > MAX_VERSION_RESPONSE_BYTES) {
-                safe(abort, null);
-                cancelUnreadResponseBody(response);
-                return Promise.reject(new Error('version response exceeds size limit'));
-            }
-
-            var body = response.body;
-            if (!body || typeof body.getReader !== 'function') {
-                if (!isFinite(declared) || declared < 0
-                    || (encodingHeader && String(encodingHeader).toLowerCase() !== 'identity')) {
-                    safe(abort, null);
-                    return Promise.reject(new Error(
-                        'version response cannot be read with a bounded fallback'));
-                }
-                return response.text()
-                    .then(function (text) {
-                        if (text.length > MAX_VERSION_RESPONSE_BYTES) {
-                            safe(abort, null);
-                            throw new Error('version response exceeds size limit');
-                        }
-                        return text;
-                    })
-                    .catch(function (error) {
-                        safe(abort, null);
-                        throw error;
-                    });
-            }
-
-            var reader = body.getReader();
-            var decoder = safe(function () {
-                return typeof TextDecoder === 'function'
-                    ? new TextDecoder('utf-8', { fatal: true })
-                    : null;
-            }, null);
-            var byteCount = 0;
-            var text = '';
-            var bytes = decoder ? null : [];
-            var cancelled = false;
-
-            function cancelReader() {
-                if (cancelled) return;
-                cancelled = true;
-                safe(function () {
-                    var cancellation = reader.cancel();
-                    if (cancellation && typeof cancellation.catch === 'function') {
-                        cancellation.catch(function () {});
-                    }
-                }, null);
-            }
-
-            if (registerCancellation) {
-                safe(function () { registerCancellation(cancelReader); }, null);
-            }
-
-            function cancelOversized() {
-                safe(abort, null);
-                cancelReader();
-                throw new Error('version response exceeds size limit');
-            }
-
-            function readNext() {
-                return reader.read().then(function (part) {
-                    if (part.done) {
-                        if (decoder) {
-                            text += decoder.decode();
-                        } else {
-                            var encoded = '';
-                            for (var i = 0; i < bytes.length; i++) {
-                                encoded += '%' + ('0' + bytes[i].toString(16)).slice(-2);
-                            }
-                            try {
-                                text = decodeURIComponent(encoded);
-                            } catch (e) {
-                                safe(abort, null);
-                                throw new Error('version response is not valid UTF-8');
-                            }
-                        }
-                        return text;
-                    }
-
-                    var chunk = part.value;
-                    byteCount += chunk && typeof chunk.byteLength === 'number'
-                        ? chunk.byteLength
-                        : 0;
-                    if (byteCount > MAX_VERSION_RESPONSE_BYTES) {
-                        return cancelOversized();
-                    }
-
-                    if (decoder) {
-                        text += decoder.decode(chunk, { stream: true });
-                    } else {
-                        for (var i = 0; i < chunk.byteLength; i++) {
-                            bytes.push(chunk[i]);
-                        }
-                    }
-                    return readNext();
-                });
-            }
-
-            return readNext().catch(function (error) {
-                safe(abort, null);
-                cancelReader();
-                throw error;
-            });
+                function () { if (controller) controller.abort(); });
         }
 
         /** Cancel a pending candidate-confirmation fetch. */
         function clearConfirmTimer() {
             if (confirmTimer !== null) { clearTimeout(confirmTimer); confirmTimer = null; }
-            confirmDueAt = 0;
         }
 
         /**
-         * Ask for one prompt follow-up observation. Scheduled rather than
-         * waiting for the next ordinary poll, so stable candidates confirm in
-         * ~VERSION_CONFIRM_MS instead of a whole pollSeconds.
+         * Ask for the second consecutive observation that promotes a candidate
+         * into a real update. Scheduled rather than waiting for the next
+         * ordinary poll, so confirmation costs ~VERSION_CONFIRM_MS instead of a
+         * whole pollSeconds.
          *
          * BOUNDED TO ONE PER POLL CYCLE (2.1.1). The confirmation poll is
          * forced, so it also skips MIN_FETCH_GAP_MS; before the bound, a
@@ -5379,8 +4246,8 @@
          * new candidate on every confirmation and produced a self-sustaining
          * 1.5s fetch loop — ~40x the configured cadence, forever, while never
          * confirming anything. Now the FIRST sighting in a cycle earns one
-         * confirmation; if that confirmation is still unconfirmed, the kit
-         * stops chasing and waits for the ordinary poll, which
+         * confirmation; if that confirmation brings back a THIRD distinct
+         * value, the kit stops chasing and waits for the ordinary poll, which
          * opens the next cycle.
          */
         function scheduleConfirm() {
@@ -5390,8 +4257,8 @@
                 if (!warnedConfirmChurn) {
                     warnedConfirmChurn = true;
                     safe(function () {
-                        console.warn(LOG, TAG, 'the version source remained unconfirmed after its ' +
-                            'one prompt follow-up within this poll cycle. Not ' +
+                        console.warn(LOG, TAG, 'the version source returned a THIRD distinct identity ' +
+                            'within one poll cycle — that is an unstable source, not a release. Not ' +
                             'scheduling another confirmation; waiting for the next ordinary poll ' +
                             '(one confirmation per cycle). Serve one identity per release across all ' +
                             'nodes. (Warned once.)');
@@ -5400,60 +4267,10 @@
                 return;
             }
             confirmSpentThisCycle = true;
-            confirmDueAt = Date.now() + VERSION_CONFIRM_MS;
             confirmTimer = setTimeout(function () {
                 confirmTimer = null;
-                confirmDueAt = 0;
                 safe(function () { poll(true, true); });
             }, VERSION_CONFIRM_MS);
-        }
-
-        /**
-         * Re-arm a confirmation timer already earned under the previous
-         * manager. This is not a new confirmation cycle: confirmSpentThisCycle
-         * remains true and the eventual fetch is still marked `isConfirm`.
-         * Hidden tabs keep zero timers; their ordinary wake poll re-observes the
-         * retained candidate evidence instead.
-         */
-        function resumeTransferredConfirmation() {
-            if (!confirmationPendingFromHandoff) return;
-            if (cfg.mode === 'off' || candidateVersion === null) {
-                confirmationPendingFromHandoff = false;
-                confirmDueAt = 0;
-                return;
-            }
-            if (document.visibilityState === 'hidden') return;
-
-            var delay = confirmDueAt > 0
-                ? Math.max(0, confirmDueAt - Date.now()) : VERSION_CONFIRM_MS;
-            confirmationPendingFromHandoff = false;
-            confirmDueAt = Date.now() + delay;
-            confirmTimer = setTimeout(function () {
-                confirmTimer = null;
-                confirmDueAt = 0;
-                safe(function () { poll(true, true); });
-            }, delay);
-        }
-
-        /**
-         * Replace exactly one request whose response was orphaned by handoff.
-         * A confirmation remains a confirmation (it does not open/grant a new
-         * cycle). Hidden tabs retain the intent with zero timers until wake().
-         * @returns {boolean} True when a visible replacement was started.
-         */
-        function resumeTransferredObservation() {
-            if (!observationPendingFromHandoff) return false;
-            if (cfg.mode === 'off') {
-                observationPendingFromHandoff = false;
-                observationPendingWasConfirm = false;
-                return false;
-            }
-            if (document.visibilityState === 'hidden') return false;
-            var wasConfirm = observationPendingWasConfirm;
-            observationPendingFromHandoff = false;
-            observationPendingWasConfirm = false;
-            safe(function () { poll(true, wasConfirm); });
-            return true;
         }
 
         /**
@@ -5469,8 +4286,7 @@
          * @param {string} version The version the endpoint has recovered to.
          */
         function recoverUnversionedBoot(version) {
-            var marker = JSON.stringify(['unversioned-entries', name]);
-            var legacyMarker = 'unversioned-entries|' + name;
+            var marker = 'unversioned-entries|' + name;
             if (cfg.mode !== 'auto') {
                 safe(function () {
                     console.warn(LOG, TAG, 'entries loaded UNVERSIONED and the version endpoint has ' +
@@ -5479,7 +4295,7 @@
                 });
                 return;
             }
-            if (recoverySpentWithLegacy(marker, legacyMarker) || !claimRecovery(marker)) {
+            if (!claimRecovery(marker)) {
                 safe(function () {
                     console.log(LOG, TAG, 'entries loaded UNVERSIONED again; this tab has already spent ' +
                         'its one recovery reload this session — not reloading (a dead endpoint must not loop).');
@@ -5493,290 +4309,128 @@
             });
             inst.updatePending = true;
             blockedRetries = 0;
-            if (!reconcilingReloadObservation) safe(tryReload);
-        }
-
-        /** Clear all in-memory candidate evidence for the current generation. */
-        function resetCandidateEvidence() {
-            candidateVersion = null;
-            candidateEpoch = null;
-            candidateEpochEvidence = [];
-            candidateLegacyStreak = 0;
-            lastCandidateHadEpoch = false;
+            safe(tryReload);
         }
 
         /**
-         * A claim proves one historical generation is a fresh server
-         * incarnation. The proof survives process-epoch rotation for that same
-         * generation; a different generation disarms the in-memory intent while
-         * the durable proving epoch remains consumed.
-         */
-        function clearEpochAuthorization() {
-            if (!authorizedVersion || !authorizedEpoch) return;
-            authorizedVersion = null;
-            authorizedEpoch = null;
-            if (inst.updatePending) {
-                inst.updatePending = false;
-                releaseEngineIfIdle();
-            }
-        }
-
-        /**
-         * Re-verify the latest process epoch observed while this baseline was
-         * running. This is called at reload preflight even when an earlier
-         * opportunistic claim appeared to succeed, so corrupt/full/unreadable
-         * storage at the transaction boundary remains fail-closed.
-         * @returns {{ok:boolean,gap:string[]|null}}
-         */
-        function prepareBaselineEpochCoverage() {
-            // A sibling can commit the shared page reload while this instance's
-            // first fetch is still unresolved. No exact LEFT generation can be
-            // written in that case, so persist the collision-free null
-            // tombstone; all later auto candidates for this name must refuse.
-            if (baselineVersion === null) return { ok: true, gap: [name, null] };
-            if (baselineEpochCoverageUnreliable || baselineEpoch === null) {
-                return { ok: true, gap: [name, baselineVersion] };
-            }
-            if (claimEpoch(name, baselineEpoch, false)) {
-                return { ok: true, gap: null };
-            }
-            // Once a concrete baseline epoch could not be durably verified,
-            // later replica observations cannot prove that particular process
-            // was ever remembered. Latch the incomplete-history fact and use
-            // the permanent generation gap; never let storage recovery erase
-            // the failed observation.
-            baselineEpochCoverageUnreliable = true;
-            return { ok: true, gap: [name, baselineVersion] };
-        }
-
-        /** @returns {boolean} */
-        function ensureBaselineEpochRecorded() {
-            var coverage = prepareBaselineEpochCoverage();
-            return coverage.ok && (!coverage.gap || claimEpochGaps([coverage.gap]));
-        }
-
-        /**
-         * Record one candidate tuple and decide whether it has two sightings.
-         * Valid epochs accumulate independently for one generation, allowing a
-         * finite round-robin to converge. Missing epochs keep legacy consecutive
-         * confirmation, but can never override the historical-version guard.
+         * Called with each successfully fetched version for THIS instance.
+         *
+         * Shape of the decision, in order:
+         *   1. no baseline yet          → this fetch establishes it,
+         *   2. version === baseline     → nothing new; clear any candidate,
+         *   3. first sighting of a new  → hold it as a CANDIDATE and confirm,
+         *   4. second consecutive sight → announce, then (auto) arm the reload.
          * @param {string} version
-         * @param {string|null} epoch
-         * @returns {boolean}
          */
-        function observeCandidate(version, epoch) {
-            if (candidateVersion !== version) {
-                resetCandidateEvidence();
-                candidateVersion = version;
-            }
-            candidateEpoch = epoch;
-
-            if (epoch) {
-                candidateLegacyStreak = 0;
-                lastCandidateHadEpoch = true;
-                var evidence = null;
-                for (var i = 0; i < candidateEpochEvidence.length; i++) {
-                    if (candidateEpochEvidence[i].epoch === epoch) {
-                        evidence = candidateEpochEvidence[i];
-                        break;
-                    }
-                }
-                if (!evidence) {
-                    if (candidateEpochEvidence.length < MAX_CANDIDATE_EPOCHS) {
-                        candidateEpochEvidence.push({ epoch: epoch, count: 1 });
-                    }
-                    scheduleConfirm();
-                    return false;
-                }
-                if (evidence.count < 2) evidence.count++;
-                return evidence.count >= 2;
-            }
-
-            candidateLegacyStreak = lastCandidateHadEpoch
-                ? 1 : Math.min(2, candidateLegacyStreak + 1);
-            lastCandidateHadEpoch = false;
-            if (candidateLegacyStreak < 2) {
-                scheduleConfirm();
-                return false;
-            }
-            return true;
-        }
-
-        /**
-         * Called with each successfully fetched generation/epoch observation.
-         * @param {{version:string,epoch:string|null}} observation
-         */
-        function onVersion(observation) {
+        function onVersion(version) {
             // A fetch this closure started before a handoff can only land after
-            // it. The replacement owns the decision and its own request.
+            // it. The instance that took over owns the decision now (and has
+            // its own request in flight); acting on it here would arm a reload
+            // engine that has been retired, against a baseline nobody reads.
             if (deactivated) return;
-            // Once navigation is committed every running baseline was already
-            // pre-claimed. Retain only the one single-flight response that can
-            // land in this window, then reconcile it if the watchdog proves
-            // navigation failed. Dropping it can re-arm a stale target forever.
-            if (reloadCommitted) {
-                if (observation && typeof observation.version === 'string') {
-                    deferredReloadObservation = {
-                        version: observation.version,
-                        epoch: normalizeEpoch(observation.epoch)
-                    };
-                }
-                return;
-            }
 
-            var version = observation.version;
-            var epoch = normalizeEpoch(observation.epoch);
-            if (authorizedVersion && authorizedVersion !== version) {
-                clearEpochAuthorization();
-            }
-
-            // First success establishes the build this tab is running. Its
-            // epoch is consumed as baseline-seen, but never changes that build.
+            // First success establishes the baseline: "this is the build this tab
+            // is running". It is deliberately NOT the newest version — it is the
+            // one whose assets are already in memory.
             if (baselineVersion === null) {
-                if (bootSeedRejected && cfg.bootVersion && version === cfg.bootVersion) {
-                    if (releaseRecovery(BOOT_SEED_MARKER)) bootSeedRejected = false;
-                }
                 baselineVersion = version;
                 latestVersion = version;
-                baselineEpoch = epoch;
-                latestEpoch = epoch;
-                // Missing is itself an observation we can never prove was
-                // covered later: a same-generation response with a concrete
-                // epoch may be a different replica/process. Latch the gap now
-                // so that later good observations cannot erase that history.
-                if (!epoch || !claimEpoch(name, epoch, false)) {
-                    baselineEpochCoverageUnreliable = true;
-                }
                 safe(function () { console.log(LOG, TAG, 'version resolved:', version); });
+                // ...unless the assets already in memory went out unversioned,
+                // in which case "the version we just resolved" describes the
+                // server, not this tab.
                 if (entriesStarted && !entriesVersioned) recoverUnversionedBoot(version);
                 return;
             }
 
             latestVersion = version;
-            latestEpoch = epoch;
 
             if (version === baselineVersion) {
-                resetCandidateEvidence();
+                // The baseline is confirmed by the server. Anything we were
+                // holding as a candidate was a blip (or a flap): drop it, so a
+                // later sighting has to earn two consecutive observations again.
+                candidateVersion = null;
                 clearConfirmTimer();
-                baselineEpoch = epoch;
-                if (!epoch || !claimEpoch(name, epoch, false)) {
-                    baselineEpochCoverageUnreliable = true;
-                }
-                if (baselineFromBootSeed) {
-                    // A mismatch may already have claimed its one recovery on
-                    // this same document. Exact reconvergence retracts that
-                    // episode before the boot-seed latch is cleared, so a later
-                    // legitimate rollback from this generation starts fresh.
-                    if (!bootRecoveryAuthorized || releaseRecovery(BOOT_SEED_MARKER)) {
-                        bootRecoveryAuthorized = false;
-                        baselineFromBootSeed = false;
-                    }
-                }
+                if (baselineFromBootSeed) baselineFromBootSeed = false;
 
-                // RETRACTED UPDATE. The endpoint returned to what this tab runs.
-                // A same-generation restart is still recorded above, with no
-                // reload, so that epoch cannot later authorize a rollback.
-                if (notifiedVersion !== null && notifiedVersion !== version) {
-                    var hadPendingUpdate = inst.updatePending;
-                    if (hadPendingUpdate) inst.updatePending = false;
+                // RETRACTED UPDATE. The server has come back to the build this
+                // tab is already running, so a still-armed reload no longer
+                // describes reality — the operator rolled the deploy back while
+                // the reload was refused by a gate (a paused video, an open
+                // dialog, the budget). Left armed it would eventually reload
+                // the tab for nothing, logging "X → X" and spending a budget
+                // slot, in every open tab. Mirrors the reference's watermark
+                // convergence (client-refresh.js: `if (next.BuildId ===
+                // loadedBuildId) pendingSources.delete('plugin')`).
+                //
+                // Gated on notifiedVersion so the UNVERSIONED-BOOT recovery —
+                // which legitimately arms a reload while version ===
+                // baselineVersion, and never announces a version — is not
+                // cancelled by the very poll that recovered it.
+                if (inst.updatePending && notifiedVersion !== null && notifiedVersion !== version) {
+                    inst.updatePending = false;
                     var retracted = notifiedVersion;
                     notifiedVersion = null;
-                    notifiedEpoch = null;
                     safe(function () {
                         console.log(LOG, TAG, 'update ' + retracted + ' was RETRACTED — the endpoint ' +
                             'reports ' + version + ' again, which is what this tab is running. ' +
                             'Disarming the pending reload; a genuine later release re-arms normally.');
                     });
-                    if (hadPendingUpdate) releaseEngineIfIdle();
+                    releaseEngineIfIdle();
                 }
                 return;
             }
 
-            if (!observeCandidate(version, epoch)) {
-                // A different unconfirmed generation supersedes an already
-                // pending target. Do not reload for the stale watermark while
-                // the replacement is still earning its second observation.
-                if (inst.updatePending && notifiedVersion !== null &&
-                    notifiedVersion !== version) {
-                    inst.updatePending = false;
-                    releaseEngineIfIdle();
-                }
+            // A candidate must be seen TWICE IN A ROW before it is believed.
+            // One observation is not evidence of a release: a version source
+            // that alternates between two nodes' build identities would
+            // otherwise reload this tab once per poll, forever, with every
+            // single reload comfortably inside its own budget window.
+            if (version !== candidateVersion) {
+                candidateVersion = version;
                 safe(function () {
                     console.debug(LOG, TAG, 'candidate version ' + version + ' (baseline ' +
-                        baselineVersion + ')' + (epoch ? ' at epoch ' + epoch : '') +
-                        ' — confirming before acting on it');
+                        baselineVersion + ') — confirming before acting on it');
                 });
+                scheduleConfirm();
                 return;
             }
             clearConfirmTimer();
 
-            // The old LEFT guard remains authoritative. A historical target is
-            // allowed only after its exact epoch pair confirmed and a fresh
-            // strict-storage claim succeeded BEFORE updatePending is armed.
-            var leftCheck = cfg.mode === 'auto'
-                ? inspectLeftVersion(name, version)
-                : { reliable: true, found: false };
-            var leftBefore = cfg.mode === 'auto' && leftCheck.found;
-            // An instance-wide null tombstone has no exact LEFT generation to
-            // key off, so strict gap history is consulted for EVERY auto
-            // candidate. Unreadable history must likewise refuse: the missing
-            // fact could be precisely such an unresolved-departure tombstone.
-            var gapCheck = cfg.mode === 'auto'
-                ? inspectEpochGap(name, version)
-                : { reliable: true, found: false };
-            var gapBefore = cfg.mode === 'auto' && gapCheck.found;
-            var historicalEvidenceReliable = leftCheck.reliable && gapCheck.reliable;
-            var epochOverride = false;
-            if (leftBefore && historicalEvidenceReliable && !gapCheck.found &&
-                authorizedVersion === version) {
-                // The claimed epoch proved that this historical GENERATION is
-                // a fresh server incarnation. It is evidence, not part of the
-                // release identity: replica epoch rotation for the same
-                // generation must not disarm the already-pending rollback or
-                // consume every node's epoch while a safety gate is blocking.
-                epochOverride = true;
-            } else if (leftBefore && historicalEvidenceReliable && !gapCheck.found && epoch &&
-                ensureBaselineEpochRecorded() && claimEpoch(name, epoch, true)) {
-                authorizedVersion = version;
-                authorizedEpoch = epoch;
-                epochOverride = true;
+            // Confirmed. A boot seed that survives its first confirmed
+            // disagreement has done its job: it is a real update, not a
+            // provenance mismatch. Remember the attempt so that if the reload
+            // brings back the SAME boot identity still disagreeing, the next
+            // page discards the seed instead of reloading again.
+            if (baselineFromBootSeed) {
+                safe(function () { claimRecovery(BOOT_SEED_MARKER); });
             }
-            var flapRefused = (leftBefore || gapBefore) && !epochOverride;
 
-            // A boot mismatch spends its one recovery only when AUTO mode has
-            // an otherwise eligible target it is actually prepared to reload.
-            // Notify/off observations and a flap/strict-history refusal must
-            // not consume a recovery navigation that never occurs.
-            var bootRecoveryRefused = false;
-            if (cfg.mode === 'auto' && !flapRefused &&
-                baselineFromBootSeed && !bootRecoveryAuthorized) {
-                bootRecoveryAuthorized = claimRecovery(BOOT_SEED_MARKER);
-                bootRecoveryRefused = !bootRecoveryAuthorized;
-            }
+            // Decide the flap refusal BEFORE announcing (2.3.0). The full
+            // explanation below is once-gated on purpose — it is a paragraph —
+            // but the one-line "update available" announcement is NOT: a tab
+            // sitting behind a flapping endpoint keeps meeting new candidate
+            // identities and logs that line for each of them. Before 2.3.0 the
+            // line carried no hint that the kit had latched, so a support log
+            // read as "the kit sees updates and does nothing", forever, with
+            // the single warning explaining why scrolled far out of view.
+            // Same fact, same line, every time.
+            var flapRefused = cfg.mode === 'auto' && hasLeftVersion(name, version);
 
             var firstAnnouncement = version !== notifiedVersion;
             if (firstAnnouncement) {
                 notifiedVersion = version;
-                notifiedEpoch = epoch;
+                // A genuinely new update earns a fresh 1Hz retry allowance.
+                // Repeat sightings of the SAME pending update deliberately do
+                // not, so a tab parked on a video cannot be made to tick at 1Hz
+                // for eternity — those polls re-test the gate directly instead.
                 blockedRetries = 0;
                 safe(function () {
                     console.log(LOG, TAG, 'update available: ' + baselineVersion + ' → ' + version +
-                        (bootRecoveryRefused
-                            ? ' — auto-reload REFUSED: the boot-seed mismatch recovery could not ' +
-                              'be durably claimed in strict per-tab storage'
-                            : flapRefused
-                            ? ' — auto-reload REFUSED: ' +
-                              (historicalEvidenceReliable && leftBefore && !gapCheck.found
-                                  ? 'this tab has already reloaded AWAY FROM ' + version +
-                                    ', so the version source is flapping, not releasing ' +
-                                    '(see the one "version FLAP" warning for the full explanation)'
-                                  : gapCheck.reliable && gapCheck.found
-                                  ? 'this tab previously reloaded with incomplete or unresolved ' +
-                                    'process-epoch coverage for this instance, so no later epoch can ' +
-                                    'prove the target generation fresh'
-                                  : 'the strict per-tab left-version history is unavailable or ' +
-                                    'the epoch-gap history is unavailable/corrupt, so the target ' +
-                                    'cannot be proved safe')
+                        (flapRefused
+                            ? ' — auto-reload REFUSED: this tab has already reloaded AWAY FROM ' +
+                              version + ', so the version source is flapping, not releasing ' +
+                              '(see the one "version FLAP" warning for the full explanation)'
                             : ''));
                 });
                 if (cfg.onUpdateAvailable) {
@@ -5784,78 +4438,44 @@
                 }
             }
 
+            // 'notify' and 'off' stop here — a notify instance NEVER triggers the
+            // shared reload; its callback above already fired.
             if (cfg.mode !== 'auto') return;
 
-            if (bootRecoveryRefused) {
-                inst.updatePending = false;
-                return;
-            }
-
+            // Has this tab already reloaded AWAY FROM the version it is now
+            // being asked to go back to? Then the endpoint is oscillating and
+            // reloading again just walks back — over two identities or twenty.
             if (flapRefused) {
+                // ALWAYS current (2.3.0). This used to live inside the
+                // once-only warning block, so state() kept reporting the FIRST
+                // refused pair while later versions were being refused for the
+                // same reason — a snapshot that named a transition the kit was
+                // no longer talking about. The paragraph below stays once-only;
+                // the diagnostic field tracks the latest refusal.
                 flapDisarmedFor = baselineVersion + ' ⇄ ' + version;
                 if (!warnedFlap) {
                     warnedFlap = true;
                     safe(function () {
                         var went = flipDestinationFrom(name, version);
-                        console.warn(LOG, TAG, historicalEvidenceReliable && leftBefore && !gapCheck.found
-                            ? 'version FLAP: this tab already reloaded away from ' + version +
-                              (went ? ' (' + version + ' → ' + went + ')' : '') +
-                              ', and the endpoint now reports ' + version + ' again. That is an ' +
-                              'unstable version source, not a release — auto-reload is refused for ' +
-                              'every version this tab has already left unless a fresh, exact process ' +
-                              'epoch is safely claimed. Serve one generation per release across all nodes.'
-                            : gapCheck.reliable && gapCheck.found
-                            ? 'generation ' + version + ' was refused because this tab previously ' +
-                              'reloaded with incomplete or unresolved process-epoch coverage for ' +
-                              'this instance. A later epoch cannot distinguish a fresh process from ' +
-                              'one that may already have run.'
-                            : 'generation ' + version + ' was refused because strict ' +
-                              'per-tab LEFT/epoch-gap history is unavailable or corrupt. An epoch ' +
-                              'cannot override safety evidence the tab cannot verify.');
+                        console.warn(LOG, TAG, 'version FLAP: this tab already reloaded away from ' +
+                            version + (went ? ' (' + version + ' → ' + went + ')' : '') +
+                            ', and the endpoint now reports ' + version + ' again. That is an unstable ' +
+                            'version source, not a release — auto-reload is refused for every version ' +
+                            'this tab has already left, so an oscillation over any number of node ' +
+                            'identities stops here. Serve one identity per release across all nodes.');
                     });
                 }
                 inst.updatePending = false;
                 return;
             }
 
-            if (epochOverride) flapDisarmedFor = null;
+            // Arm (or RE-arm). Re-arming matters: a reload refused by the
+            // budget keeps updatePending set and is retried by the engine, but
+            // a reload abandoned any other way must be recoverable by the very
+            // next successful poll — which is exactly what the README promises
+            // and what checkNow() is for.
             if (!inst.updatePending) inst.updatePending = true;
-            if (!reconcilingReloadObservation) safe(tryReload);
-        }
-
-        /**
-         * Revalidate stale intent after a reload the watchdog disproved. Apply
-         * a response that landed during commit; otherwise force/join one fresh
-         * ordinary poll. The suppression flag spans the whole promise so that
-         * a confirmed result updates intent but cannot navigate mid-recovery.
-         * Fetch failure leaves the rearmed pending intent intact.
-         * @returns {Promise<void>}
-         */
-        function revalidateFailedReload() {
-            reconcilingReloadObservation = true;
-            if (deferredReloadObservation) {
-                var observation = deferredReloadObservation;
-                deferredReloadObservation = null;
-                try {
-                    onVersion(observation);
-                } finally {
-                    reconcilingReloadObservation = false;
-                }
-                return Promise.resolve();
-            }
-
-            var task;
-            try {
-                task = poll(true, false);
-            } catch (_) {
-                reconcilingReloadObservation = false;
-                return Promise.resolve();
-            }
-            return Promise.resolve(task).then(function () {
-                reconcilingReloadObservation = false;
-            }, function () {
-                reconcilingReloadObservation = false;
-            });
+            safe(tryReload);
         }
 
         /**
@@ -5868,7 +4488,6 @@
          */
         function poll(force, isConfirm) {
             if (deactivated) return Promise.resolve();
-            if (reloadCommitted) return Promise.resolve();
             if (cfg.mode === 'off') return Promise.resolve();
             // Forced checks bypass the spacing floor, not single-flight. They
             // join the active request so an older response cannot arrive last
@@ -5877,15 +4496,12 @@
             if (!force && (Date.now() - lastFetchAt) < MIN_FETCH_GAP_MS) return Promise.resolve();
 
             if (!isConfirm) confirmSpentThisCycle = false;
-            fetchInFlightIsConfirm = isConfirm === true;
             fetchInFlight = fetchVersion().then(function (v) {
                 fetchInFlight = null;
-                fetchInFlightIsConfirm = false;
                 warnedFetchFailure = false;
                 safe(function () { onVersion(v); });
             }, function (err) {
                 fetchInFlight = null;
-                fetchInFlightIsConfirm = false;
                 // Version-source failure is NOT an update. Warn once, stay quiet
                 // afterwards (a 404'd version.json must not spam the console every
                 // minute), never reload, and keep polling — the endpoint may come
@@ -5964,20 +4580,6 @@
         /** Visibility catch-up for this instance (shared onWake fans out to these). */
         function wake() {
             if (cfg.mode === 'off') return;
-            if (observationPendingFromHandoff) {
-                var wasConfirm = observationPendingWasConfirm;
-                observationPendingFromHandoff = false;
-                observationPendingWasConfirm = false;
-                confirmationPendingFromHandoff = false;
-                confirmDueAt = 0;
-                safe(startPolling);
-                safe(function () { poll(true, wasConfirm); });
-                return;
-            }
-            // Hidden handoffs intentionally did not recreate their timer. The
-            // wake poll below is the carried confirmation observation.
-            confirmationPendingFromHandoff = false;
-            confirmDueAt = 0;
             safe(startPolling);
             safe(function () { poll(); });
         }
@@ -5991,24 +4593,11 @@
          * @returns {boolean}
          */
         function isStylesheetUrl(url) {
-            return /\.css$/i.test(String(url).split(/[?#]/)[0]);
+            return /\.css(?:$|[?#])/i.test(String(url).split('#')[0]);
         }
 
         /**
-         * Is this URL explicitly a JavaScript module by path extension?
-         * Split at query/fragment BEFORE testing: `/loader?file=x.mjs` is a
-         * classic loader endpoint, while `/entry.MJS?x=1#y` is a module.
-         * @param {string} url
-         * @returns {boolean}
-         */
-        function isModuleScriptUrl(url) {
-            return /\.mjs$/i.test(String(url).split(/[?#]/)[0]);
-        }
-
-        /**
-         * Append ONE entry and resolve when its element has settled. A module
-         * element's load event covers synchronous graph evaluation but not a
-         * top-level-await continuation; see the bootstrap contract above.
+         * Append ONE entry and resolve when it has settled.
          *
          * An ordinary load error is fail-open: the chain continues so a 404 on
          * entry 2 does not strand entries 3..n. A TIMEOUT is different. Removing
@@ -6066,14 +4655,12 @@
                     // unversioned — the availability path.
                     var finalUrl = versionedUrl(url, true);
                     var isCss = isStylesheetUrl(url);
-                    var isModule = !isCss && isModuleScriptUrl(url);
                     // Note: document.createElement is already the shared wrapper
                     // here, so these elements carry the interceptors too. That is
                     // harmless and intentional — the URL already has v=, so the
                     // page-level matcher sees it and passes through rather than
                     // double-versioning (or cross-versioning by another instance).
                     el = document.createElement(isCss ? 'link' : 'script');
-                    if (isModule) el.type = 'module';
                     el.onload = function () { finish('loaded'); };
                     el.onerror = function () { finish('load_error'); };
                     if (isCss) {
@@ -6081,9 +4668,9 @@
                         el.href = finalUrl;
                     } else {
                         // Dynamically-created scripts default to "force async".
-                        // Explicitly clearing it is a backstop; the sequential
-                        // load-settlement chain below is the primary guarantee.
-                        // Native module TLA can still outlive the load event.
+                        // Explicitly clearing it keeps document-order execution even
+                        // if a caller ever appends several at once; the sequential
+                        // chain below is the primary guarantee, this is the backstop.
                         el.async = false;
                         el.src = finalUrl;
                     }
@@ -6099,9 +4686,8 @@
         }
 
         /**
-         * Load every configured entry one at a time, once. Load settlement and
-         * synchronous evaluation are ordered WITHIN this instance; native
-         * module TLA may continue afterwards. Other instances run concurrently.
+         * Load every configured entry, strictly in order, once. (Order holds
+         * WITHIN this instance; other instances' chains run concurrently.)
          * @returns {Promise<Object>}
          */
         function loadEntries() {
@@ -6228,11 +4814,6 @@
 
         /** Kick this instance off (called exactly once, at registration). */
         function start() {
-            if (reloadCommitted) {
-                inst.startDeferredByReload = true;
-                return;
-            }
-            inst.startDeferredByReload = false;
             if (restored) { resume(); return; }
 
             // The first fetch is immediate so the version is known as early as
@@ -6286,13 +4867,11 @@
          *     re-logged.
          */
         function resume() {
-            var replacedObservation = safe(resumeTransferredObservation, false) === true;
-            if (!replacedObservation) safe(resumeTransferredConfirmation);
             if (bootstrapMode && !entriesStarted) { safe(bootstrapEntries); return; }
             if (baselineVersion === null) {
                 if (cfg.mode !== 'off') {
                     safe(startPolling);
-                    if (!replacedObservation) safe(function () { poll(true); });
+                    safe(function () { poll(true); });
                 } else {
                     safe(function () { return firstVersionAttempt(); });
                 }
@@ -6326,9 +4905,8 @@
          * The live internals a handoff carries to the instance that replaces
          * this one (see createInstance's `restore`). Everything here is state
          * that exists ONLY in this closure — the reload budget and the per-tab
-         * flip/left/epoch/gap/recovery records are already in session/localStorage
-         * under page-wide keys (BUDGET_KEY, FLIP_KEY, LEFT_KEY, EPOCH_KEY,
-         * EPOCH_GAP_KEY, RECOVERY_KEY) and are
+         * flip/left/recovery records are already in session/localStorage under
+         * page-wide keys (BUDGET_KEY, FLIP_KEY, LEFT_KEY, RECOVERY_KEY) and are
          * keyed by INSTANCE NAME, which the handoff preserves, so that history
          * survives on its own and must not be copied through here.
          * @returns {Object}
@@ -6336,32 +4914,12 @@
         function transferState() {
             return {
                 baselineVersion: baselineVersion,
-                baselineEpoch: baselineEpoch,
-                baselineEpochCoverageUnreliable: baselineEpochCoverageUnreliable,
                 baselineFromBootSeed: baselineFromBootSeed,
                 latestVersion: latestVersion,
-                latestEpoch: latestEpoch,
                 notifiedVersion: notifiedVersion,
-                notifiedEpoch: notifiedEpoch,
                 candidateVersion: candidateVersion,
-                candidateEpoch: candidateEpoch,
-                candidateEpochEvidence: copyCandidateEpochEvidence(candidateEpochEvidence),
-                candidateLegacyStreak: candidateLegacyStreak,
-                lastCandidateHadEpoch: lastCandidateHadEpoch,
-                confirmationPending: confirmTimer !== null || confirmationPendingFromHandoff,
-                confirmDueAt: confirmDueAt,
-                observationInFlight: fetchInFlight !== null || observationPendingFromHandoff,
-                observationInFlightIsConfirm: fetchInFlight !== null
-                    ? fetchInFlightIsConfirm : observationPendingWasConfirm,
-                deferredReloadObservation: deferredReloadObservation
-                    ? { version: deferredReloadObservation.version,
-                        epoch: deferredReloadObservation.epoch }
-                    : null,
-                authorizedVersion: authorizedVersion,
-                authorizedEpoch: authorizedEpoch,
                 lastFetchAt: lastFetchAt,
                 bootSeedRejected: bootSeedRejected,
-                bootRecoveryAuthorized: bootRecoveryAuthorized,
                 updatePending: inst.updatePending,
                 warnedFlap: warnedFlap,
                 flapDisarmedFor: flapDisarmedFor,
@@ -6428,16 +4986,9 @@
                 entryScripts: cfg.entryScripts.slice(),
                 version: baselineVersion,
                 latestVersion: latestVersion,
-                baselineEpoch: baselineEpoch,
-                baselineEpochCoverageUnreliable: baselineEpochCoverageUnreliable,
-                latestEpoch: latestEpoch,
                 bootVersion: cfg.bootVersion,
                 baselineFromBootSeed: baselineFromBootSeed,
-                bootRecoveryAuthorized: bootRecoveryAuthorized,
                 candidateVersion: candidateVersion,
-                candidateEpoch: candidateEpoch,
-                candidateEpochEvidence: copyCandidateEpochEvidence(candidateEpochEvidence),
-                authorizedEpoch: authorizedEpoch,
                 flapDisarmedFor: flapDisarmedFor,
                 updatePending: inst.updatePending,
                 blockReason: isPending ? blockReasonFor(idleWindow) : null,
@@ -6461,29 +5012,6 @@
         }
 
         /**
-         * Resolve the replacement for this handle after its manager handed the
-         * page to a newer copy. The manager delegate is the compatibility
-         * authority already used by the frozen page-level API; asking it by
-         * the instance's preserved name keeps retained handles on that same
-         * path without waking any entry point in this deactivated closure.
-         *
-         * Current handles deliberately return null here and stay entirely
-         * local. Retired managers already forward chained handoffs, so this
-         * lookup reaches the newest replacement no matter how many kit copies
-         * take the page over.
-         * @returns {Object|null}
-         */
-        function forwardedHandle() {
-            if (!deactivated) return null;
-            return safe(function () {
-                var d = forwardTo();
-                if (!d || typeof d.get !== 'function') return null;
-                var current = d.get(name);
-                return current && current !== handle ? current : null;
-            }, null) || null;
-        }
-
-        /**
          * The PUBLIC per-instance handle (returned by manager.get(name) and by
          * __registerInstance). Frozen: it is API surface shared across kit
          * versions.
@@ -6492,17 +5020,9 @@
             /** @type {string} */
             name: name,
             /** @returns {string|null} The version this tab is running (this instance's baseline). */
-            get version() {
-                var current = forwardedHandle();
-                return current ? safe(function () { return current.version; }, baselineVersion)
-                    : baselineVersion;
-            },
+            get version() { return baselineVersion; },
             /** @returns {string|null} The newest version seen on this instance's server. */
-            get latestVersion() {
-                var current = forwardedHandle();
-                return current ? safe(function () { return current.latestVersion; }, latestVersion)
-                    : latestVersion;
-            },
+            get latestVersion() { return latestVersion; },
             /**
              * Version a URL with THIS instance's version/patterns. `force` skips
              * the pattern match (still never clobbers an existing v=).
@@ -6510,28 +5030,15 @@
              * @param {boolean} [force]
              * @returns {string}
              */
-            versionedUrl: function (url, force) {
-                var current = forwardedHandle();
-                return current
-                    ? safe(function () { return current.versionedUrl(url, force); }, url)
-                    : versionedUrl(url, force);
-            },
+            versionedUrl: versionedUrl,
             /**
              * Force an immediate version check for this instance, bypassing the
              * min-gap floor.
              * @returns {Promise<void>}
              */
-            checkNow: function () {
-                var current = forwardedHandle();
-                return current
-                    ? safe(function () { return current.checkNow(); }, Promise.resolve())
-                    : safe(function () { return poll(true); }, Promise.resolve());
-            },
+            checkNow: function () { return safe(function () { return poll(true); }, Promise.resolve()); },
             /** @returns {Object} Snapshot of this instance's state. */
-            state: function () {
-                var current = forwardedHandle();
-                return current ? safe(function () { return current.state(); }, {}) : safe(state, {});
-            }
+            state: function () { return safe(state, {}); }
         });
 
         var inst = {
@@ -6539,8 +5046,6 @@
             cfg: cfg,
             /** @type {boolean} True once an update has been detected and the shared engine should act. */
             updatePending: restored && restore.updatePending === true,
-            /** @type {boolean} Registration/resume frozen behind a committed reload. */
-            startDeferredByReload: false,
             /** @type {string} KIT_VERSION of the copy whose tag registered this adoption. */
             sourceKitVersion: sourceKitVersion,
             /** @type {boolean} Whether this instance's entry chain was suppressed as a duplicate. */
@@ -6550,15 +5055,12 @@
             versionedUrl: versionedUrl,
             getBaselineVersion: function () { return baselineVersion; },
             getLatestVersion: function () { return latestVersion; },
-            prepareBaselineEpochCoverage: prepareBaselineEpochCoverage,
-            ensureBaselineEpochRecorded: ensureBaselineEpochRecorded,
             poll: poll,
             // The shared engine only ever calls this to park a hidden tab, so
             // it gets the full suspend (poll timer AND confirmation timer).
             stopPolling: suspend,
             wake: wake,
             start: start,
-            revalidateFailedReload: revalidateFailedReload,
             state: state,
             // Handoff surface (REGISTRATION CONTRACT clause 7).
             deactivate: deactivate,
@@ -6574,8 +5076,8 @@
     /**
      * Apply the singular 1.x window config on behalf of a copy that could not
      * read it itself — a pre-2.1 copy (which passes no `__singularApplied`
-     * marker), a module-loaded copy, or a copy executed from eval'd text, where
-     * currentScript is null and the window config is the documented path.
+     * marker) or a copy executed from eval'd text, where currentScript is null
+     * and the window config is the documented escape hatch.
      *
      * It is a FALLBACK, not the primary path (2.1+ copies read the global at
      * their own tag position, which is the only reading that attributes a
@@ -6644,11 +5146,10 @@
 
         // 1.x back-compat. A 2.1+ copy has already SETTLED the singular global
         // for its own tag (merged or deliberately declined) and says so.
-        // Anything else — a pre-2.1 copy, a module-loaded copy, or an eval'd
-        // copy with no currentScript — is offered it here, under the identical
-        // rule and the identical once-only claim (see
-        // applySingularWindowConfigFallback). For a single-plugin page that is
-        // exactly the 1.x behaviour:
+        // Anything else — a pre-2.1 copy, an eval'd copy with no currentScript —
+        // is offered it here, under the identical rule and the identical
+        // once-only claim (see applySingularWindowConfigFallback). For a
+        // single-plugin page that is exactly the 1.x behaviour:
         // window > data-* > defaults.
         if (!raw.__singularApplied) applySingularWindowConfigFallback(merged);
 
@@ -7018,14 +5519,10 @@
      *      be uninstalled (see installCreateElementHook): third-party code may
      *      already hold a reference to it, and restoring the native function
      *      would strip whatever the new manager installs. So it flips to a
-     *      permanent inert-delegate mode instead: calls in the wrapper chain
-     *      are handled by the new wrapper, while calls through a retained
-     *      2.4.6+ wrapper hand their brand-new elements to the current manager
-     *      through __interceptCreatedElement. A direct retained reference to a
-     *      pre-2.4.6 wrapper stays inert because that code cannot retroactively
-     *      gain the bridge. Elements an old wrapper already handed out keep
-     *      their accessors and delegate the versioning DECISION to the current
-     *      manager (versionUrlForPage).
+     *      permanent inert-delegate mode instead: brand-new elements are left
+     *      entirely to the new manager's wrapper, while elements this copy
+     *      already handed out keep their accessors and delegate the versioning
+     *      DECISION to the current manager (versionUrlForPage).
      *   3. RETURNS everything the new manager needs to continue: every instance
      *      with its live state, and the shared page state that exists only in
      *      memory. Note what is NOT here: the reload budget and the per-tab
@@ -7087,8 +5584,6 @@
                 lastBlockReason: lastBlockReason,
                 warnedOverlap: warnedOverlap,
                 warnedBudgetRefusal: warnedBudgetRefusal,
-                warnedSafetyHistoryRefusal: warnedSafetyHistoryRefusal,
-                warnedEpochHistoryRefusal: warnedEpochHistoryRefusal,
                 warnedReloadSurvived: warnedReloadSurvived,
                 warnedMediaStarvation: warnedMediaStarvation,
                 mediaBlockSince: mediaBlockSince,
@@ -7107,7 +5602,6 @@
                 // already in flight — and the disarmed set has to travel with
                 // it so a navigation the host blocks can still be recovered.
                 reloadCommitted: reloadCommitted,
-                reloadRevalidationPending: reloadRevalidationPending,
                 reloadsSurvived: reloadsSurvived,
                 reloadRecordsWritten: reloadRecordsWritten.slice(),
                 reloadDisarmed: (function () {
@@ -7197,13 +5691,6 @@
     function applyHandoffTransfer(t) {
         if (!t || typeof t !== 'object') return false;
 
-        var s = (t.shared && typeof t.shared === 'object') ? t.shared : {};
-        // Freeze adopted starts before creating any replacement closure. The
-        // old manager may already have committed navigation; starting a poll
-        // during adoption would recreate the unload-window ride-along race.
-        if (s.reloadCommitted === true) reloadCommitted = true;
-        if (s.reloadRevalidationPending === true) reloadRevalidationPending = true;
-
         var adopted = [];
         var list = Array.isArray(t.instances) ? t.instances : [];
         var i;
@@ -7219,6 +5706,7 @@
         var count = Number(t.anonymousCount);
         if (isFinite(count) && count > anonymousCount) anonymousCount = count;
 
+        var s = (t.shared && typeof t.shared === 'object') ? t.shared : {};
         if (typeof s.lastInteractionAt === 'number' && isFinite(s.lastInteractionAt)) {
             lastInteractionAt = s.lastInteractionAt;
         }
@@ -7229,8 +5717,6 @@
         // not a per-copy allowance.
         warnedOverlap = s.warnedOverlap === true;
         warnedBudgetRefusal = s.warnedBudgetRefusal === true;
-        warnedSafetyHistoryRefusal = s.warnedSafetyHistoryRefusal === true;
-        warnedEpochHistoryRefusal = s.warnedEpochHistoryRefusal === true;
         warnedReloadSurvived = s.warnedReloadSurvived === true;
         warnedMediaStarvation = s.warnedMediaStarvation === true;
         if (typeof s.mediaBlockSince === 'number') mediaBlockSince = s.mediaBlockSince;
@@ -7271,9 +5757,6 @@
                 }
             }
             armReloadSurvivalWatchdog();
-        }
-        if (s.reloadRevalidationPending === true && s.reloadCommitted !== true) {
-            beginFailedReloadRevalidation(registry.slice(), s.warnedReloadSurvived !== true);
         }
 
         safe(function () {
@@ -7352,28 +5835,6 @@
             var d = forwardTo();
             return d ? (safe(function () { return Number(d.__contractVersion); }, CONTRACT_VERSION) || CONTRACT_VERSION)
                 : CONTRACT_VERSION;
-        },
-
-        /**
-         * Internal handoff bridge for a 2.4.6+ createElement wrapper retained
-         * before this manager became current. Additive and forward-stable:
-         * bridge-aware retired managers call it only for an element their
-         * captured wrapper just created, and the newest manager installs
-         * exactly its own accessors.
-         * @param {Element} el
-         * @param {*} tagName
-         * @returns {boolean}
-         */
-        __interceptCreatedElement: function (el, tagName) {
-            var d = forwardTo();
-            if (d) {
-                return safe(function () {
-                    return d.__interceptCreatedElement(el, tagName) === true;
-                }, false) === true;
-            }
-            return safe(function () {
-                return interceptCreatedElement(el, tagName);
-            }, false) === true;
         },
 
         /**
@@ -7557,7 +6018,6 @@
                         ? ((strictestIdleInstance(pending) || {}).name || null)
                         : null,
                     reloadCommitted: reloadCommitted,
-                    reloadRevalidationPending: reloadRevalidationPending,
                     reloadsSurvived: reloadsSurvived,
                     blockedRetries: blockedRetries,
                     // MANAGER LINEAGE. 0 handoffs is the ordinary page (one kit
@@ -7585,7 +6045,7 @@
                     // MASKED POST-PLAYBACK WINDOW (2.4.0): >0 means the user
                     // just left the video route and the idle requirement is
                     // relaxed to the settle floor for that many more ms.
-                    maskedTransitionMsLeft: maskedTransitionRemainingMs(),
+                    maskedTransitionMsLeft: Math.max(0, maskedTransitionUntil - Date.now()),
                     lastSeenRoute: lastSeenHash,
                     effectiveReloadBudget: effectiveReloadBudget(),
                     budgetKey: BUDGET_KEY,
