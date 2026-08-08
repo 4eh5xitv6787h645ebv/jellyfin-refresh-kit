@@ -175,7 +175,7 @@ moves the generation and existing tabs converge. A same-version replacement is
 therefore detected when the replacement module has a new MVID and is loaded;
 arbitrary PE-byte changes that preserve the MVID are not a generation input.
 
-Scanning is deterministic and bounded. Per plugin it examines at most 4,000 file entries, 512 directories, 8 MiB of active asset content, and 2 MiB of configuration content. One complete scan is additionally capped at 16,000 files, 2,048 directories, 32 MiB of assets, and 8 MiB of configuration. Budget exhaustion contributes a stable truncation sentinel and appears in admin diagnostics. A transient read failure consumes its reserved budget and retains the last coherent active snapshot when one exists, instead of publishing a false lifecycle change.
+Scanning is deterministic and bounded. Per plugin it admits/charges at most 4,000 file entries, 512 directories, 8 MiB of active asset content, and 2 MiB of configuration content. One complete scan is additionally capped at 16,000 charged files, 2,048 charged directories, 32 MiB of assets, and 8 MiB of configuration. A native enumerator may yield one extra unadmitted entry for a plugin to detect that a file/directory ceiling was crossed. Budget exhaustion contributes a stable truncation sentinel and appears in admin diagnostics. A transient read failure consumes its conservative reserved budget and retains the last coherent active snapshot when one exists, instead of publishing a false lifecycle change.
 
 ### Settings changes
 

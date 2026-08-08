@@ -250,15 +250,17 @@ scan:
 
 | Budget | Per loaded plugin | Whole scan |
 | --- | ---: | ---: |
-| File entries examined | 4,000 | 16,000 |
-| Directories descended | 512 | 2,048 |
+| File entries admitted/charged | 4,000 | 16,000 |
+| Directories admitted/charged | 512 | 2,048 |
 | Active asset content hashed | 8 MiB | 32 MiB |
 | Configuration content hashed | 2 MiB | 8 MiB |
 
 Plugins are scanned in stable identity order, and paths/content records are
 ordinal-sorted before folding. If a budget is exhausted, the affected identity
 uses a deterministic truncation sentinel instead of a filesystem-dependent
-prefix. If an asset or configuration read races a writer or becomes
+prefix. A native enumerator may yield one additional unadmitted entry for each
+plugin that crosses an entry ceiling, solely to detect the overflow. If an
+asset or configuration read races a writer or becomes
 unavailable, its reserved global budget remains consumed and the last-good
 snapshot is retained when one exists. `GET /RefreshKit/Diagnostics` exposes
 file/directory/byte counts, truncation and unavailability flags, last-good use,

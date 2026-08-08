@@ -960,6 +960,12 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
                 catch
                 {
+                    NormalizeEntryOverflowCharge(
+                        scanBudget,
+                        fileReservationCeiling,
+                        directoryReservationCeiling,
+                        ref filesReserved,
+                        ref directoriesReserved);
                     return ActiveAssetSnapshot.Unavailable;
                 }
             }
@@ -982,11 +988,12 @@ namespace Jellyfin.Plugin.RefreshKit
 
         /// <summary>
         /// Normalizes the hidden aggregate charge after native entry enumeration
-        /// overflows. The sentinel cannot reveal which file/directory entries the
-        /// operating system would have yielded next, so reserving both ceilings is
-        /// the only conservative result that is independent of native mixed-entry
-        /// order. Those reservations are retained with the plugin fingerprint and
-        /// keep later plugins deterministic too.
+        /// overflows or fails. The public truncation/unavailable result cannot
+        /// reveal which file/directory entries the operating system would have
+        /// yielded next, so reserving both ceilings is the only conservative result
+        /// that is independent of native mixed-entry order. Those reservations are
+        /// retained with the plugin fingerprint and keep later plugins deterministic
+        /// too.
         /// </summary>
         private static void NormalizeEntryOverflowCharge(
             PluginScanBudget scanBudget,
