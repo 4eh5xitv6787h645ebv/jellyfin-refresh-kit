@@ -59,14 +59,31 @@
  * N plugins can each ship their own copy of the kit (even different kit
  * versions) and they compose on one page:
  *
- *   • ONE createElement wrapper, ever, installed by the first copy to run.
- *     On src/href assignment it consults ALL registered instances'
- *     assetPatterns; the FIRST-REGISTERED instance whose patterns match
- *     versions the URL with THAT instance's resolved version. Registration
- *     order is document order of the kit tags. If patterns of two instances
- *     overlap on a URL, the first-registered instance wins and the manager
- *     logs ONE console.warn naming the overlapping instances the first time
- *     it happens. URLs already carrying v= always pass through untouched.
+ *   • THE NEWEST COPY MANAGES THE PAGE (2.3.0). The first copy to execute
+ *     installs the machinery, but a copy that arrives afterwards and is
+ *     STRICTLY NEWER takes the page over through a handoff (REGISTRATION
+ *     CONTRACT clause 7): the sitting manager stops, hands over every
+ *     registered instance WITH its live state, and becomes a permanent inert
+ *     delegate that forwards the contract surface to the new manager. Equal
+ *     versions never hand over. Before 2.3.0 the first copy managed the page
+ *     forever, which meant a plugin shipping the newest kit could not
+ *     guarantee its own safety fixes governed the page it was running on —
+ *     an older copy's flip guard, reload budget and gates decided for
+ *     everyone. Version comparison is numeric per segment, never string
+ *     order ("2.10.0" is newer than "2.9.0").
+ *
+ *   • ONE ACTIVE createElement wrapper, ever. On src/href assignment it
+ *     consults ALL registered instances' assetPatterns; the FIRST-REGISTERED
+ *     instance whose patterns match versions the URL with THAT instance's
+ *     resolved version. Registration order is document order of the kit tags
+ *     (and a handoff preserves it). If patterns of two instances overlap on a
+ *     URL, the first-registered instance wins and the manager logs ONE
+ *     console.warn naming the overlapping instances the first time it happens.
+ *     URLs already carrying v= always pass through untouched. A handoff cannot
+ *     UNINSTALL the old wrapper (other code may hold a reference to it by
+ *     then), so the old one flips to a permanent inert pass-through and the
+ *     new manager stacks its own on top: still exactly one wrapper that does
+ *     anything, and it is the newest copy's.
  *
  *   • PER-INSTANCE: version source + polling cadence + baseline/latest
  *     version, bootstrap entry loading (an instance's entries wait on ITS
@@ -140,6 +157,14 @@
  *     on window is an ordinary defensive habit and must not cost an adopter
  *     its own configuration.
  *
+ *     BOTH halves of the claim are PAGE-LEVEL, not manager-level — the marker
+ *     lives on the config object, the WeakSet on `window` — which is exactly
+ *     what makes a claim survive a MANAGER HANDOFF (clause 7) with nothing to
+ *     transfer: a global claimed under the old manager is still claimed under
+ *     the new one, and a transferred instance is never re-offered the global
+ *     it already merged (that would warn "already claimed" about an
+ *     instance's own configuration).
+ *
  *     The manager runs the SAME rule as a fallback for copies that cannot read
  *     the global themselves (pre-2.1 copies, and eval'd copies with no
  *     currentScript) — per registration, bounded by the same one-time claim.
@@ -160,22 +185,51 @@
  *     keyed entry > singular > data-* > defaults.
  *
  * ---------------------------------------------------------------------------
- * REGISTRATION CONTRACT (v1) — FROZEN. This section is the compatibility
- * promise between kit copies of DIFFERENT versions cohabiting a page. Any
- * future kit version MUST keep every numbered clause working forever.
+ * REGISTRATION CONTRACT (revision 3) — FROZEN. This section is the
+ * compatibility promise between kit copies of DIFFERENT versions cohabiting a
+ * page. Revisions are STRICTLY ADDITIVE: any future kit version MUST keep
+ * every numbered clause working forever, and a caller speaking an older
+ * revision must keep working against every future manager.
+ *
+ * PRE-2.3.0 COPIES MUST NEVER BE SHIPPED PUBLICLY. No version of this kit has
+ * ever been released, and revision 3 — the newest-wins manager rule — is the
+ * one change that could not have been made additively after the fact: a
+ * pre-2.3.0 manager cannot hand a page over, so a 2.3.0+ copy arriving after
+ * one is stuck registering under it, and the OLDER copy's reload semantics
+ * govern the page (the kit says so, loudly, and that is the best it can do).
+ * Every adopting plugin must ship 2.3.0 or newer.
  * ---------------------------------------------------------------------------
  *  1. The FIRST kit copy to execute on a page becomes the manager: it installs
  *     window.JellyfinRefreshKit, the single createElement wrapper, and the
- *     shared page machinery, then registers its own instance.
+ *     shared page machinery, then registers its own instance. It KEEPS that
+ *     role until a strictly newer copy takes it over under clause 2b.
  *  2. Every copy, at the top of its IIFE, synchronously captures its own
  *     <script> tag config (document.currentScript data-*) and then inspects
  *     window.JellyfinRefreshKit:
  *       a. absent            → become the manager (clause 1).
- *       b. present AND has a function-valued __registerInstance →
- *          call window.JellyfinRefreshKit.__registerInstance(tagConfig,
- *          KIT_VERSION) and do NOTHING else. No second wrapper, no listeners,
- *          no timers — the already-installed manager runs everything, even if
- *          it is an older 2.x than the arriving copy.
+ *       b. present AND has a function-valued __registerInstance → compare
+ *          KIT_VERSION with the manager's `kitVersion`, NUMERICALLY, segment by
+ *          segment (never as strings — "2.10.0" must beat "2.9.0"):
+ *            • manager's version >= mine, or either version unparseable →
+ *              call window.JellyfinRefreshKit.__registerInstance(tagConfig,
+ *              KIT_VERSION) and do NOTHING else. No second wrapper, no
+ *              listeners, no timers — the manager runs everything.
+ *            • mine is STRICTLY NEWER and the manager's __contractVersion is
+ *              >= 3 and it exposes __handoffTo → TAKE THE PAGE OVER (clause 7):
+ *              build this copy's manager, call __handoffTo(myApi), re-register
+ *              every transferred instance, log ONE info line. Registration
+ *              order — which decides who versions an ambiguous URL — is
+ *              preserved, and the transferred instances register BEFORE this
+ *              copy's own tag, because they were on the page first.
+ *            • mine is strictly newer but the manager speaks contract < 3 (a
+ *              pre-2.3.0 copy) → register as above, but ALSO emit one loud
+ *              console.warn naming both versions and stating that page-level
+ *              reload semantics on this page are the OLDER copy's.
+ *          A handoff that is declined (null return) falls back to plain
+ *          registration: a page must never be left without a manager.
+ *          Two copies of the SAME version never hand over — the sitting
+ *          manager stays, so an ordinary multi-copy page is untouched by this
+ *          rule.
  *       c. present WITHOUT __registerInstance (a 1.x singleton) → log ONE
  *          console.warn and go fully inert. The 2.x copy must not fight the
  *          1.x wrapper (double-versioning, double reload engines). Mixing
@@ -212,13 +266,18 @@
  *         internal failure. It MUST NEVER throw.
  *       • duplicate registration (same resolved name + equivalent config)
  *         silently returns the existing instance's handle.
- *  4. manager.__contractVersion is a number (currently 1) naming the newest
+ *  4. manager.__contractVersion is a number (currently 3) naming the newest
  *     contract revision the manager speaks. Revisions are strictly additive:
- *     a v1 call MUST keep working against every future manager.
- *  5. manager.kitVersion is the manager copy's own version string, so an
- *     arriving copy can log/diagnose version skew. Feature skew is bounded by
- *     the manager: features the manager's version lacks are unavailable to
- *     later-arriving instances, but registration itself never breaks.
+ *     a v1 call MUST keep working against every future manager. After a
+ *     handoff it reports the CURRENT manager's revision.
+ *  5. manager.kitVersion is the CURRENT manager copy's own version string, so
+ *     an arriving copy can compare itself against it (clause 2b) and log
+ *     version skew. Feature skew is bounded by the manager: features the
+ *     manager's version lacks are unavailable to later-arriving instances, but
+ *     registration itself never breaks. Since 2.3.0 it is an ACCESSOR, because
+ *     the object window.JellyfinRefreshKit points at may have handed the page
+ *     over — a stale value there would make every later copy compare itself
+ *     against a manager that retired long ago.
  *  6. (REVISION 2, 2.2.0 — ADDITIVE.) manager.__claimSingularGlobal(obj) →
  *     boolean. The page-level, once-only claim on a singular window config
  *     OBJECT: the first caller for a given object gets true, every later caller
@@ -228,6 +287,59 @@
  *     It MUST NEVER throw. A contract-v1 caller never calls it and is
  *     unaffected; a v2 caller against a v1 manager falls back to the marker and
  *     to its own page-level store, so mixed-version pages keep working.
+ *  7. (REVISION 3, 2.3.0 — ADDITIVE.) manager.__handoffTo(newManager) →
+ *     transferRecord | null. The newest-wins rule of clause 2b. Called by a
+ *     STRICTLY NEWER arriving copy that has already built its own manager;
+ *     MUST NEVER throw, and returns null when it declines (the caller then
+ *     registers as an ordinary instance).
+ *     On success the OLD manager, in one synchronous step:
+ *       • deactivates every instance (cancels its timers and latches its entry
+ *         points off, so a version request already in flight cannot act),
+ *         cancels the shared retry ladder, the keyed-config audit and the
+ *         reload-survival watchdog, and removes every page listener;
+ *       • flips its createElement wrapper to a permanent INERT PASS-THROUGH.
+ *         The wrapper cannot be uninstalled — third-party code may hold a
+ *         reference to it, and restoring the native function would strip the
+ *         new manager's wrapper off the page — so the new manager stacks its
+ *         own on top and the old one creates elements without touching them.
+ *         Elements the old wrapper ALREADY handed out keep their per-element
+ *         accessors, which from now on delegate their versioning decision to
+ *         the current manager;
+ *       • becomes a permanent INERT DELEGATE: every member of its api object
+ *         (__registerInstance, versionedUrl, checkNow, get, instances, state,
+ *         version, latestVersion, kitVersion, __contractVersion, __handoffTo
+ *         itself) forwards to the new manager. This is what makes the handoff
+ *         possible at all, because window.JellyfinRefreshKit is installed
+ *         NON-CONFIGURABLE (clause 2 RECOVERY) and can never be re-pointed:
+ *         the retired object stays the page's entry point and answers for the
+ *         live manager. A chained handoff (old → new → newer) forwards and
+ *         then re-points straight at the newest, so the chain stays flat.
+ *         __claimSingularGlobal is the ONE member that does not forward: the
+ *         claim it records is page-level either way (a marker on the config
+ *         object, or a WeakSet on `window`), and forwarding it would build a
+ *         cycle.
+ *     THE TRANSFER RECORD is a plain object:
+ *       { contractVersion, kitVersion, handoffs, lineage[], anonymousCount,
+ *         lateKeys{}, instances: [ { name, anonymous, keyedConfigKey,
+ *         registeredByKitVersion, entriesSuppressed, declaredConfig,
+ *         effectiveConfig, state } ], shared: { ...page-level state... } }
+ *     `state` is the instance's LIVE internals (resolved baseline + latest
+ *     version, candidate, announced version, pending update, entry-chain
+ *     progress and promise, one-shot warning latches) and `shared` carries the
+ *     page-level ones, INCLUDING the committed-reload latch, the records that
+ *     reload wrote and the instances it disarmed. The new manager inherits the
+ *     latch and RE-ARMS the survival watchdog; it must never call
+ *     location.reload() again for a navigation already in flight.
+ *     NOT in the record, deliberately: the reload budget and the per-tab flip /
+ *     left-version / recovery history. Those already live in localStorage and
+ *     sessionStorage under page-wide keys, keyed by instance NAME — and a
+ *     handoff preserves every name, including "#N" collision suffixes — so
+ *     they survive a handoff exactly as they survive the reloads they police.
+ *     The singular-global claim is page-level for the same reason and is not
+ *     transferred either.
+ *     A newer manager re-NORMALIZES every transferred config under its own
+ *     rules, which is the point of newest-wins: a clamp or validation the newer
+ *     copy tightened governs the instances it inherited too.
  *
  * ---------------------------------------------------------------------------
  * BOOTSTRAP MODE (recommended adoption)
@@ -334,6 +446,26 @@
  *   Keep assetPatterns disjoint (they name your own folder — they naturally
  *   are); the overlap warning exists to surface accidents, not to arbitrate
  *   deliberate sharing.
+ * • A MANAGER HANDOFF (newest-wins) has three costs, all deliberate. ONE: the
+ *   createElement wrapper chain grows by one INERT frame per handoff, because
+ *   a wrapper can never be uninstalled safely — bounded by the number of kit
+ *   copies in the document, and every frame but the newest returns the element
+ *   untouched. TWO: window.JellyfinRefreshKit keeps pointing at the FIRST
+ *   manager's object forever (it is installed non-configurable on purpose), so
+ *   the object identity a debugger sees is not the version that is running;
+ *   every member forwards, and `state().shared.managerLineage` lists the
+ *   copies in the order they ran the page. THREE: a version fetch that was in
+ *   flight when the handoff happened resolves into the retired closure and is
+ *   discarded; the instance that took over re-issues it immediately, so the
+ *   cost is one duplicate request, not a missed update.
+ * • MIXING PRE-2.3.0 AND 2.3.0+: a pre-2.3.0 copy that runs FIRST manages the
+ *   page even though a newer copy is present — it cannot hand over, because
+ *   __handoffTo did not exist yet. The newer copy says so with one loud
+ *   warning naming both versions, and everything still WORKS; what you lose is
+ *   every fix the newer copy made to page-level behaviour (the flip guard, the
+ *   reload budget, the safety gates, URL interception). Since no version of
+ *   this kit was ever released publicly, the fix is simply never to ship one:
+ *   every adopting plugin must carry 2.3.0 or newer.
  * • MIXING 1.x AND 2.x: a 1.x copy that runs FIRST owns the page (2.x copies
  *   go inert with one warning); a 1.x copy that runs SECOND was never
  *   multi-instance-aware and will double-wrap createElement on top of the 2.x
