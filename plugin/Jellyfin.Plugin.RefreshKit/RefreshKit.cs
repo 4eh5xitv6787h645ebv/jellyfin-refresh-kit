@@ -27,31 +27,26 @@
 //  VENDORED COPY — DO NOT EDIT CASUALLY
 //  ===================================
 //  This is the repository-root RefreshKit.cs, vendored into the standalone
-//  plugin. It differs from the root file in exactly four places, all marked
+//  plugin. It differs from the root file in exactly three places, all marked
 //  "STANDALONE-PLUGIN ADAPTATION":
 //    1. the namespace is Jellyfin.Plugin.RefreshKit (root: JellyfinRefreshKit);
 //    2. RefreshKitOptions gains HtmlPostProcess + ApplyHtmlPostProcess;
 //    3. the middleware calls ApplyHtmlPostProcess right after
-//       ReplaceOwnedScriptTags;
-//    4. a cold HEAD suppresses the host's ETag / Last-Modified / Content-Length
-//       (SuppressRepresentationValidators) instead of passing them through.
+//       ReplaceOwnedScriptTags.
 //  To re-sync after the root file changes:
 //    sed 's/^namespace JellyfinRefreshKit$/namespace Jellyfin.Plugin.RefreshKit/' \
 //        RefreshKit.cs > plugin/Jellyfin.Plugin.RefreshKit/RefreshKit.cs
-//  and re-apply (2), (3) and (4). The file is vendored rather than
+//  and re-apply (2) and (3). The file is vendored rather than
 //  <Compile Link>ed because those hooks do not exist upstream and the root file
 //  is owned by the single-file adoption path.
 //
-//  NOTE ON (4): unlike (1)-(3), which exist only because the plugin needs a
-//  hook the single-file path does not, (4) is a CORRECTNESS fix that applies
-//  equally to the root file — a cold HEAD there serves source validators for a
-//  representation a GET would never return (RFC 9110 §9.3.2 / §8.6). It landed
-//  here first only because the root file was owned by another change at the
-//  time. Port it up and this divergence should disappear.
-//
-//  Also: the copyright line above names the actual holder, where the root file
-//  still carries the "<YOUR NAME HERE>" placeholder. Fix the root file and the
-//  sed recipe stops clobbering this line too.
+//  WAS (4), NOW SHARED: the cold-HEAD validator suppression
+//  (SuppressRepresentationValidators) landed here first because the root file
+//  was owned by another change at the time. It is a CORRECTNESS fix, not a
+//  plugin hook — a cold HEAD that serves the source shell's ETag,
+//  Last-Modified and Content-Length describes a representation a GET would
+//  never return (RFC 9110 §9.3.2 / §8.6) — so 2.4.0 ported it up and the
+//  divergence is gone. The sed recipe now carries it across on its own.
 //
 //  WHAT THIS FILE IS
 //  =================
@@ -973,8 +968,8 @@ namespace Jellyfin.Plugin.RefreshKit
             // keeps uptime monitors and proxy health checks working; a warm HEAD below
             // still answers with the transformed representation's metadata.
             //
-            // STANDALONE-PLUGIN ADAPTATION (4): but the host's answer describes the
-            // SOURCE file, not what a GET through this middleware would return. Its
+            // ...but the host's answer describes the SOURCE file, not what a GET
+            // through this middleware would return. Its
             // ETag, Last-Modified and Content-Length all belong to the untransformed
             // shell — a different length, a different entity, and validators a GET
             // would never issue. RFC 9110 §9.3.2 asks a HEAD to send the field values
@@ -1840,7 +1835,7 @@ namespace Jellyfin.Plugin.RefreshKit
         }
 
         /// <summary>
-        /// STANDALONE-PLUGIN ADAPTATION (4). Drops the validators that describe a
+        /// Drops the validators that describe a
         /// representation this response is not going to describe correctly — used
         /// on a cold HEAD, where the host answers about the SOURCE shell while a
         /// GET at the same URL would return the transformed one.
