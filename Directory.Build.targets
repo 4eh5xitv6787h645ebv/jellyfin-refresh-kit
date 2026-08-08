@@ -1,0 +1,4 @@
+<Project>
+  <!-- Deliberately empty: this committed boundary prevents an ancestor
+       Directory.Build.targets from becoming an undeclared build input. -->
+</Project>

@@ -1,18 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Exercise the exact framework pair shipped by build.sh. Minor permits
-         servicing updates within a major but never turns a net9 test into a
-         net10 runtime test. test.sh verifies both runtimes are installed. -->
+    <!-- Compile the repository-root drop-in exactly as adopters do: without
+         any Jellyfin package or the vendored plugin namespace around it. -->
     <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
-    <RollForward>Minor</RollForward>
+    <OutputType>Library</OutputType>
+    <AssemblyName>RefreshKit.Standalone.Compile</AssemblyName>
+    <RootNamespace>RefreshKit.Standalone.Compile</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <Nullable>enable</Nullable>
     <ImplicitUsings>false</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <IsPackable>false</IsPackable>
-    <IsTestProject>true</IsTestProject>
-    <AssemblyName>Jellyfin.Plugin.RefreshKit.Tests</AssemblyName>
-    <RootNamespace>Jellyfin.Plugin.RefreshKit.Tests</RootNamespace>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
@@ -27,16 +26,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="[17.11.1]" />
-    <PackageReference Include="xunit" Version="[2.9.2]" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="[2.8.2]">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="../Jellyfin.Plugin.RefreshKit/Jellyfin.Plugin.RefreshKit.csproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Compile Include="../../RefreshKit.cs" Link="RefreshKit.cs" />
   </ItemGroup>
 
 </Project>

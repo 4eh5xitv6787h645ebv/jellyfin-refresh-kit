@@ -1,0 +1,9 @@
+<Project>
+  <!-- Stop MSBuild from discovering machine-specific Directory.Build.targets
+       above this checkout. Command-line package builds disable both imports;
+       ordinary developer/test builds stop at this committed repository guard. -->
+  <PropertyGroup>
+    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+</Project>

@@ -9,9 +9,9 @@
                     "tfm": "net9.0", Microsoft.AspNetCore.App 9.0.16.
                     Verified against the jellyfin/jellyfin:10.11.11 image.
            net10.0  Jellyfin 12.0.x  — jellyfin.runtimeconfig.json says
-                    "tfm": "net10.0", Microsoft.AspNetCore.App 10.0.10.
-                    Verified against the jellyfin/jellyfin:unstable image
-                    reporting Version 12.0.0.
+                    "tfm": "net10.0". Verified against the digest-pinned
+                    jellyfin/jellyfin:12.0-rc4 image reporting Version
+                    12.0.0-rc4.
 
          Multi-targeting rather than a second csproj: the plugin's source is
          identical for both hosts (it uses only the plugin surface that survived
@@ -19,16 +19,40 @@
          the same thing waiting to drift. `dotnet publish -f <tfm>` picks the
          host. -->
     <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
-    <Version>1.0.0.0</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <FileVersion>1.0.1.0</FileVersion>
+    <Version>1.0.1.0</Version>
     <RootNamespace>Jellyfin.Plugin.RefreshKit</RootNamespace>
     <AssemblyName>Jellyfin.Plugin.RefreshKit</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>false</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
-    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <DebugType>portable</DebugType>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
+    <NuGetAudit>false</NuGetAudit>
+    <RepositoryUrl>https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <!-- The exact commit/tree are embedded by build.sh. Disable SDK probing
+         that otherwise adds SourceLink only when a .git directory happens to
+         be present, making a source-archive build differ from a checkout. -->
+    <EnableSourceLink>false</EnableSourceLink>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <!-- Remove the checkout directory from the assembly and portable PDB so
+         identical source builds identically in CI, a worktree, or a release
+         staging directory. build.sh supplies the exact RepositoryCommit. -->
+    <RefreshKitRepositoryRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../..'))</RefreshKitRepositoryRoot>
+    <PathMap>$(RefreshKitRepositoryRoot)=/_/</PathMap>
+    <!-- build.sh relocates its compiler intermediates into a locked scratch
+         directory. Keep outputs from an earlier ordinary dotnet build out of
+         the SDK's default Compile glob even when BaseIntermediateOutputPath
+         no longer names this project's conventional obj directory. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildThisFileDirectory)bin/**;$(MSBuildThisFileDirectory)obj/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <!-- The Jellyfin server generation each framework compiles against.
@@ -37,13 +61,13 @@
        candidates (12.0.0-rc4 at the time of writing) and carry the same
        MediaBrowser.* surface the running server exposes. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.11" />
-    <PackageReference Include="Jellyfin.Model" Version="10.11.11" />
+    <PackageReference Include="Jellyfin.Controller" Version="[10.11.11]" />
+    <PackageReference Include="Jellyfin.Model" Version="[10.11.11]" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
-    <PackageReference Include="Jellyfin.Controller" Version="12.0.0-rc4" />
-    <PackageReference Include="Jellyfin.Model" Version="12.0.0-rc4" />
+    <PackageReference Include="Jellyfin.Controller" Version="[12.0.0-rc4]" />
+    <PackageReference Include="Jellyfin.Model" Version="[12.0.0-rc4]" />
   </ItemGroup>
 
   <ItemGroup>

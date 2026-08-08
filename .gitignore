@@ -1,10 +1,23 @@
-plugin/build/
+plugin/build
+plugin/.builds/
+plugin/.build-work/
+plugin/.build.lock
+plugin/.build-link.*
+plugin/.build-rollback.*
 plugin/Jellyfin.Plugin.RefreshKit/bin/
 plugin/Jellyfin.Plugin.RefreshKit/obj/
 plugin/Jellyfin.Plugin.RefreshKit.Tests/bin/
 plugin/Jellyfin.Plugin.RefreshKit.Tests/obj/
+tests/RefreshKit.Standalone.Compile/bin/
+tests/RefreshKit.Standalone.Compile/obj/
 node_modules/
+test-results/
+__pycache__/
+*.py[cod]
 
 # proxy e2e rig scratch
 e2e/proxy/.rk-token
 e2e/proxy/.je/
+e2e/proxy/.state/
+e2e/jellyfin/.state/
+e2e/jellyfin/artifacts/
