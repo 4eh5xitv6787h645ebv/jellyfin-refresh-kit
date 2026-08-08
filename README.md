@@ -63,7 +63,7 @@ The standalone plugin is built for both, from one source tree: a `net9.0` build 
 
 ### Manual installation
 
-1. Download `jellyfin-refresh-kit_<version>.zip` from [GitHub Releases](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases).
+1. Download the zip for your server from [GitHub Releases](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases): `jellyfin-refresh-kit_<version>.zip` for Jellyfin 10.11.x, or `jellyfin-refresh-kit_<version>_jf12.zip` for Jellyfin 12.x.
 2. Create a versioned plugin folder inside Jellyfin's `plugins` directory, for example:
 
    ```text
