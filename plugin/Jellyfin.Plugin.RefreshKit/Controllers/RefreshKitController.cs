@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+using System;
 using System.Linq;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -22,8 +22,16 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
     [Route("RefreshKit")]
     public class RefreshKitController : RefreshKitVersionControllerBase
     {
+        private readonly PluginGenerationProvider _generationProvider;
+
+        public RefreshKitController(PluginGenerationProvider generationProvider)
+        {
+            _generationProvider = generationProvider
+                ?? throw new ArgumentNullException(nameof(generationProvider));
+        }
+
         /// <summary>
-        /// The aggregate generation of every installed plugin, in the shape
+        /// The aggregate generation of the loaded host and plugin state, in the shape
         /// jellyfin-refresh-kit.js polls: <c>{ Version, BuildId, CacheKey }</c>
         /// with <c>CacheKey</c> carrying the generation (the injected tag sets
         /// <c>data-version-json-field="CacheKey"</c> to match, and its
@@ -58,16 +66,16 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
         }
 
         /// <summary>
-        /// What the generation is actually made of — one row per installed
-        /// plugin. Admin-only: it enumerates installed plugins and their
-        /// binaries' timestamps, which is inventory, not something the login
-        /// screen needs.
+        /// What the generation is actually made of — loaded host identity and
+        /// one row per loaded plugin. Admin-only: this is server inventory, not
+        /// something the login screen needs.
         /// </summary>
         [HttpGet("Diagnostics")]
         [Authorize(Policy = "RequiresElevation")]
-        public ActionResult<IReadOnlyList<object>> GetDiagnostics()
+        public ActionResult<object> GetDiagnostics()
         {
-            var provider = PluginGenerationProvider.Instance;
+            var provider = _generationProvider;
+            var host = provider.Host;
             RefreshKit.ApplyNoStore(Response);
             return Ok(new
             {
@@ -75,6 +83,11 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
                 KitVersion = Plugin.KitVersion,
                 PluginVersion = RefreshKit.Version,
                 BuildId = RefreshKit.BuildId,
+                Host = new
+                {
+                    host.Identity,
+                    host.Modules,
+                },
                 Plugins = provider.Details
                     .Select(d => new
                     {
@@ -83,7 +96,24 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
                         d.Version,
                         d.Status,
                         d.NewestDllTicks,
+                        d.NewestAssetTicks,
                         d.NewestConfigTicks,
+                        d.IsLoaded,
+                        d.LoadedModuleIdentity,
+                        d.AssetIdentity,
+                        d.AssetFileCount,
+                        d.AssetDirectoriesScanned,
+                        d.AssetBytesHashed,
+                        d.AssetScanTruncated,
+                        d.AssetScanUnavailable,
+                        d.UsingLastGoodAssets,
+                        d.ConfigurationIdentity,
+                        d.ConfigurationFileCount,
+                        d.ConfigurationBytesHashed,
+                        d.ConfigurationScanTruncated,
+                        d.ConfigurationScanUnavailable,
+                        d.UsingLastGoodConfiguration,
+                        d.UsingLastKnownPluginRecord,
                     })
                     .OrderBy(d => d.Folder, System.StringComparer.Ordinal)
                     .ToList(),

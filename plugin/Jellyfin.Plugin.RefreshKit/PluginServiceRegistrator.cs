@@ -22,7 +22,7 @@ namespace Jellyfin.Plugin.RefreshKit
     /// <item><description><b>Generation + client runtime</b> — the injected tag
     /// points jellyfin-refresh-kit.js at the generation endpoint, in standalone
     /// mode: no bootstrap entries, no asset patterns, just "poll the aggregate
-    /// identity of every installed plugin and, when it changes, reload this tab
+    /// identity of the loaded Jellyfin host and plugins and, when it changes, reload this tab
     /// safely".</description></item>
     /// </list>
     /// </summary>
@@ -52,6 +52,30 @@ namespace Jellyfin.Plugin.RefreshKit
 
         public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
         {
+            serviceCollection.AddSingleton<PluginGenerationProvider>();
+
+            static string LoadedFallbackGeneration() =>
+                "fallback-" + typeof(PluginServiceRegistrator)
+                    .Assembly
+                    .ManifestModule
+                    .ModuleVersionId
+                    .ToString("N");
+
+            string ResolveGeneration()
+            {
+                try
+                {
+                    return applicationHost.ServiceProvider?
+                        .GetService<PluginGenerationProvider>()?
+                        .Generation
+                        ?? LoadedFallbackGeneration();
+                }
+                catch
+                {
+                    return LoadedFallbackGeneration();
+                }
+            }
+
             serviceCollection.AddRefreshKit(new RefreshKitOptions
             {
                 PluginName = PluginName,
@@ -65,12 +89,12 @@ namespace Jellyfin.Plugin.RefreshKit
                 // the ?rkv= stamp. They cannot drift apart, and the middleware's
                 // representation cache is keyed on the tag block — so a
                 // generation change also invalidates the cached shell.
-                VersionProvider = () => PluginGenerationProvider.Instance.Generation,
+                VersionProvider = ResolveGeneration,
 
                 DevMode = () => Config?.DevMode == true,
                 Enabled = () => Config?.EnableInjection != false,
                 ExtraAttributes = _ => BuildKitAttributes(),
-                HtmlPostProcess = StampThirdPartyTags,
+                HtmlPostProcess = html => StampThirdPartyTags(html, ResolveGeneration()),
             });
         }
 
@@ -132,7 +156,7 @@ namespace Jellyfin.Plugin.RefreshKit
         /// self-correcting.
         /// </para>
         /// </summary>
-        private static string StampThirdPartyTags(string html)
+        private static string StampThirdPartyTags(string html, string generation)
         {
             if (Config?.EnableThirdPartyStamping == false)
             {
@@ -141,7 +165,7 @@ namespace Jellyfin.Plugin.RefreshKit
 
             return ThirdPartyTagStamper.Stamp(
                 html,
-                PluginGenerationProvider.Instance.Generation,
+                generation,
                 OwnTagMarker);
         }
     }
