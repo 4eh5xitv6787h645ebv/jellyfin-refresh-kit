@@ -42,8 +42,16 @@ printf '  %-42s %-24s %s\n' "remedy2:$FIX2  (+ cache exemption)"       "$(gen $F
 
 echo
 echo "### 4. client revalidation (a 304 is what keeps a warm tab cheap)"
+echo "    An empty ETag column here is the ORDERING CAVEAT, not the proxy: a"
+echo "    third-party injector running outside this plugin's middleware replaces"
+echo "    the shell's response headers. Run 'run.sh matrix', which parks them."
+seen_etag=0
 for p in $ORIGIN $NAIVE $RESPECT $FIX1 $FIX2; do
-    ET=$(curl -s -o /dev/null -D - "http://127.0.0.1:$p/web/" | grep -i '^etag:' | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
+    # An outer injector can strip the validator entirely (the ordering caveat),
+    # so "no ETag at all" is a result to print, not a reason to abort.
+    ET=$(curl -s -o /dev/null -D - "http://127.0.0.1:$p/web/" | grep -i '^etag:' | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
     C=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: ${ET:-\"none\"}" "http://127.0.0.1:$p/web/")
+    [ -n "$ET" ] && seen_etag=1
     printf '  :%s  ETag=%-12s If-None-Match -> %s\n' "$p" "${ET:0:10}" "$C"
 done
+[ "$seen_etag" = 1 ] || echo "  (no validators anywhere — see the note above)"
