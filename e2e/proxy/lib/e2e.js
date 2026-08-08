@@ -11,15 +11,26 @@ const PREFIX = process.argv[3] || '';
 const BASE = `http://127.0.0.1:${PORT}${PREFIX}`;
 const USER = process.env.RK_USER || 'rk_admin';
 const PASS = process.env.RK_PASS || 'Test669Pw!x';
-const CONTAINER = process.env.RK_CONTAINER || 'rk-jf';
-// The file whose mtime is touched to move the generation. Any plugin binary works.
-const BUMP = process.env.RK_BUMP_FILE || '/config/plugins/Jellyfin Enhanced_12.1.0.0/Jellyfin.Plugin.JellyfinEnhanced.dll';
+const CONTAINER = process.env.RK_CONTAINER;
+if (!/^[/a-zA-Z0-9_.-]+$/.test(CONTAINER || '')) {
+  throw new Error('RK_CONTAINER must identify the verified project-scoped origin');
+}
+// A loose client asset whose CONTENT is replaced to move the generation. This
+// models a live JS/CSS deployment and remains meaningful when binary identity is
+// correctly tied to the assembly loaded in the current server process (merely
+// touching or staging a DLL must not publish an update before restart).
+const JE_VERSION = process.env.RK_JE_VERSION || '12.1.0.0';
+const BUMP = process.env.RK_BUMP_FILE || `/config/plugins/Jellyfin Enhanced_${JE_VERSION}/rk-e2e-generation.js`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(...a);
 
 function bumpGeneration() {
-  execFileSync('docker', ['exec', CONTAINER, 'touch', BUMP]);
+  const marker = `// refresh-kit E2E generation ${Date.now()}-${process.pid}\n`;
+  execFileSync('docker', ['exec', '-i', CONTAINER, 'tee', BUMP], {
+    input: marker,
+    stdio: ['pipe', 'ignore', 'inherit'],
+  });
 }
 function originGeneration() {
   return execFileSync('curl', ['-s', `${BASE}/RefreshKit/Generation.txt`]).toString().trim();
@@ -72,16 +83,12 @@ function originGeneration() {
   log(loggedIn ? 'PASS login through proxy' : 'FAIL login through proxy');
   if (!loggedIn) failures.push('login');
 
-  // Nothing must hold the "never while typing" gate: the login form left a
-  // text input focused, which is a legitimate reload block (active_editor).
-  // KNOWN KIT BEHAVIOUR (see report): Jellyfin 10.11 keeps the login view in the
-  // DOM after a successful login, with #txtManualPassword still holding the typed
-  // password, and the kit's 2.4.0 password_entry gate counts hidden fields — so a
-  // tab that logged in manually refuses every auto-reload. Clear it so this test
-  // measures the PROXY, not that gate.
+  // Move focus out of the completed login form. Jellyfin retains that form in
+  // the DOM after authentication, including its populated password field; the
+  // regression under test is that a retained HIDDEN form must not block every
+  // future update. Deliberately do not clear the password here.
   await page.evaluate(() => {
     try { document.activeElement && document.activeElement.blur(); } catch (e) {}
-    document.querySelectorAll('input[type="password"]').forEach((f) => { f.value = ''; });
   });
   await page.mouse.click(5, 5).catch(() => {});
   await sleep(1500);
@@ -114,7 +121,7 @@ function originGeneration() {
   // ---- the money test: bump -> exactly one smart reload ----
   loads = 0;
   bumpGeneration();
-  log('bumped plugin binary; waiting for the smart reload...');
+  log('changed a loose plugin client asset; waiting for the smart reload...');
   let reloaded = false;
   let lastBlock = null;
   for (let i = 0; i < 50; i++) {

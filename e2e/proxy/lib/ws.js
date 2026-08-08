@@ -2,7 +2,9 @@
 // upgrade with the refresh kit's middleware in the pipeline?
 const WebSocket = require('ws');
 const fs = require('fs');
-const token = fs.readFileSync(process.argv[3] || process.env.RK_TOKEN_FILE || `${__dirname}/../.rk-token`, 'utf8').trim();
+const tokenFile = process.argv[3] || process.env.RK_TOKEN_FILE;
+if (!tokenFile) throw new Error('token file argument or RK_TOKEN_FILE is required');
+const token = fs.readFileSync(tokenFile, 'utf8').trim();
 const port = process.argv[2];
 const prefix = process.argv[4] || '';
 const url = `ws://127.0.0.1:${port}${prefix}/socket?api_key=${token}&deviceId=t`;

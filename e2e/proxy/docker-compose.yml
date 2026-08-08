@@ -4,12 +4,8 @@
 # its own port. Everything here is disposable: `down -v` removes the volumes too.
 # Nothing in this file touches any pre-existing Jellyfin container.
 #
-# Ports are 8116-8127 with 8123 deliberately skipped.
-name: rk-proxy
-
-networks:
-  default:
-    name: rk-proxy-net
+# Ports default to 8116-8127 with 8123 deliberately skipped. Every published
+# port is loopback-only and can be overridden through RK_PROXY_*_PORT.
 
 volumes:
   rk-jf-config:
@@ -18,9 +14,8 @@ volumes:
 services:
   # ── the origin ──────────────────────────────────────────────────────────────
   rk-jf:
-    image: jellyfin/jellyfin:10.11.11
-    container_name: rk-jf
-    ports: ["8116:8096"]
+    image: jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
+    ports: ["127.0.0.1:${RK_PROXY_ORIGIN_PORT:-8116}:8096"]
     volumes:
       - rk-jf-config:/config
       - rk-jf-cache:/cache
@@ -32,25 +27,22 @@ services:
 
   # ── 1. the OFFICIAL jellyfin.org/docs nginx config ──────────────────────────
   rk-nginx-official:
-    image: nginx:alpine
-    container_name: rk-nginx-official
-    ports: ["8117:80"]
+    image: nginx:alpine@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    ports: ["127.0.0.1:${RK_PROXY_NGINX_OFFICIAL_PORT:-8117}:80"]
     volumes: ["./conf/nginx-official.conf:/etc/nginx/conf.d/default.conf:ro"]
     depends_on: [rk-jf]
 
   # ── 2. Nginx Proxy Manager-style config ─────────────────────────────────────
   rk-nginx-npm:
-    image: nginx:alpine
-    container_name: rk-nginx-npm
-    ports: ["8118:80"]
+    image: nginx:alpine@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    ports: ["127.0.0.1:${RK_PROXY_NGINX_NPM_PORT:-8118}:80"]
     volumes: ["./conf/nginx-npm.conf:/etc/nginx/conf.d/default.conf:ro"]
     depends_on: [rk-jf]
 
   # ── 3. Caddy (the docs' two-line reverse_proxy) ─────────────────────────────
   rk-caddy:
-    image: caddy:2
-    container_name: rk-caddy
-    ports: ["8119:80"]
+    image: caddy:2@sha256:af5fdcd76f2db5e4e974ee92f96ee8c0fc3edb55bd4ba5032547cbf3f65e486d
+    ports: ["127.0.0.1:${RK_PROXY_CADDY_PORT:-8119}:80"]
     volumes: ["./conf/Caddyfile:/etc/caddy/Caddyfile:ro"]
     depends_on: [rk-jf]
 
@@ -60,9 +52,8 @@ services:
   # too old"). The proxying behaviour under test is identical either way; the
   # equivalent container labels are in the README.
   rk-traefik:
-    image: traefik:v3.5
-    container_name: rk-traefik
-    ports: ["8120:80"]
+    image: traefik:v3.5@sha256:16acb89c6db341182970d6fdafece31303b0a380a8ed7aa51682e225229bf1d2
+    ports: ["127.0.0.1:${RK_PROXY_TRAEFIK_PORT:-8120}:80"]
     command:
       - --providers.file.directory=/etc/traefik/dynamic
       - --providers.file.watch=true
@@ -73,41 +64,36 @@ services:
 
   # ── 5. HAProxy ──────────────────────────────────────────────────────────────
   rk-haproxy:
-    image: haproxy:2.9-alpine
-    container_name: rk-haproxy
-    ports: ["8121:80"]
+    image: haproxy:2.9-alpine@sha256:3e29449a6beed63262e36104adf531b4e41b359f61937303f5ea8607987b3748
+    ports: ["127.0.0.1:${RK_PROXY_HAPROXY_PORT:-8121}:80"]
     volumes: ["./conf/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro"]
     depends_on: [rk-jf]
 
   # ── 6a. ADVERSARIAL: proxy_cache that ignores the origin's Cache-Control ────
   rk-nginx-cache-naive:
-    image: nginx:alpine
-    container_name: rk-nginx-cache-naive
-    ports: ["8122:80"]
+    image: nginx:alpine@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    ports: ["127.0.0.1:${RK_PROXY_CACHE_NAIVE_PORT:-8122}:80"]
     volumes: ["./conf/nginx-cache-naive.conf:/etc/nginx/conf.d/default.conf:ro"]
     depends_on: [rk-jf]
 
   # ── 6b. proxy_cache that RESPECTS the origin's Cache-Control ────────────────
   rk-nginx-cache-respect:
-    image: nginx:alpine
-    container_name: rk-nginx-cache-respect
-    ports: ["8124:80"]
+    image: nginx:alpine@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    ports: ["127.0.0.1:${RK_PROXY_CACHE_RESPECT_PORT:-8124}:80"]
     volumes: ["./conf/nginx-cache-respect.conf:/etc/nginx/conf.d/default.conf:ro"]
     depends_on: [rk-jf]
 
   # ── 6c. remedy 1: stop ignoring Cache-Control ───────────────────────────────
   rk-nginx-cache-fix1:
-    image: nginx:alpine
-    container_name: rk-nginx-cache-fix1
-    ports: ["8126:80"]
+    image: nginx:alpine@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    ports: ["127.0.0.1:${RK_PROXY_CACHE_FIX1_PORT:-8126}:80"]
     volumes: ["./conf/nginx-cache-fix1.conf:/etc/nginx/conf.d/default.conf:ro"]
     depends_on: [rk-jf]
 
   # ── 6d. remedy 1+2: also exempt the shell and /RefreshKit/ from the cache ───
   rk-nginx-cache-fix2:
-    image: nginx:alpine
-    container_name: rk-nginx-cache-fix2
-    ports: ["8127:80"]
+    image: nginx:alpine@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    ports: ["127.0.0.1:${RK_PROXY_CACHE_FIX2_PORT:-8127}:80"]
     volumes:
       - "./conf/nginx-cache-fix2.conf:/etc/nginx/conf.d/default.conf:ro"
       - "./conf/rk_proxy.inc:/etc/nginx/rk_proxy.inc:ro"
@@ -115,8 +101,7 @@ services:
 
   # ── 7. subpath / base-url (only useful once BaseUrl=/jellyfin is set) ───────
   rk-nginx-subpath:
-    image: nginx:alpine
-    container_name: rk-nginx-subpath
-    ports: ["8125:80"]
+    image: nginx:alpine@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    ports: ["127.0.0.1:${RK_PROXY_SUBPATH_PORT:-8125}:80"]
     volumes: ["./conf/nginx-subpath.conf:/etc/nginx/conf.d/default.conf:ro"]
     depends_on: [rk-jf]
