@@ -3002,7 +3002,7 @@
             if (!screensaver) {
                 var dialogs = document.querySelectorAll(
                     '.dialog.opened, .actionSheet.opened, dialog[open], ' +
-                    '[role="dialog" i], [role="alertdialog" i], [aria-modal="true" i]'
+                    '[role~="dialog" i], [role~="alertdialog" i], [aria-modal="true" i]'
                 );
                 for (var i = 0; i < dialogs.length; i++) {
                     // Jellyfin and plugins retain closed dialogs in several

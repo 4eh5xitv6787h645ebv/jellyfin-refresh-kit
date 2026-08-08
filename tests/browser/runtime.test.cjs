@@ -2979,6 +2979,16 @@ test('native open and modal dialog elements participate in the dialog safety gat
     document.body.appendChild(modal);
   });
   assert.equal(await blockReason(page), 'dialog');
+
+  await page.evaluate(() => {
+    document.querySelector('#uppercase-aria-modal').remove();
+    const fallback = document.createElement('div');
+    fallback.id = 'fallback-role-dialog';
+    fallback.setAttribute('role', 'unknown DIALOG');
+    fallback.textContent = 'ARIA fallback role list';
+    document.body.appendChild(fallback);
+  });
+  assert.equal(await blockReason(page), 'dialog');
 });
 
 test('forced checks join the in-flight version request', async (t) => {
