@@ -152,6 +152,14 @@ namespace Jellyfin.Plugin.RefreshKit
         private readonly Dictionary<string, ConfigSignal> _configSignals =
             new Dictionary<string, ConfigSignal>(StringComparer.Ordinal);
 
+        /// <summary>
+        /// Last successfully parsed <c>meta.json</c> per plugin folder, so a read
+        /// that lands mid-rewrite reuses the previous answer instead of looking
+        /// like an uninstall. See <see cref="ReadMeta"/>.
+        /// </summary>
+        private readonly Dictionary<string, MetaSnapshot> _metaSnapshots =
+            new Dictionary<string, MetaSnapshot>(StringComparer.Ordinal);
+
         private string _cached = string.Empty;
         private IReadOnlyList<PluginFingerprint> _cachedDetails = Array.Empty<PluginFingerprint>();
         private DateTime _cachedAtUtc = DateTime.MinValue;
@@ -273,18 +281,18 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
             }
 
-            PruneConfigSignals(results);
+            PrunePerPluginState(results);
             return results;
         }
 
         /// <summary>
-        /// Drops debounce/cooldown state for plugins that no longer exist, so an
-        /// uninstall-reinstall cycle starts clean and the dictionary cannot grow
-        /// without bound over a long uptime.
+        /// Drops debounce/cooldown state and cached manifests for plugins that no
+        /// longer exist, so an uninstall-reinstall cycle starts clean and neither
+        /// dictionary can grow without bound over a long uptime.
         /// </summary>
-        private void PruneConfigSignals(IReadOnlyList<PluginFingerprint> results)
+        private void PrunePerPluginState(IReadOnlyList<PluginFingerprint> results)
         {
-            if (_configSignals.Count == 0)
+            if (_configSignals.Count == 0 && _metaSnapshots.Count == 0)
             {
                 return;
             }
@@ -294,38 +302,94 @@ namespace Jellyfin.Plugin.RefreshKit
             {
                 _configSignals.Remove(stale);
             }
+
+            foreach (var stale in _metaSnapshots.Keys.Where(k => !live.Contains(k)).ToList())
+            {
+                _metaSnapshots.Remove(stale);
+            }
         }
 
         internal PluginFingerprint Fingerprint(string directory, string configurationsPath, DateTime now)
         {
             var folder = Path.GetFileName(directory);
-            var id = string.Empty;
-            var version = string.Empty;
-
-            var status = string.Empty;
-
-            var metaPath = Path.Combine(directory, "meta.json");
-            if (File.Exists(metaPath))
-            {
-                try
-                {
-                    using var document = JsonDocument.Parse(File.ReadAllBytes(metaPath));
-                    id = ReadStringProperty(document.RootElement, "guid");
-                    version = ReadStringProperty(document.RootElement, "version");
-                    status = ReadStringProperty(document.RootElement, "status");
-                }
-                catch
-                {
-                    // A hand-edited or truncated meta.json falls back to the
-                    // folder name, which already encodes "Name_1.2.3.0".
-                }
-            }
+            var meta = ReadMeta(directory, folder);
 
             var assets = ScanFolderAssets(directory);
             var rawConfigTicks = ObserveConfigurationTicks(configurationsPath, assets.AssemblyNames);
-            var publishedConfigTicks = PublishConfigTicks(folder, id, assets.AssemblyNames, rawConfigTicks, now);
+            var publishedConfigTicks = PublishConfigTicks(folder, meta.Id, assets.AssemblyNames, rawConfigTicks, now);
 
-            return new PluginFingerprint(folder, id, version, status, assets.NewestTicks, publishedConfigTicks);
+            return new PluginFingerprint(
+                folder, meta.Id, meta.Version, meta.Status, assets.NewestTicks, publishedConfigTicks);
+        }
+
+        /// <summary>
+        /// Reads the identity fields out of a plugin's <c>meta.json</c>.
+        ///
+        /// <para>
+        /// Unlike the configuration watcher — which only ever reads a TIMESTAMP,
+        /// and whose debounce already requires the same timestamp twice, ten
+        /// seconds apart, before it can publish — this reads CONTENT, and
+        /// Jellyfin rewrites this file in place (measured: enabling or disabling
+        /// a plugin rewrites it whole). A scan that lands mid-rewrite therefore
+        /// really can see truncated JSON.
+        /// </para>
+        ///
+        /// <para>
+        /// Letting that fall through to empty strings would be the worst possible
+        /// answer: id, version AND status would all blank at once, which looks
+        /// exactly like the plugin being replaced by a different one. The
+        /// generation would bump, every client on the server would reload, and
+        /// the next scan five seconds later would bump it back — two server-wide
+        /// reloads for a file nobody changed. So the last GOOD read is reused
+        /// instead, and a torn read becomes a no-op.
+        /// </para>
+        /// </summary>
+        private MetaSnapshot ReadMeta(string directory, string folder)
+        {
+            var metaPath = Path.Combine(directory, "meta.json");
+            if (!File.Exists(metaPath))
+            {
+                return MetaSnapshot.Empty;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllBytes(metaPath));
+                var snapshot = new MetaSnapshot(
+                    ReadStringProperty(document.RootElement, "guid"),
+                    ReadStringProperty(document.RootElement, "version"),
+                    ReadStringProperty(document.RootElement, "status"));
+                _metaSnapshots[folder] = snapshot;
+                return snapshot;
+            }
+            catch
+            {
+                // Torn mid-rewrite, or hand-edited into invalid JSON. Either way
+                // the previous answer is closer to the truth than "gone".
+                return _metaSnapshots.TryGetValue(folder, out var previous)
+                    ? previous
+                    : MetaSnapshot.Empty;
+            }
+        }
+
+        /// <summary>The identity fields one <c>meta.json</c> contributes.</summary>
+        private readonly struct MetaSnapshot
+        {
+            public static readonly MetaSnapshot Empty =
+                new MetaSnapshot(string.Empty, string.Empty, string.Empty);
+
+            public MetaSnapshot(string id, string version, string status)
+            {
+                Id = id;
+                Version = version;
+                Status = status;
+            }
+
+            public string Id { get; }
+
+            public string Version { get; }
+
+            public string Status { get; }
         }
 
         /// <summary>

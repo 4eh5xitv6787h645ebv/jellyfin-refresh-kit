@@ -232,6 +232,32 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Fact]
+        public void MetaJsonTornMidRewrite_DoesNotChangeTheMaterial()
+        {
+            // Jellyfin rewrites meta.json IN PLACE, so a scan can land on
+            // truncated JSON. Blanking id/version/status would look like the
+            // plugin being replaced: one bump now, another when the next scan
+            // sees the whole file again — two server-wide reloads for a file
+            // nobody changed.
+            var folder = NewPluginFolder("Demo_1.2.3.0");
+            var provider = new PluginGenerationProvider();
+            var configurations = _configurations;
+
+            var good = provider.Fingerprint(folder, configurations, DateTime.UtcNow).ToMaterial();
+
+            var meta = Path.Combine(folder, "meta.json");
+            var whole = File.ReadAllText(meta);
+            File.WriteAllText(meta, whole.Substring(0, whole.Length / 2));
+            var torn = provider.Fingerprint(folder, configurations, DateTime.UtcNow).ToMaterial();
+
+            File.WriteAllText(meta, whole);
+            var restored = provider.Fingerprint(folder, configurations, DateTime.UtcNow).ToMaterial();
+
+            Assert.Equal(good, torn);
+            Assert.Equal(good, restored);
+        }
+
+        [Fact]
         public void UnreadableOrMissingMetaJson_StillProducesMaterial()
         {
             var folder = Path.Combine(_root, "Broken_9.9.9.9");
