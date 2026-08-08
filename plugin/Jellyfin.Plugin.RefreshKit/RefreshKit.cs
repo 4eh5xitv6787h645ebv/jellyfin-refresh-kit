@@ -3,7 +3,7 @@
 //
 //  MIT License
 //
-//  Copyright (c) 2026 <YOUR NAME HERE>
+//  Copyright (c) 2026 4eh5xitv6787h645ebv
 //
 //  Permission is hereby granted, free of charge, to any person obtaining a copy
 //  of this software and associated documentation files (the "Software"), to deal
@@ -48,6 +48,10 @@
 //  representation a GET would never return (RFC 9110 §9.3.2 / §8.6). It landed
 //  here first only because the root file was owned by another change at the
 //  time. Port it up and this divergence should disappear.
+//
+//  Also: the copyright line above names the actual holder, where the root file
+//  still carries the "<YOUR NAME HERE>" placeholder. Fix the root file and the
+//  sed recipe stops clobbering this line too.
 //
 //  WHAT THIS FILE IS
 //  =================
