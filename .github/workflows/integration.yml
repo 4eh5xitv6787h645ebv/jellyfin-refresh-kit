@@ -1,0 +1,50 @@
+name: Real Jellyfin integration
+
+'on':
+  workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-jellyfin-integration
+  cancel-in-progress: false
+
+jobs:
+  real-server-rigs:
+    name: Jellyfin 10.11/12 lifecycle, host-upgrade, and proxy rigs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Run the disposable real-server suite
+        env:
+          RK_RESULTS_DIR: test-results/integration
+        run: ./test.sh integration
+
+      - name: Retain test evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: real-jellyfin-${{ github.sha }}-${{ github.run_attempt }}
+          path: test-results/integration
+          if-no-files-found: error
+          retention-days: 14

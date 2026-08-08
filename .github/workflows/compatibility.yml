@@ -1,0 +1,73 @@
+name: Locked ecosystem compatibility
+
+'on':
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Optional full source commit; blank selects the dispatched branch head
+        required: false
+        type: string
+  schedule:
+    - cron: '41 4 * * 4'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: locked-ecosystem-compatibility
+  cancel-in-progress: false
+
+jobs:
+  compatibility:
+    name: Nine pinned ecosystem matrices
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out the exact selected revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify checkout identity
+        id: checkout_identity
+        env:
+          REQUESTED_REVISION: ${{ inputs.source_revision }}
+          EVENT_REVISION: ${{ github.sha }}
+        run: |
+          ACTUAL_REVISION="$(git rev-parse HEAD)"
+          if [ -n "$REQUESTED_REVISION" ]; then
+            [[ "$REQUESTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+            test "$ACTUAL_REVISION" = "$REQUESTED_REVISION"
+          else
+            test "$ACTUAL_REVISION" = "$EVENT_REVISION"
+          fi
+          test -z "$(git status --porcelain --untracked-files=all)"
+          printf 'source_revision=%s\n' "$ACTUAL_REVISION" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Run all locked compatibility matrices
+        env:
+          RK_RESULTS_DIR: test-results/compatibility
+        run: ./test.sh compatibility
+
+      - name: Retain compatibility evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: locked-compatibility-${{ steps.checkout_identity.outputs.source_revision }}-${{ github.run_attempt }}
+          path: test-results/compatibility
+          if-no-files-found: error
+          retention-days: 14

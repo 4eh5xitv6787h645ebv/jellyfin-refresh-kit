@@ -1,0 +1,72 @@
+name: Fast gate
+
+'on':
+  push:
+    branches-ignore:
+      - 'release-candidate/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
+            plugin/Jellyfin.Plugin.RefreshKit.Tests/packages.lock.json
+            tests/RefreshKit.Standalone.Compile/packages.lock.json
+
+      - name: Install pinned .NET 9 test runtime
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          # This SDK carries the actual 9.0.18 runtime. global.json still
+          # selects 10.0.302 for compilation.
+          dotnet-version: 9.0.316
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Run the fast gate
+        run: ./test.sh fast
+
+  reproducibility:
+    name: Reproducible packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
+
+      - name: Compare isolated paths and concurrent builds
+        run: ./test.sh reproducibility

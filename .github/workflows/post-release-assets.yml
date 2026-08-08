@@ -1,0 +1,232 @@
+name: Published release asset verification (read-only)
+
+'on':
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Full source commit embedded in the published packages
+        required: true
+        type: string
+      manifest_revision:
+        description: Direct manifest-only child commit used for the release
+        required: true
+        type: string
+      expected_version:
+        description: Published four-part plugin version
+        required: true
+        type: string
+      release_kind:
+        description: Active release-policy branch
+        required: true
+        type: choice
+        options:
+          - final
+          - milestone
+      validation_run_id:
+        description: Successful exact-source release-validation workflow run ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: published-assets-${{ inputs.expected_version }}
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: Compare GitHub assets to exact reproducible bytes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source, manifest child, and tag inputs
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          MANIFEST_REVISION: ${{ inputs.manifest_revision }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          EVENT_REVISION: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          CANDIDATE_REF: refs/heads/release-candidate/v${{ inputs.expected_version }}
+          FINAL_MANIFEST: ${{ runner.temp }}/refresh-kit-final-manifest.json
+          SOURCE_MANIFEST: ${{ runner.temp }}/refresh-kit-source-manifest.json
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$MANIFEST_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$EVENT_REF" = refs/heads/main
+          test "$EVENT_REVISION" = "$MANIFEST_REVISION"
+          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
+          git cat-file -e "$MANIFEST_REVISION^{commit}"
+          read -r CHILD_COMMIT CHILD_PARENT EXTRA_PARENT <<< "$(git rev-list --parents -n 1 "$MANIFEST_REVISION")"
+          test "$CHILD_COMMIT" = "$MANIFEST_REVISION"
+          test "$CHILD_PARENT" = "$SOURCE_REVISION"
+          test -z "$EXTRA_PARENT"
+          test "$(git diff --name-only "$SOURCE_REVISION" "$MANIFEST_REVISION")" = "manifest.json"
+          git show "$SOURCE_REVISION:manifest.json" > "$SOURCE_MANIFEST"
+          git show "$MANIFEST_REVISION:manifest.json" > "$FINAL_MANIFEST"
+          ACTUAL_VERSION="$(python3 -c 'import xml.etree.ElementTree as E; print(E.parse("plugin/Jellyfin.Plugin.RefreshKit/Jellyfin.Plugin.RefreshKit.csproj").getroot().findtext(".//Version"))')"
+          test "$ACTUAL_VERSION" = "$EXPECTED_VERSION"
+          python3 scripts/verify-manifest-child.py \
+            --before "$SOURCE_MANIFEST" \
+            --after "$FINAL_MANIFEST" \
+            --guid 515255fe-3332-49b0-b471-0be58c8221d8 \
+            --version "$ACTUAL_VERSION"
+          test "$(git rev-list -n 1 "v$ACTUAL_VERSION")" = "$SOURCE_REVISION"
+
+          mapfile -t MAIN_ROWS < <(git ls-remote --refs origin refs/heads/main)
+          test "${#MAIN_ROWS[@]}" -eq 1
+          read -r REMOTE_MAIN REMOTE_MAIN_REF MAIN_EXTRA <<< "${MAIN_ROWS[0]}"
+          test "$REMOTE_MAIN" = "$MANIFEST_REVISION"
+          test "$REMOTE_MAIN_REF" = refs/heads/main
+          test -z "$MAIN_EXTRA"
+
+          mapfile -t CANDIDATE_ROWS < <(git ls-remote --refs origin "$CANDIDATE_REF")
+          test "${#CANDIDATE_ROWS[@]}" -eq 1
+          read -r REMOTE_CANDIDATE REMOTE_CANDIDATE_REF CANDIDATE_EXTRA <<< "${CANDIDATE_ROWS[0]}"
+          test "$REMOTE_CANDIDATE" = "$MANIFEST_REVISION"
+          test "$REMOTE_CANDIDATE_REF" = "$CANDIDATE_REF"
+          test -z "$CANDIDATE_EXTRA"
+
+          TAG_REF="refs/tags/v$ACTUAL_VERSION"
+          mapfile -t TAG_ROWS < <(git ls-remote origin "$TAG_REF" "$TAG_REF^{}")
+          test "${#TAG_ROWS[@]}" -ge 1
+          test "${#TAG_ROWS[@]}" -le 2
+          REMOTE_TAG=''
+          REMOTE_PEELED=''
+          for ROW in "${TAG_ROWS[@]}"; do
+            read -r OBJECT REF EXTRA <<< "$ROW"
+            test -z "$EXTRA"
+            case "$REF" in
+              "$TAG_REF") REMOTE_TAG="$OBJECT" ;;
+              "$TAG_REF^{}") REMOTE_PEELED="$OBJECT" ;;
+              *) exit 1 ;;
+            esac
+          done
+          test -n "$REMOTE_TAG"
+          test "${REMOTE_PEELED:-$REMOTE_TAG}" = "$SOURCE_REVISION"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
+
+      - name: Rebuild and verify published bytes
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          MANIFEST_REVISION: ${{ inputs.manifest_revision }}
+          FINAL_MANIFEST: ${{ runner.temp }}/refresh-kit-final-manifest.json
+          POLICY_RECEIPT: ${{ runner.temp }}/refresh-kit-release-policy.json
+          RELEASE_KIND: ${{ inputs.release_kind }}
+          VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
+          CANDIDATE_REF: refs/heads/release-candidate/v${{ inputs.expected_version }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          ./plugin/build.sh
+          BUILD_SNAPSHOT="$(readlink -f plugin/build)"
+          mkdir -p test-results/post-release
+          python3 scripts/verify-package.py \
+            --build-dir "$BUILD_SNAPSHOT" \
+            --manifest "$FINAL_MANIFEST" \
+            --manifest-mode exact \
+            --expected-revision "$SOURCE_REVISION" \
+            --require-clean-source \
+            --require-immutable-snapshot \
+            --receipt test-results/post-release/verification-receipt.json
+          python3 scripts/verify-release-assets.py \
+            --repository 4eh5xitv6787h645ebv/jellyfin-refresh-kit \
+            --tag "v$EXPECTED_VERSION" \
+            --version "$EXPECTED_VERSION" \
+            --release-kind "$RELEASE_KIND" \
+            --build-dir "$BUILD_SNAPSHOT" \
+            --output test-results/post-release/published-assets.json
+          PUBLISHED_EPOCH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["publishedAtEpoch"])' test-results/post-release/published-assets.json)"
+          SOURCE_EPOCH="$(git show -s --format=%ct "$SOURCE_REVISION")"
+          python3 scripts/verify-release-policy.py \
+            --kind "$RELEASE_KIND" \
+            --version "$EXPECTED_VERSION" \
+            --source-epoch "$SOURCE_EPOCH" \
+            --now-epoch "$PUBLISHED_EPOCH" \
+            --output "$POLICY_RECEIPT"
+          python3 scripts/verify-validation-run.py \
+            --repository 4eh5xitv6787h645ebv/jellyfin-refresh-kit \
+            --run-id "$VALIDATION_RUN_ID" \
+            --source-revision "$SOURCE_REVISION" \
+            --manifest-revision "$MANIFEST_REVISION" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --version "$EXPECTED_VERSION" \
+            --build-dir "$BUILD_SNAPSHOT" \
+            --manifest "$FINAL_MANIFEST" \
+            --verification-receipt test-results/post-release/verification-receipt.json \
+            --release-policy "$POLICY_RECEIPT" \
+            --published-epoch "$PUBLISHED_EPOCH" \
+            --output test-results/post-release/validation-predecessor.json
+          install -m 0644 "$FINAL_MANIFEST" test-results/post-release/manifest.json
+          install -m 0644 "$POLICY_RECEIPT" test-results/post-release/release-policy.json
+          pushd test-results/post-release >/dev/null
+          sha256sum *.json > SHA256SUMS
+          popd >/dev/null
+
+      - name: Recheck the published tag and exact main tip
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          MANIFEST_REVISION: ${{ inputs.manifest_revision }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          EVENT_REVISION: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          CANDIDATE_REF: refs/heads/release-candidate/v${{ inputs.expected_version }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_REF" = refs/heads/main
+          test "$EVENT_REVISION" = "$MANIFEST_REVISION"
+          mapfile -t MAIN_ROWS < <(git ls-remote --refs origin refs/heads/main)
+          test "${#MAIN_ROWS[@]}" -eq 1
+          read -r REMOTE_MAIN REMOTE_MAIN_REF MAIN_EXTRA <<< "${MAIN_ROWS[0]}"
+          test "$REMOTE_MAIN" = "$MANIFEST_REVISION"
+          test "$REMOTE_MAIN_REF" = refs/heads/main
+          test -z "$MAIN_EXTRA"
+
+          mapfile -t CANDIDATE_ROWS < <(git ls-remote --refs origin "$CANDIDATE_REF")
+          test "${#CANDIDATE_ROWS[@]}" -eq 1
+          read -r REMOTE_CANDIDATE REMOTE_CANDIDATE_REF CANDIDATE_EXTRA <<< "${CANDIDATE_ROWS[0]}"
+          test "$REMOTE_CANDIDATE" = "$MANIFEST_REVISION"
+          test "$REMOTE_CANDIDATE_REF" = "$CANDIDATE_REF"
+          test -z "$CANDIDATE_EXTRA"
+
+          TAG_REF="refs/tags/v$EXPECTED_VERSION"
+          mapfile -t TAG_ROWS < <(git ls-remote origin "$TAG_REF" "$TAG_REF^{}")
+          test "${#TAG_ROWS[@]}" -ge 1
+          test "${#TAG_ROWS[@]}" -le 2
+          REMOTE_TAG=''
+          REMOTE_PEELED=''
+          for ROW in "${TAG_ROWS[@]}"; do
+            read -r OBJECT REF EXTRA <<< "$ROW"
+            test -z "$EXTRA"
+            case "$REF" in
+              "$TAG_REF") REMOTE_TAG="$OBJECT" ;;
+              "$TAG_REF^{}") REMOTE_PEELED="$OBJECT" ;;
+              *) exit 1 ;;
+            esac
+          done
+          test -n "$REMOTE_TAG"
+          test "${REMOTE_PEELED:-$REMOTE_TAG}" = "$SOURCE_REVISION"
+
+      - name: Retain read-only correspondence evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: published-assets-${{ inputs.expected_version }}-${{ github.run_attempt }}
+          path: test-results/post-release
+          if-no-files-found: error
+          retention-days: 30

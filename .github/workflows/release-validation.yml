@@ -1,0 +1,402 @@
+name: Release candidate validation (no publishing)
+
+'on':
+  workflow_dispatch:
+    inputs:
+      # Bootstrap note: GitHub only offers workflow_dispatch after this file is
+      # present on the default branch. Install the workflow before creating the
+      # first temporary candidate ref; dispatch the actual validation from that
+      # exact ref, never from main.
+      source_revision:
+        description: Full 40-character source commit whose bytes will ship
+        required: true
+        type: string
+      manifest_revision:
+        description: Direct manifest-only child at the candidate ref
+        required: true
+        type: string
+      expected_version:
+        description: Four-part plugin version expected in source and manifest
+        required: true
+        type: string
+      release_kind:
+        description: Active release-policy branch
+        required: true
+        type: choice
+        options:
+          - final
+          - milestone
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-validation-${{ inputs.expected_version }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Bind the temporary candidate ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the manifest child selected by the dispatch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.manifest_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the exact untagged remote candidate
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          MANIFEST_REVISION: ${{ inputs.manifest_revision }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          RELEASE_KIND: ${{ inputs.release_kind }}
+          EVENT_REVISION: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          FINAL_MANIFEST: ${{ runner.temp }}/refresh-kit-final-manifest.json
+          SOURCE_MANIFEST: ${{ runner.temp }}/refresh-kit-source-manifest.json
+          POLICY_RECEIPT: ${{ runner.temp }}/refresh-kit-release-policy.json
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$MANIFEST_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_VERSION" =~ ^[0-9]+(\.[0-9]+){3}$ ]]
+          CANDIDATE_REF="refs/heads/release-candidate/v$EXPECTED_VERSION"
+          test "$EVENT_REF" = "$CANDIDATE_REF"
+          test "$EVENT_REVISION" = "$MANIFEST_REVISION"
+          test "$(git rev-parse HEAD)" = "$MANIFEST_REVISION"
+
+          mapfile -t CANDIDATE_ROWS < <(git ls-remote --refs origin "$CANDIDATE_REF")
+          test "${#CANDIDATE_ROWS[@]}" -eq 1
+          read -r REMOTE_CANDIDATE REMOTE_REF EXTRA <<< "${CANDIDATE_ROWS[0]}"
+          test "$REMOTE_CANDIDATE" = "$MANIFEST_REVISION"
+          test "$REMOTE_REF" = "$CANDIDATE_REF"
+          test -z "$EXTRA"
+          REMOTE_TAG_ROWS="$(git ls-remote --refs origin "refs/tags/v$EXPECTED_VERSION")"
+          test -z "$REMOTE_TAG_ROWS"
+
+          read -r CHILD_COMMIT CHILD_PARENT EXTRA_PARENT <<< \
+            "$(git rev-list --parents -n 1 "$MANIFEST_REVISION")"
+          test "$CHILD_COMMIT" = "$MANIFEST_REVISION"
+          test "$CHILD_PARENT" = "$SOURCE_REVISION"
+          test -z "$EXTRA_PARENT"
+          test "$(git diff --name-only "$SOURCE_REVISION" "$MANIFEST_REVISION")" = manifest.json
+          git show "$SOURCE_REVISION:manifest.json" > "$SOURCE_MANIFEST"
+          git show "$MANIFEST_REVISION:manifest.json" > "$FINAL_MANIFEST"
+          ACTUAL_VERSION="$(python3 -c 'import xml.etree.ElementTree as E; print(E.parse("plugin/Jellyfin.Plugin.RefreshKit/Jellyfin.Plugin.RefreshKit.csproj").getroot().findtext(".//Version"))')"
+          test "$ACTUAL_VERSION" = "$EXPECTED_VERSION"
+          SOURCE_EPOCH="$(git show -s --format=%ct "$SOURCE_REVISION")"
+          python3 scripts/verify-release-policy.py \
+            --kind "$RELEASE_KIND" \
+            --version "$ACTUAL_VERSION" \
+            --source-epoch "$SOURCE_EPOCH" \
+            --validation-dispatch \
+            --event-ref "$EVENT_REF" \
+            --event-revision "$EVENT_REVISION" \
+            --manifest-revision "$MANIFEST_REVISION" \
+            --existing-tag-object '' \
+            --output "$POLICY_RECEIPT"
+          python3 scripts/verify-manifest-child.py \
+            --before "$SOURCE_MANIFEST" \
+            --after "$FINAL_MANIFEST" \
+            --guid 515255fe-3332-49b0-b471-0be58c8221d8 \
+            --version "$ACTUAL_VERSION"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+  fast_repro_security:
+    name: Fast, reproducibility, and security gates
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
+            plugin/Jellyfin.Plugin.RefreshKit.Tests/packages.lock.json
+            tests/RefreshKit.Standalone.Compile/packages.lock.json
+
+      - name: Install pinned .NET 9 test runtime
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 9.0.316
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Run all container-free release gates
+        run: |
+          ./test.sh fast
+          ./test.sh reproducibility
+          ./test.sh security-audit
+
+      - name: Collect exact fast-worker identity
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          BUILD_SNAPSHOT="$(readlink -f plugin/build)"
+          python3 scripts/verify-package.py \
+            --build-dir "$BUILD_SNAPSHOT" \
+            --manifest manifest.json \
+            --manifest-mode structure \
+            --expected-revision "$SOURCE_REVISION" \
+            --require-clean-source \
+            --require-immutable-snapshot
+          python3 scripts/collect-ci-evidence.py \
+            --output test-results/fast \
+            --build-dir "$BUILD_SNAPSHOT"
+
+      - name: Retain the fast worker evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-worker-fast-${{ inputs.source_revision }}-${{ github.run_attempt }}
+          path: test-results/fast
+          if-no-files-found: error
+          retention-days: 3
+
+  integration_gate:
+    name: Real-server integration gate
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Run and collect the real-server gate
+        env:
+          RK_RESULTS_DIR: test-results/integration
+        run: ./test.sh integration
+
+      - name: Retain the integration worker evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-worker-integration-${{ inputs.source_revision }}-${{ github.run_attempt }}
+          path: test-results/integration
+          if-no-files-found: error
+          retention-days: 3
+
+  compatibility_gate:
+    name: Locked compatibility gate
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Run and collect every locked compatibility matrix
+        env:
+          RK_RESULTS_DIR: test-results/compatibility
+        run: ./test.sh compatibility
+
+      - name: Retain the compatibility worker evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-worker-compatibility-${{ inputs.source_revision }}-${{ github.run_attempt }}
+          path: test-results/compatibility
+          if-no-files-found: error
+          retention-days: 3
+
+  final_retain:
+    name: Rebuild and retain one bound candidate
+    needs:
+      - preflight
+      - fast_repro_security
+      - integration_gate
+      - compatibility_gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
+
+      - name: Download the exact fast worker artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-worker-fast-${{ inputs.source_revision }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-workers/fast
+
+      - name: Download the exact integration worker artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-worker-integration-${{ inputs.source_revision }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-workers/integration
+
+      - name: Download the exact compatibility worker artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-worker-compatibility-${{ inputs.source_revision }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-workers/compatibility
+
+      - name: Recheck, rebuild, and merge the exact retained evidence
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          MANIFEST_REVISION: ${{ inputs.manifest_revision }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          RELEASE_KIND: ${{ inputs.release_kind }}
+          EVENT_REVISION: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          FINAL_MANIFEST: ${{ runner.temp }}/refresh-kit-final-manifest.json
+          SOURCE_MANIFEST: ${{ runner.temp }}/refresh-kit-source-manifest.json
+          POLICY_RECEIPT: ${{ runner.temp }}/refresh-kit-release-policy.json
+          VERIFICATION_RECEIPT: ${{ runner.temp }}/refresh-kit-verification-receipt.json
+          CANDIDATE_DIR: ${{ runner.temp }}/release-candidate
+          WORKER_ROOT: ${{ runner.temp }}/release-workers
+        run: |
+          set -euo pipefail
+          CANDIDATE_REF="refs/heads/release-candidate/v$EXPECTED_VERSION"
+          test "$EVENT_REF" = "$CANDIDATE_REF"
+          test "$EVENT_REVISION" = "$MANIFEST_REVISION"
+          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
+          git cat-file -e "$MANIFEST_REVISION^{commit}"
+          read -r CHILD_COMMIT CHILD_PARENT EXTRA_PARENT <<< \
+            "$(git rev-list --parents -n 1 "$MANIFEST_REVISION")"
+          test "$CHILD_COMMIT" = "$MANIFEST_REVISION"
+          test "$CHILD_PARENT" = "$SOURCE_REVISION"
+          test -z "$EXTRA_PARENT"
+          test "$(git diff --name-only "$SOURCE_REVISION" "$MANIFEST_REVISION")" = manifest.json
+          git show "$SOURCE_REVISION:manifest.json" > "$SOURCE_MANIFEST"
+          git show "$MANIFEST_REVISION:manifest.json" > "$FINAL_MANIFEST"
+          python3 scripts/verify-manifest-child.py \
+            --before "$SOURCE_MANIFEST" \
+            --after "$FINAL_MANIFEST" \
+            --guid 515255fe-3332-49b0-b471-0be58c8221d8 \
+            --version "$EXPECTED_VERSION"
+
+          mapfile -t CANDIDATE_ROWS < <(git ls-remote --refs origin "$CANDIDATE_REF")
+          test "${#CANDIDATE_ROWS[@]}" -eq 1
+          read -r REMOTE_CANDIDATE REMOTE_REF EXTRA <<< "${CANDIDATE_ROWS[0]}"
+          test "$REMOTE_CANDIDATE" = "$MANIFEST_REVISION"
+          test "$REMOTE_REF" = "$CANDIDATE_REF"
+          test -z "$EXTRA"
+          REMOTE_TAG_ROWS="$(git ls-remote --refs origin "refs/tags/v$EXPECTED_VERSION")"
+          test -z "$REMOTE_TAG_ROWS"
+
+          SOURCE_EPOCH="$(git show -s --format=%ct "$SOURCE_REVISION")"
+          python3 scripts/verify-release-policy.py \
+            --kind "$RELEASE_KIND" \
+            --version "$EXPECTED_VERSION" \
+            --source-epoch "$SOURCE_EPOCH" \
+            --validation-dispatch \
+            --event-ref "$EVENT_REF" \
+            --event-revision "$EVENT_REVISION" \
+            --manifest-revision "$MANIFEST_REVISION" \
+            --existing-tag-object '' \
+            --output "$POLICY_RECEIPT"
+
+          ./plugin/build.sh
+          BUILD_SNAPSHOT="$(readlink -f plugin/build)"
+          python3 scripts/verify-package.py \
+            --build-dir "$BUILD_SNAPSHOT" \
+            --manifest "$FINAL_MANIFEST" \
+            --manifest-mode exact \
+            --expected-revision "$SOURCE_REVISION" \
+            --require-clean-source \
+            --require-immutable-snapshot \
+            --receipt "$VERIFICATION_RECEIPT"
+          python3 scripts/retain-release-candidate.py \
+            --build-dir "$BUILD_SNAPSHOT" \
+            --manifest "$FINAL_MANIFEST" \
+            --verification-receipt "$VERIFICATION_RECEIPT" \
+            --output "$CANDIDATE_DIR" \
+            --source-revision "$SOURCE_REVISION" \
+            --manifest-revision "$MANIFEST_REVISION" \
+            --version "$EXPECTED_VERSION"
+          install -m 0644 "$POLICY_RECEIPT" "$CANDIDATE_DIR/release-policy.json"
+
+          python3 scripts/merge-release-evidence.py \
+            --fast "$WORKER_ROOT/fast" \
+            --integration "$WORKER_ROOT/integration" \
+            --compatibility "$WORKER_ROOT/compatibility" \
+            --candidate "$CANDIDATE_DIR" \
+            --build-dir "$BUILD_SNAPSHOT" \
+            --manifest "$FINAL_MANIFEST" \
+            --release-policy "$POLICY_RECEIPT" \
+            --output test-results/release-validation \
+            --source-revision "$SOURCE_REVISION" \
+            --manifest-revision "$MANIFEST_REVISION" \
+            --version "$EXPECTED_VERSION" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+
+          # This is the last command before the immutable artifact upload. A
+          # moved candidate or newly created tag invalidates the whole run.
+          mapfile -t FINAL_CANDIDATE_ROWS < <(git ls-remote --refs origin "$CANDIDATE_REF")
+          test "${#FINAL_CANDIDATE_ROWS[@]}" -eq 1
+          read -r FINAL_REMOTE FINAL_REF FINAL_EXTRA <<< "${FINAL_CANDIDATE_ROWS[0]}"
+          test "$FINAL_REMOTE" = "$MANIFEST_REVISION"
+          test "$FINAL_REF" = "$CANDIDATE_REF"
+          test -z "$FINAL_EXTRA"
+          FINAL_TAG_ROWS="$(git ls-remote --refs origin "refs/tags/v$EXPECTED_VERSION")"
+          test -z "$FINAL_TAG_ROWS"
+
+      - name: Retain the exact validation bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-validation-${{ inputs.source_revision }}-${{ github.run_attempt }}
+          path: test-results/release-validation
+          if-no-files-found: error
+          retention-days: 30

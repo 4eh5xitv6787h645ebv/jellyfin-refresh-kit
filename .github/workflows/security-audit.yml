@@ -1,0 +1,36 @@
+name: Dependency security audit
+
+'on':
+  workflow_dispatch:
+  schedule:
+    - cron: '41 5 * * 2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-security-audit
+  cancel-in-progress: false
+
+jobs:
+  nuget:
+    name: Current NuGet advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
+            plugin/Jellyfin.Plugin.RefreshKit.Tests/packages.lock.json
+
+      - name: Fail on current low-or-higher NuGet advisories
+        run: ./test.sh security-audit
