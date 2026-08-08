@@ -194,7 +194,6 @@ namespace Jellyfin.Plugin.RefreshKit
             var elements = new List<ElementContext>();
             var index = 0;
             var changed = false;
-            var sawEffectiveBase = false;
 
             while (index < html.Length)
             {
@@ -280,6 +279,11 @@ namespace Jellyfin.Plugin.RefreshKit
                             return html;
                         }
 
+                        if (EndTagCrossesHtmlTemplateBoundary(elements, closeName))
+                        {
+                            return html;
+                        }
+
                         PopElement(elements, closeName);
                     }
 
@@ -329,16 +333,15 @@ namespace Jellyfin.Plugin.RefreshKit
                 if (elementNamespace == MarkupNamespace.Html
                     && name.Equals("base", StringComparison.OrdinalIgnoreCase)
                     && !IsInsideHtmlTemplate(elements)
-                    && !sawEffectiveBase
                     && TryGetAttribute(attributes, "href", out var baseHref))
                 {
-                    sawEffectiveBase = true;
                     var sourceHref = html.Substring(baseHref.ValueStart, baseHref.ValueLength);
                     if (HasUnsafeAbsoluteBase(sourceHref))
                     {
                         // The raw relative URLs below no longer imply the
-                        // document's origin. Abandon the entire pass so even tags
-                        // visited before a late <base> remain byte-identical.
+                        // document's origin. Inspect every source candidate:
+                        // foster parenting can reorder bases in the DOM, so
+                        // source order cannot prove which one becomes effective.
                         return html;
                     }
                 }
@@ -811,6 +814,39 @@ namespace Jellyfin.Plugin.RefreshKit
             // boundary or reprocess this token in an insertion mode our small
             // walker does not model. Optional stamping therefore fails closed.
             return true;
+        }
+
+        private static bool EndTagCrossesHtmlTemplateBoundary(
+            List<ElementContext> elements,
+            string name)
+        {
+            if (name.Equals("body", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("html", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var crossedTemplate = false;
+            for (var index = elements.Count - 1; index >= 0; index--)
+            {
+                var element = elements[index];
+                if (element.Namespace != MarkupNamespace.Html)
+                {
+                    continue;
+                }
+
+                if (element.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return crossedTemplate;
+                }
+
+                if (element.Name.Equals("template", StringComparison.OrdinalIgnoreCase))
+                {
+                    crossedTemplate = true;
+                }
+            }
+
+            return false;
         }
 
         private static void PopOrdinaryForeignAncestors(List<ElementContext> elements)

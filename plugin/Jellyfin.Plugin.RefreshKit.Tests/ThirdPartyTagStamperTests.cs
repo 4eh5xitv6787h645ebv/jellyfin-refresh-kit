@@ -651,23 +651,40 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Fact]
-        public void FirstEffectiveRelativeBase_WinsOverLaterUnsafeBase()
+        public void AnyUnsafeBaseCandidateDisablesStampingDespiteSourceOrder()
         {
             const string Html = "<base href=\"assets/\">"
                 + "<base href=\"https://cdn.example.invalid/path/\">"
                 + "<script src=\"plugin.js\"></script>";
 
-            Assert.Equal(
-                "<base href=\"assets/\">"
-                + "<base href=\"https://cdn.example.invalid/path/\">"
-                + "<script src=\"plugin.js?rkv=" + Generation + "\"></script>",
-                Stamp(Html));
+            Assert.Same(Html, Stamp(Html));
+        }
+
+        [Fact]
+        public void FosterParentedUnsafeBaseCannotHideBehindEarlierSourceCandidate()
+        {
+            const string Html = "<table><tr><td><base href=\"/safe/\"></td></tr>"
+                + "<base href=\"https://cdn.example.invalid/live/\"></table>"
+                + "<script src=\"asset.js\"></script>";
+
+            Assert.Same(Html, Stamp(Html));
         }
 
         [Fact]
         public void BaseInsideTemplateDoesNotPreemptTheDocumentEffectiveBase()
         {
             const string Html = "<template><base href=\"/inert-template-base/\"></template>"
+                + "<base href=\"https://cdn.example.invalid/root/\">"
+                + "<script src=\"plugin.js\"></script>";
+
+            Assert.Same(Html, Stamp(Html));
+        }
+
+        [Fact]
+        public void MismatchedEndTagCannotPopAcrossTemplateAndHideEffectiveBase()
+        {
+            const string Html = "<div><template></div>"
+                + "<base href=\"/inert-template-base/\"></template>"
                 + "<base href=\"https://cdn.example.invalid/root/\">"
                 + "<script src=\"plugin.js\"></script>";
 

@@ -801,6 +801,11 @@ namespace JellyfinRefreshKit
                         return -1;
                     }
 
+                    if (HtmlEndTagCrossesTemplateBoundary(elements, name))
+                    {
+                        return -1;
+                    }
+
                     var hasForeignAncestor = HtmlHasForeignElement(elements);
                     var closesHtmlElement = HtmlEndTagTargetsNamespace(
                         elements,
@@ -1135,6 +1140,39 @@ namespace JellyfinRefreshKit
             }
 
             return true;
+        }
+
+        private static bool HtmlEndTagCrossesTemplateBoundary(
+            List<HtmlElementContext> elements,
+            string name)
+        {
+            if (name.Equals("body", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("html", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var crossedTemplate = false;
+            for (var index = elements.Count - 1; index >= 0; index--)
+            {
+                var element = elements[index];
+                if (element.Namespace != HtmlMarkupNamespace.Html)
+                {
+                    continue;
+                }
+
+                if (element.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return crossedTemplate;
+                }
+
+                if (element.Name.Equals("template", StringComparison.OrdinalIgnoreCase))
+                {
+                    crossedTemplate = true;
+                }
+            }
+
+            return false;
         }
 
         private static void HtmlPopOrdinaryForeignAncestors(
@@ -1640,6 +1678,11 @@ namespace JellyfinRefreshKit
                             closeNameEnd - closeNameStart);
                         HtmlPopForForeignContentEndTagBreakout(elements, closeName);
                         if (HtmlForeignEndTagRequiresFailClosed(elements, closeName))
+                        {
+                            return html;
+                        }
+
+                        if (HtmlEndTagCrossesTemplateBoundary(elements, closeName))
                         {
                             return html;
                         }

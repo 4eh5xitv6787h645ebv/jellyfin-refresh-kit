@@ -467,6 +467,18 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Fact]
+        public void ReplaceOwnedScriptTags_MismatchedEndTagAcrossTemplateFailsClosed()
+        {
+            const string Html = "<html><body><div><template></div>"
+                + "<script plugin=\"Kit &amp; Co\" src=\"/inert.js\"></script>"
+                + "</template>"
+                + "<script plugin=\"Kit &amp; Co\" src=\"/live.js\"></script>"
+                + "</body></html>";
+
+            Assert.Same(Html, RefreshKit.ReplaceOwnedScriptTags(Html, PluginName, CurrentTag));
+        }
+
+        [Fact]
         public void ReplaceOwnedScriptTags_InvalidEndTagUsesBogusCommentClose()
         {
             const string Html = "<html><body></!x \""
