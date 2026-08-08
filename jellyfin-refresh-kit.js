@@ -2433,14 +2433,38 @@
 
             if (document.fullscreenElement || document.pictureInPictureElement) return 'fullscreen_media';
 
+            // PROOF OF ABSENCE (2.4.0). Jellyfin's own screensaver puts
+            // `screensaver-noScroll` on <body> when it takes the screen, which
+            // it only does after ITS idle timeout has expired with nothing
+            // playing. That is not the kit guessing the user might be away —
+            // it is the application itself having concluded they are, and
+            // having covered the page with something the user cannot be
+            // reading anyway.
+            //
+            // It buys exactly two things: the DIALOG gate can be overridden,
+            // and the idle requirement drops to the settle floor. The dialog
+            // override is the point of the feature — a modal left open on an
+            // abandoned tab (a details sheet, a "playback error" toast) blocks
+            // the reload FOREVER, and "forever" is not a hypothetical when the
+            // tab is going to sit there overnight.
+            //
+            // What it deliberately does NOT override: every media gate (a
+            // screensaver can be up while audio plays in the same tab),
+            // 'active_editor' and 'password_entry'. Absent or not, the user's
+            // typing is still in that field when they come back.
+            var screensaver = !!(document.body && document.body.classList &&
+                document.body.classList.contains('screensaver-noScroll'));
+
             // Open modal/dialog: the user is mid-task and probably mid-write.
-            var dialogs = document.querySelectorAll(
-                '.dialog.opened, .actionSheet.opened, [role="dialog"], [aria-modal="true"]'
-            );
-            for (var i = 0; i < dialogs.length; i++) {
-                // A closed-but-retained dialog stays in the DOM inside an
-                // aria-hidden/hidden subtree; only visible ones block.
-                if (!dialogs[i].closest('[aria-hidden="true"], [hidden]')) return 'dialog';
+            if (!screensaver) {
+                var dialogs = document.querySelectorAll(
+                    '.dialog.opened, .actionSheet.opened, [role="dialog"], [aria-modal="true"]'
+                );
+                for (var i = 0; i < dialogs.length; i++) {
+                    // A closed-but-retained dialog stays in the DOM inside an
+                    // aria-hidden/hidden subtree; only visible ones block.
+                    if (!dialogs[i].closest('[aria-hidden="true"], [hidden]')) return 'dialog';
+                }
             }
 
             if (!skipMediaGate) {
@@ -2467,6 +2491,13 @@
             // password refusal directly above this, which is what makes
             // relaxing the login route safe at all.
             if (isEmptyRoute(hash)) idleMs = Math.min(idleMs, MIN_SETTLE_MS);
+
+            // A screensaver IS the idle proof, and a better one than this kit's
+            // own clock: Jellyfin only shows it after minutes of nothing. It
+            // still leaves the settle floor in place, because "do not reload in
+            // the same task as an event we just saw" is a different promise
+            // from "the user is idle", and it costs one second.
+            if (screensaver) idleMs = Math.min(idleMs, MIN_SETTLE_MS);
 
             if ((Date.now() - lastInteractionAt) < idleMs) return 'not_idle';
             return null;
