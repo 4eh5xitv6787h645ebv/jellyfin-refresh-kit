@@ -76,6 +76,25 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Fact]
+        public void PublicGenerationTokenDoesNotDisclosePluginCount()
+        {
+            var first = NodePlugin(
+                _root,
+                "First_1.0.0.0",
+                DemoId,
+                "11111111-1111-1111-1111-111111111111");
+            var second = NodePlugin(
+                _root,
+                "Second_1.0.0.0",
+                Guid.NewGuid(),
+                "22222222-2222-2222-2222-222222222222");
+            var provider = Provider(() => new[] { first, second });
+
+            Assert.Matches("^g-[0-9a-f]{16}$", provider.Generation);
+            Assert.Equal(2, provider.Details.Count);
+        }
+
+        [Fact]
         public void DisableAndEnableMoveOnlyWhenLoadedStateMoves()
         {
             var folder = NewPluginFolder("Demo_1.0.0.0", "active");
@@ -361,6 +380,63 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Equal(1, secondDetail.AssetDirectoriesScanned);
             Assert.Equal(firstDetail.AssetIdentity, secondDetail.AssetIdentity);
             Assert.Equal(firstProvider.Generation, secondProvider.Generation);
+        }
+
+        [Fact]
+        public void WideAndDeepDirectoryInventoryReservesPendingTraversalBudget()
+        {
+            var folder = Path.Combine(_root, "wide-deep");
+            Directory.CreateDirectory(folder);
+            var branch = Path.Combine(folder, "a-branch");
+            Directory.CreateDirectory(branch);
+            for (var index = 1; index < 256; index++)
+            {
+                Directory.CreateDirectory(Path.Combine(
+                    folder,
+                    "b" + index.ToString("D3", CultureInfo.InvariantCulture)));
+            }
+
+            for (var index = 0; index < 256; index++)
+            {
+                Directory.CreateDirectory(Path.Combine(
+                    branch,
+                    "c" + index.ToString("D3", CultureInfo.InvariantCulture)));
+            }
+
+            var provider = Provider(() => new[]
+            {
+                Descriptor(folder, "11111111-1111-1111-1111-111111111111"),
+            });
+            var detail = Assert.Single(provider.Details);
+
+            Assert.True(detail.AssetScanTruncated);
+            Assert.Equal(2, detail.AssetDirectoriesScanned);
+            Assert.Equal(0, detail.AssetFileCount);
+            Assert.Equal(0, detail.AssetBytesHashed);
+        }
+
+        [Fact]
+        public void CacheTtlStartsWhenSlowScanCompletes()
+        {
+            var folder = NewPluginFolder("slow-scan", "asset");
+            var descriptor = Descriptor(folder, "11111111-1111-1111-1111-111111111111");
+            var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var scans = 0;
+            var provider = new PluginGenerationProvider(
+                () =>
+                {
+                    scans++;
+                    now = now.AddSeconds(PluginGenerationProvider.CacheTtlSeconds + 1);
+                    return new[] { descriptor };
+                },
+                _configurations,
+                () => now);
+
+            var first = provider.Generation;
+            var immediateSecond = provider.Generation;
+
+            Assert.Equal(first, immediateSecond);
+            Assert.Equal(1, scans);
         }
 
         [Fact]

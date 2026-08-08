@@ -161,10 +161,12 @@ namespace Jellyfin.Plugin.RefreshKit
         }
 
         /// <summary>
-        /// The current generation token: <c>{plugin count}p-{16 hex}</c>, e.g.
-        /// <c>4p-9f2a1c0b7d3e5a64</c>. URL- and attribute-safe by construction,
+        /// The current opaque generation token: <c>g-{16 hex}</c>, e.g.
+        /// <c>g-9f2a1c0b7d3e5a64</c>. URL- and attribute-safe by construction,
         /// short enough to read in a network trace, and it changes when loaded
-        /// host/plugin code or active browser/configuration content changes.
+        /// host/plugin code or active browser/configuration content changes. The
+        /// public token deliberately does not disclose the loaded plugin count;
+        /// detailed inventory remains on the admin-authorized diagnostics route.
         /// <para>
         /// Read races retain the last coherent process state instead of briefly
         /// publishing an empty generation.
@@ -211,7 +213,10 @@ namespace Jellyfin.Plugin.RefreshKit
                 _cachedDetails = details;
                 _cachedHost = host;
                 _cached = Fold(details, host);
-                _cachedAtUtc = now;
+                // TTL starts when the filesystem/module scan completes. Using the
+                // scan-start timestamp makes a scan slower than the five-second TTL
+                // immediately stale and can trigger back-to-back full I/O passes.
+                _cachedAtUtc = _utcNow();
                 return (_cached, _cachedDetails, _cachedHost);
             }
         }
@@ -235,11 +240,7 @@ namespace Jellyfin.Plugin.RefreshKit
             }
 
             var hash = SHA256.HashData(Encoding.UTF8.GetBytes(material.ToString()));
-            return string.Format(
-                CultureInfo.InvariantCulture,
-                "{0}p-{1}",
-                details.Count,
-                Convert.ToHexString(hash, 0, 8).ToLowerInvariant());
+            return "g-" + Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
         }
 
         private IReadOnlyList<PluginFingerprint> ScanActivePlugins(DateTime now)
@@ -770,7 +771,14 @@ namespace Jellyfin.Plugin.RefreshKit
                         }
                     }
 
-                    var remainingDirectories = MaxDirectoriesPerPlugin - directoriesSeen;
+                    // Every queued directory has already consumed a future traversal
+                    // slot. Reserving only directoriesSeen lets a wide/deep tree grow
+                    // pending far beyond the 512-directory promise before the pop-side
+                    // sentinel notices. The subtraction makes both enumeration work
+                    // and queue memory genuinely bounded by the same budget.
+                    var remainingDirectories = MaxDirectoriesPerPlugin
+                        - directoriesSeen
+                        - pending.Count;
                     var subdirectories = Directory.EnumerateDirectories(current)
                         .Take(remainingDirectories + 1)
                         .OrderBy(path => path, StringComparer.Ordinal)
