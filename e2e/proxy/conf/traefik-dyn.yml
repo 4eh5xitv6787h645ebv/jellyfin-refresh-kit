@@ -1,0 +1,12 @@
+http:
+  routers:
+    jellyfin:
+      rule: "PathPrefix(`/`)"
+      entryPoints: [web]
+      service: jellyfin
+  services:
+    jellyfin:
+      loadBalancer:
+        servers:
+          - url: "http://rk-jf:8096"
+        passHostHeader: true

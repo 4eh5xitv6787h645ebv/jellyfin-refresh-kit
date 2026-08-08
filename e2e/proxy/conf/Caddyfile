@@ -1,0 +1,6 @@
+{
+    auto_https off
+}
+:80 {
+    reverse_proxy rk-jf:8096
+}
