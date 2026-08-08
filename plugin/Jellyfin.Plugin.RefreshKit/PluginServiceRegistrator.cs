@@ -1,5 +1,7 @@
 using System;
 using System.Globalization;
+using System.Net;
+using System.Security.Cryptography;
 using Jellyfin.Plugin.RefreshKit.Configuration;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
@@ -11,14 +13,19 @@ namespace Jellyfin.Plugin.RefreshKit
     /// Wires up all three mechanisms at server start.
     ///
     /// <list type="number">
-    /// <item><description><b>Revalidating index.html</b> —
-    /// <c>AddRefreshKit</c> registers the <c>IStartupFilter</c> that serves the
-    /// web shell through the refresh kit's middleware (strong <c>rk-</c> ETags,
-    /// 304/412, encoding-preserving, fail-open). This is the same registration
-    /// path Jellyfin Canopy uses on 10.11, and it works from a plugin.</description></item>
+    /// <item><description><b>Fresh index.html</b> — <c>AddRefreshKit</c>
+    /// registers the <c>IStartupFilter</c> that serves the web shell through the
+    /// refresh kit's middleware. Ordinary final-byte ownership uses strong
+    /// <c>rk-</c> ETags, 304/412 and encoding-preserving revalidation; nested
+    /// outer buffers receive the complete transformed shell as no-store without
+    /// validators while their final framing is preserved. This is the same
+    /// registration path Jellyfin Canopy uses on 10.11, and it works from a
+    /// plugin.</description></item>
     /// <item><description><b>Third-party tag stamping</b> — the
-    /// <c>HtmlPostProcess</c> hook, running inside that same transform so the
-    /// stamped bytes are the bytes that get ETagged and cached.</description></item>
+    /// <c>HtmlPostProcess</c> hook, running inside that same transform so visible
+    /// eligible tags share the shell representation's selected cache policy.
+    /// Tags appended later by an outer middleware remain outside the stamping
+    /// boundary.</description></item>
     /// <item><description><b>Generation + client runtime</b> — the injected tag
     /// points jellyfin-refresh-kit.js at the generation endpoint, in standalone
     /// mode: no bootstrap entries, no asset patterns, just "poll the aggregate
@@ -46,6 +53,15 @@ namespace Jellyfin.Plugin.RefreshKit
         /// plugin's own.
         /// </summary>
         internal const string InstanceName = "RefreshKitPlugin";
+
+        /// <summary>
+        /// Opaque 128-bit incarnation sidecar, generated once for this loaded
+        /// process. It is returned only by the JSON generation endpoint and is
+        /// never stamped as an HTML value or folded into generation/cache keys.
+        /// </summary>
+        internal static readonly string ProcessEpoch = Convert.ToHexString(
+                RandomNumberGenerator.GetBytes(16))
+            .ToLowerInvariant();
 
         /// <summary>Substring used to recognise (and never stamp) our own tags.</summary>
         internal static readonly string OwnTagMarker = "plugin=\"" + PluginName + "\"";
@@ -84,17 +100,19 @@ namespace Jellyfin.Plugin.RefreshKit
 
                 // THE GENERATION IS THE VERSION. Overriding VersionProvider makes
                 // one value do four jobs: the injected tag's ?v=, its
-                // data-boot-version seed, the value the version endpoint reports
-                // (RefreshKitVersionControllerBase reads the same delegate), and
-                // the ?rkv= stamp. They cannot drift apart, and the middleware's
-                // representation cache is keyed on the tag block — so a
-                // generation change also invalidates the cached shell.
+                // data-boot-version seed, and the value the version endpoint
+                // reports (RefreshKitVersionControllerBase reads the same
+                // delegate). The postprocessor derives ?rkv= from this exact tag
+                // block rather than reading mutable provider state a second time.
+                // The middleware cache is keyed on the tag block, so a generation
+                // change also invalidates the cached shell.
                 VersionProvider = ResolveGeneration,
+                EpochProvider = () => ProcessEpoch,
 
                 DevMode = () => Config?.DevMode == true,
                 Enabled = () => Config?.EnableInjection != false,
                 ExtraAttributes = _ => BuildKitAttributes(),
-                HtmlPostProcess = html => StampThirdPartyTags(html, ResolveGeneration()),
+                HtmlPostProcessWithTags = StampThirdPartyTags,
             });
         }
 
@@ -128,37 +146,42 @@ namespace Jellyfin.Plugin.RefreshKit
         /// and the server-side stamping covers the static tags.
         /// </para>
         /// </summary>
-        private static string BuildKitAttributes()
+        internal static string BuildKitAttributes()
         {
             var config = Config;
             var mode = config?.EnableAutoReload == false ? "notify" : "auto";
             return string.Format(
                 CultureInfo.InvariantCulture,
                 "data-name=\"{0}\" data-version-url=\"../{1}/Generation\" "
-                + "data-version-json-field=\"CacheKey\" data-mode=\"{2}\" "
-                + "data-poll-seconds=\"{3}\" data-idle-seconds=\"{4}\" data-reload-budget=\"{5}\"",
+                + "data-version-json-field=\"CacheKey\" "
+                + "data-version-epoch-json-field=\"Epoch\" data-mode=\"{2}\" "
+                + "data-poll-seconds=\"{3}\" data-idle-seconds=\"{4}\" data-reload-budget=\"{5}\" "
+                + "data-third-party-stamping=\"{6}\"",
                 InstanceName,
                 BasePath,
                 mode,
                 config?.PollSeconds ?? 60,
                 config?.IdleSeconds ?? 5,
-                config?.ReloadBudget ?? 3);
+                config?.ReloadBudget ?? 3,
+                config?.EnableThirdPartyStamping == false ? "false" : "true");
         }
 
         /// <summary>
-        /// Stamps other plugins' unversioned tags with the current generation.
-        /// <para>
-        /// The generation is read again here rather than threaded through from
-        /// the tag builder. Both reads hit the same TTL-cached value microseconds
-        /// apart, so they agree in practice; if a TTL boundary ever falls between
-        /// them the stamps are one generation NEWER than the tag, which is
-        /// harmless (the next request keys a fresh representation) and
-        /// self-correcting.
-        /// </para>
+        /// Stamps other plugins' unversioned tags with the exact generation in
+        /// the tag block already selected for this response.
         /// </summary>
-        private static string StampThirdPartyTags(string html, string generation)
+        internal static string StampThirdPartyTags(string html, string currentTags)
         {
-            if (Config?.EnableThirdPartyStamping == false)
+            if (!string.Equals(
+                    ReadTagAttribute(currentTags, "data-third-party-stamping"),
+                    "true",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return html;
+            }
+
+            var generation = ReadTagAttribute(currentTags, "data-boot-version");
+            if (string.IsNullOrEmpty(generation))
             {
                 return html;
             }
@@ -167,6 +190,31 @@ namespace Jellyfin.Plugin.RefreshKit
                 html,
                 generation,
                 OwnTagMarker);
+        }
+
+        private static string? ReadTagAttribute(string currentTags, string attributeName)
+        {
+            if (string.IsNullOrEmpty(currentTags))
+            {
+                return null;
+            }
+
+            var prefix = attributeName + "=\"";
+            var valueStart = currentTags.IndexOf(prefix, StringComparison.Ordinal);
+            if (valueStart < 0)
+            {
+                return null;
+            }
+
+            valueStart += prefix.Length;
+            var valueEnd = currentTags.IndexOf('"', valueStart);
+            if (valueEnd <= valueStart)
+            {
+                return null;
+            }
+
+            return WebUtility.HtmlDecode(
+                currentTags.Substring(valueStart, valueEnd - valueStart));
         }
     }
 }

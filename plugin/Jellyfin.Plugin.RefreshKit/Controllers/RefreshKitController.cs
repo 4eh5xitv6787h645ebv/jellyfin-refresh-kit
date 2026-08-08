@@ -6,16 +6,17 @@ using Microsoft.AspNetCore.Mvc;
 namespace Jellyfin.Plugin.RefreshKit.Controllers
 {
     /// <summary>
-    /// The plugin's two public endpoints, plus one admin diagnostic.
+    /// The plugin's three public routes, plus one admin diagnostic.
     ///
     /// <para>
-    /// <c>Generation</c> and <c>kit.js</c> are BOTH anonymous on purpose: the
+    /// <c>Generation</c>, <c>Generation.txt</c> and <c>kit.js</c> routes are
+    /// anonymous on purpose: the
     /// login screen is a fully-fledged page of the web client, it is where a
     /// user with a stale cache most often lands, and a tab can sit on it for
     /// days. An authenticated version endpoint would leave exactly that page
-    /// unable to notice a plugin update. Neither endpoint discloses anything a
-    /// logged-out visitor cannot already see: an opaque aggregate token, and a
-    /// public MIT-licensed script.
+    /// unable to notice a plugin update. They expose only opaque generation and
+    /// process-incarnation tokens plus a public MIT-licensed script, never the
+    /// detailed server inventory reserved for the authenticated diagnostic.
     /// </para>
     /// </summary>
     [ApiController]
@@ -32,9 +33,12 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
 
         /// <summary>
         /// The aggregate generation of the loaded host and plugin state, in the shape
-        /// jellyfin-refresh-kit.js polls: <c>{ Version, BuildId, CacheKey }</c>
+        /// jellyfin-refresh-kit.js polls: <c>{ Version, BuildId, CacheKey, Epoch }</c>
         /// with <c>CacheKey</c> carrying the generation (the injected tag sets
         /// <c>data-version-json-field="CacheKey"</c> to match, and its
+        /// <c>data-version-epoch-json-field="Epoch"</c> sidecar distinguishes
+        /// this loaded process without changing the generation, URLs or ETags.
+        /// Its
         /// <c>data-boot-version</c> seed is the same value).
         /// Served <c>no-store</c> — a cached "current version" is worse than no
         /// version endpoint at all.

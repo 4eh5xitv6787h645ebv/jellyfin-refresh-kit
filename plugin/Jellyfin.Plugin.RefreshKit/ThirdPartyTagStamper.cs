@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -11,19 +12,21 @@ namespace Jellyfin.Plugin.RefreshKit
     /// <para>
     /// Other plugins put their client code into the page in two ways: they patch
     /// jellyfin-web's index.html ON DISK, or they inject a tag at serve time
-    /// through their own middleware. Either way the tag lands in the HTML this
-    /// plugin's middleware is holding, and either way the URL is usually
-    /// UNVERSIONED — <c>&lt;script src="/web/mediabar/mediabar.js"&gt;</c>. A browser
-    /// that has cached that URL keeps running the old file after the plugin is
-    /// upgraded, because the URL never changed.
+    /// through their own middleware. On-disk tags and middleware tags visible
+    /// inside this plugin's transformation boundary can be stamped; tags appended
+    /// later by an outer middleware cannot. These URLs are often UNVERSIONED —
+    /// <c>&lt;script src="/web/mediabar/mediabar.js"&gt;</c> — so a browser that has
+    /// cached one can otherwise keep running old bytes after an upgrade.
     /// </para>
     ///
     /// <para>
     /// This class appends <c>?rkv={generation}</c> to those URLs. The generation
-    /// changes whenever ANY installed plugin changes
-    /// (<see cref="PluginGenerationProvider"/>), so an upgrade of ANY plugin
-    /// gives every stamped URL a new identity exactly once, and the browser must
-    /// fetch it again.
+    /// changes when new host/plugin code is actually activated, or when a loaded
+    /// plugin's loose browser assets/settings change
+    /// (<see cref="PluginGenerationProvider"/>). Thus a completed plugin upgrade
+    /// gives each eligible, visible stamped URL a new identity, and the browser
+    /// must fetch it again; merely staging restart-required bytes does not
+    /// announce code that the server has not loaded yet.
     /// </para>
     ///
     /// <para>CONSERVATISM RULES (a wrong stamp is worse than a missing one)</para>
@@ -98,16 +101,16 @@ namespace Jellyfin.Plugin.RefreshKit
     /// and stamped;</description></item>
     /// <item><description>tags injected by a middleware OUTSIDE this one (that
     /// plugin registered first) are appended to the response AFTER this stamping
-    /// pass and are therefore NOT stamped. Nothing breaks — that plugin's tags
-    /// simply keep whatever cache behaviour they had — and the reload mechanism
-    /// (mechanism 3) still gets the tab onto the new build.</description></item>
+    /// pass and are therefore NOT stamped. Those tags keep the owning plugin's
+    /// cache behaviour and URL identity. The reload mechanism can move the tab
+    /// onto a newly served shell, but cannot guarantee fresh bytes for an
+    /// unchanged outer-owned asset URL.</description></item>
     /// </list>
     /// <para>
     /// There is no way for a plugin to force itself outermost, so this is a real
     /// limitation rather than a bug to fix: it is documented in plugin/README.md
-    /// with the same wording. In practice the common cases (on-disk patching, and
-    /// plugins that inject via Jellyfin's own web-file transformation) are all
-    /// covered.
+    /// with the same wording. The common on-disk and Jellyfin web-file
+    /// transformation cases remain inside the supported stamping boundary.
     /// </para>
     /// </summary>
     public static class ThirdPartyTagStamper
@@ -133,15 +136,20 @@ namespace Jellyfin.Plugin.RefreshKit
         /// <c>&lt;textarea&gt;</c> body is literal text, so tag-like strings in
         /// there are not tags and must never be rewritten.
         /// </summary>
-        private static readonly string[] RawTextElements = { "script", "style", "textarea", "title" };
+        private static readonly string[] RawTextElements =
+        {
+            "script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes",
+        };
 
         private static readonly Regex SchemeRegex = new Regex(
             "^[a-zA-Z][a-zA-Z0-9+.\\-]*:",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-        // webpack/vite content hashes: ".f725276386e5b19afe0c.css", ".a1b2c3d4.chunk.js".
+        // webpack-style content hashes: `.f725...css`, `.a1b2c3d4.chunk.js`,
+        // and `main-f725...js`. The lookahead permits multiple suffix segments
+        // without letting eight hex characters in a directory name qualify.
         private static readonly Regex ContentHashedFileRegex = new Regex(
-            "\\.[0-9a-fA-F]{8,}\\.[a-zA-Z0-9]+$",
+            "(?:^|[.\\-])[0-9a-fA-F]{8,}(?=(?:\\.[a-zA-Z0-9_\\-]+)+$)",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         /// <summary>
@@ -183,8 +191,10 @@ namespace Jellyfin.Plugin.RefreshKit
         private static string Walk(string html, string generation, string? ownTagMarker)
         {
             var builder = new StringBuilder(html.Length + 64);
+            var elements = new List<ElementContext>();
             var index = 0;
             var changed = false;
+            var sawEffectiveBase = false;
 
             while (index < html.Length)
             {
@@ -197,27 +207,83 @@ namespace Jellyfin.Plugin.RefreshKit
 
                 builder.Append(html, index, open - index);
 
-                // "<!--…-->" — a comment. Its contents are not markup; a
+                // HTML comments also close through the tokenizer's recovery
+                // forms (`--!>`, `<!-->` and `<!--->`). Its contents are not markup; a
                 // commented-out <script src> is not a tag the browser will fetch,
                 // so stamping it would rewrite bytes for no benefit.
                 if (StartsWith(html, open, "<!--"))
                 {
-                    var close = html.IndexOf("-->", open + 4, StringComparison.Ordinal);
-                    var end = close < 0 ? html.Length : close + 3;
+                    var end = FindCommentEnd(html, open);
                     builder.Append(html, open, end - open);
                     index = end;
                     continue;
                 }
 
-                // "<!doctype…>", "<![CDATA[…]]>", "<?…?>" and every closing tag:
-                // nothing here is ever stamped, so copy through to the '>'.
+                // "<!doctype…>", "<![CDATA[…]]>" and "<?…?>": nothing here
+                // is ever stamped.
                 if (open + 1 < html.Length
-                    && (html[open + 1] == '!' || html[open + 1] == '?' || html[open + 1] == '/'))
+                    && (html[open + 1] == '!' || html[open + 1] == '?'))
                 {
-                    var close = html.IndexOf('>', open + 1);
-                    var end = close < 0 ? html.Length : close + 1;
+                    var cdataAllowed = IsCdataAllowedAtCurrentNode(elements);
+                    var end = FindSpecialMarkupEnd(html, open, cdataAllowed);
+                    if (end < 0)
+                    {
+                        return html;
+                    }
+
                     builder.Append(html, open, end - open);
                     index = end;
+                    continue;
+                }
+
+                // End tags can carry parser-recovered attributes containing
+                // `>`. Consume the whole token, then update the namespace stack
+                // so SVG integration points expose their HTML descendants.
+                if (open + 1 < html.Length && html[open + 1] == '/')
+                {
+                    var nameStart = open + 2;
+                    if (nameStart >= html.Length || !IsAsciiLetter(html[nameStart]))
+                    {
+                        // An invalid end-tag opener enters HTML's bogus-comment
+                        // state. Quotes have no special meaning there; the first
+                        // '>' ends the token.
+                        var bogusEnd = html.IndexOf('>', nameStart);
+                        var end = bogusEnd < 0 ? html.Length : bogusEnd + 1;
+                        builder.Append(html, open, end - open);
+                        index = end;
+                        continue;
+                    }
+
+                    var closeNameEnd = nameStart;
+                    while (closeNameEnd < html.Length
+                        && html[closeNameEnd] != '>'
+                        && html[closeNameEnd] != '/'
+                        && !IsHtmlSpace(html[closeNameEnd]))
+                    {
+                        closeNameEnd++;
+                    }
+
+                    if (!TryFindTagEnd(html, closeNameEnd, out var closeTagEnd))
+                    {
+                        builder.Append(html, open, html.Length - open);
+                        index = html.Length;
+                        break;
+                    }
+
+                    builder.Append(html, open, closeTagEnd + 1 - open);
+                    if (closeNameEnd > nameStart)
+                    {
+                        var closeName = html.Substring(nameStart, closeNameEnd - nameStart);
+                        PopForForeignContentEndTagBreakout(elements, closeName);
+                        if (ForeignEndTagRequiresFailClosed(elements, closeName))
+                        {
+                            return html;
+                        }
+
+                        PopElement(elements, closeName);
+                    }
+
+                    index = closeTagEnd + 1;
                     continue;
                 }
 
@@ -230,7 +296,10 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
 
                 var nameEnd = open + 1;
-                while (nameEnd < html.Length && IsNameCharacter(html[nameEnd]))
+                while (nameEnd < html.Length
+                    && html[nameEnd] != '>'
+                    && html[nameEnd] != '/'
+                    && !IsHtmlSpace(html[nameEnd]))
                 {
                     nameEnd++;
                 }
@@ -245,21 +314,80 @@ namespace Jellyfin.Plugin.RefreshKit
                     break;
                 }
 
-                if (StampTag(html, open, tagEnd, name, attributes, generation, ownTagMarker, builder))
+                PopForForeignContentStartTagBreakout(elements, name, attributes);
+                var elementNamespace = ResolveStartTagNamespace(elements, name);
+                if (elementNamespace == MarkupNamespace.Html
+                    && name.Equals("noscript", StringComparison.OrdinalIgnoreCase))
+                {
+                    // The contents of noscript are raw text when scripting is
+                    // enabled and ordinary markup when it is disabled. A server
+                    // cannot know the eventual UA flag, so URL stamping cannot
+                    // safely infer an effective base in either parse.
+                    return html;
+                }
+
+                if (elementNamespace == MarkupNamespace.Html
+                    && name.Equals("base", StringComparison.OrdinalIgnoreCase)
+                    && !IsInsideHtmlTemplate(elements)
+                    && !sawEffectiveBase
+                    && TryGetAttribute(attributes, "href", out var baseHref))
+                {
+                    sawEffectiveBase = true;
+                    var sourceHref = html.Substring(baseHref.ValueStart, baseHref.ValueLength);
+                    if (HasUnsafeAbsoluteBase(sourceHref))
+                    {
+                        // The raw relative URLs below no longer imply the
+                        // document's origin. Abandon the entire pass so even tags
+                        // visited before a late <base> remain byte-identical.
+                        return html;
+                    }
+                }
+
+                if (elementNamespace == MarkupNamespace.Html
+                    && StampTag(html, open, tagEnd, name, attributes, generation, ownTagMarker, builder))
                 {
                     changed = true;
                 }
+                else if (elementNamespace != MarkupNamespace.Html)
+                {
+                    builder.Append(html, open, tagEnd + 1 - open);
+                }
 
                 index = tagEnd + 1;
+                var selfClosing = StartTagIsSelfClosing(html, nameEnd, tagEnd);
+                var annotationXmlHtmlIntegrationPoint =
+                    IsAnnotationXmlHtmlIntegrationPoint(
+                        html,
+                        name,
+                        elementNamespace,
+                        attributes);
+                PushElement(
+                    elements,
+                    name,
+                    elementNamespace,
+                    selfClosing,
+                    annotationXmlHtmlIntegrationPoint);
 
-                if (IsRawTextElement(name))
+                if (elementNamespace == MarkupNamespace.Html && IsRawTextElement(name))
                 {
                     // Skip the body wholesale — it is script/style source or
-                    // literal text, never markup.
-                    var close = IndexOfClosingTag(html, index, name);
+                    // literal text, never markup. SVG <title> is deliberately
+                    // excluded: it is an HTML integration point whose children
+                    // are real HTML markup.
+                    var close = name.Equals("script", StringComparison.OrdinalIgnoreCase)
+                        ? IndexOfScriptClosingTag(html, index)
+                        : IndexOfClosingTag(html, index, name);
                     var end = close < 0 ? html.Length : close;
                     builder.Append(html, index, end - index);
                     index = end;
+                }
+                else if (elementNamespace == MarkupNamespace.Html
+                    && name.Equals("plaintext", StringComparison.OrdinalIgnoreCase))
+                {
+                    // HTML's plaintext state has no closing-tag escape: every
+                    // remaining character, including `</plaintext>`, is text.
+                    builder.Append(html, index, html.Length - index);
+                    index = html.Length;
                 }
             }
 
@@ -330,9 +458,45 @@ namespace Jellyfin.Plugin.RefreshKit
 
         private static bool IsStylesheet(string html, List<TagAttribute> attributes)
         {
-            return TryGetAttribute(attributes, "rel", out var rel)
-                && html.IndexOf("stylesheet", rel.ValueStart, rel.ValueLength, StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!TryGetAttribute(attributes, "rel", out var rel))
+            {
+                return false;
+            }
+
+            // `rel` is an ASCII-whitespace-separated set of link-type tokens,
+            // not a substring. Treating "notstylesheet" as a stylesheet changes
+            // an unrelated URL, while missing `style&#x73;heet` fails to version
+            // a real stylesheet because character references are decoded by the
+            // HTML tokenizer before link types are interpreted.
+            var value = WebUtility.HtmlDecode(html.Substring(rel.ValueStart, rel.ValueLength));
+            var index = 0;
+            while (index < value.Length)
+            {
+                while (index < value.Length && IsHtmlSpace(value[index]))
+                {
+                    index++;
+                }
+
+                var start = index;
+                while (index < value.Length && !IsHtmlSpace(value[index]))
+                {
+                    index++;
+                }
+
+                if (index > start
+                    && value.Substring(start, index - start)
+                        .Equals("stylesheet", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
+
+        private static bool IsHtmlSpace(char value) =>
+            value == '\u0009' || value == '\u000A' || value == '\u000C'
+            || value == '\u000D' || value == '\u0020';
 
         private static bool TryGetAttribute(List<TagAttribute> attributes, string name, out TagAttribute found)
         {
@@ -366,7 +530,7 @@ namespace Jellyfin.Plugin.RefreshKit
 
             while (index < html.Length)
             {
-                while (index < html.Length && char.IsWhiteSpace(html[index]))
+                while (index < html.Length && IsHtmlSpace(html[index]))
                 {
                     index++;
                 }
@@ -394,14 +558,14 @@ namespace Jellyfin.Plugin.RefreshKit
                        && html[index] != '='
                        && html[index] != '>'
                        && html[index] != '/'
-                       && !char.IsWhiteSpace(html[index]))
+                       && !IsHtmlSpace(html[index]))
                 {
                     index++;
                 }
 
                 var name = html.Substring(nameStart, index - nameStart);
 
-                while (index < html.Length && char.IsWhiteSpace(html[index]))
+                while (index < html.Length && IsHtmlSpace(html[index]))
                 {
                     index++;
                 }
@@ -419,7 +583,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
 
                 index++;
-                while (index < html.Length && char.IsWhiteSpace(html[index]))
+                while (index < html.Length && IsHtmlSpace(html[index]))
                 {
                     index++;
                 }
@@ -445,7 +609,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 else
                 {
                     var valueStart = index;
-                    while (index < html.Length && html[index] != '>' && !char.IsWhiteSpace(html[index]))
+                    while (index < html.Length && html[index] != '>' && !IsHtmlSpace(html[index]))
                     {
                         index++;
                     }
@@ -454,6 +618,634 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
             }
 
+            return false;
+        }
+
+        /// <summary>
+        /// Returns the first position after an HTML comment token. Besides the
+        /// ordinary <c>--&gt;</c>, browsers recover <c>--!&gt;</c> as a close and
+        /// abruptly close empty comments written as <c>&lt;!--&gt;</c> or
+        /// <c>&lt;!---&gt;</c>. Stopping only at <c>--&gt;</c> hides real markup that
+        /// follows any of those recovery forms.
+        /// </summary>
+        private static int FindCommentEnd(string html, int open)
+        {
+            var contentStart = open + 4;
+            if (contentStart >= html.Length)
+            {
+                return html.Length;
+            }
+
+            if (html[contentStart] == '>')
+            {
+                return contentStart + 1;
+            }
+
+            if (html[contentStart] == '-'
+                && contentStart + 1 < html.Length
+                && html[contentStart + 1] == '>')
+            {
+                return contentStart + 2;
+            }
+
+            for (var index = contentStart; index < html.Length; index++)
+            {
+                // The same abrupt close is reachable after a nested comment
+                // opener, so "<!--foo<!-->" ends at the second greater-than
+                // sign rather than hiding all following markup to EOF.
+                if (StartsWith(html, index, "<!-->"))
+                {
+                    return index + 5;
+                }
+
+                if (StartsWith(html, index, "-->"))
+                {
+                    return index + 3;
+                }
+
+                if (StartsWith(html, index, "--!>"))
+                {
+                    return index + 4;
+                }
+            }
+
+            return html.Length;
+        }
+
+        private static bool HasUnsafeAbsoluteBase(string sourceHref)
+        {
+            // System.Net's entity table is intentionally smaller than HTML5's.
+            // A named reference can synthesize ':', '/', '\\' or a control only
+            // after tokenization, so an ampersand makes origin classification
+            // ambiguous and therefore disables this optional rewrite.
+            if (sourceHref.IndexOf('&', StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
+
+            var href = NormalizeForOriginCheck(WebUtility.HtmlDecode(sourceHref));
+            return href.StartsWith("//", StringComparison.Ordinal)
+                || href.IndexOf('\\') >= 0
+                || SchemeRegex.IsMatch(href);
+        }
+
+        private static MarkupNamespace ResolveStartTagNamespace(
+            List<ElementContext> elements,
+            string name)
+        {
+            var parent = elements.Count > 0
+                ? elements[elements.Count - 1]
+                : new ElementContext(string.Empty, MarkupNamespace.Html, false);
+            var inHtml = parent.Namespace == MarkupNamespace.Html
+                || parent.IsHtmlIntegrationPoint
+                || (IsMathMlTextIntegrationPoint(parent)
+                    && !name.Equals("mglyph", StringComparison.OrdinalIgnoreCase)
+                    && !name.Equals("malignmark", StringComparison.OrdinalIgnoreCase))
+                || (parent.Namespace == MarkupNamespace.MathMl
+                    && parent.Name.Equals("annotation-xml", StringComparison.OrdinalIgnoreCase)
+                    && name.Equals("svg", StringComparison.OrdinalIgnoreCase));
+            if (inHtml)
+            {
+                if (name.Equals("svg", StringComparison.OrdinalIgnoreCase))
+                {
+                    return MarkupNamespace.Svg;
+                }
+
+                if (name.Equals("math", StringComparison.OrdinalIgnoreCase))
+                {
+                    return MarkupNamespace.MathMl;
+                }
+
+                return MarkupNamespace.Html;
+            }
+
+            return parent.Namespace;
+        }
+
+        private static bool IsMathMlTextIntegrationPoint(ElementContext element) =>
+            element.Namespace == MarkupNamespace.MathMl
+            && (element.Name.Equals("mi", StringComparison.OrdinalIgnoreCase)
+                || element.Name.Equals("mo", StringComparison.OrdinalIgnoreCase)
+                || element.Name.Equals("mn", StringComparison.OrdinalIgnoreCase)
+                || element.Name.Equals("ms", StringComparison.OrdinalIgnoreCase)
+                || element.Name.Equals("mtext", StringComparison.OrdinalIgnoreCase));
+
+        private static bool IsInsideHtmlTemplate(List<ElementContext> elements)
+        {
+            foreach (var element in elements)
+            {
+                if (element.Namespace == MarkupNamespace.Html
+                    && element.Name.Equals("template", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsCdataAllowedAtCurrentNode(List<ElementContext> elements)
+        {
+            if (elements.Count == 0)
+            {
+                return false;
+            }
+
+            var current = elements[elements.Count - 1];
+            return current.Namespace != MarkupNamespace.Html
+                && !current.IsHtmlIntegrationPoint
+                && !IsMathMlTextIntegrationPoint(current);
+        }
+
+        private static void PopForForeignContentStartTagBreakout(
+            List<ElementContext> elements,
+            string name,
+            List<TagAttribute> attributes)
+        {
+            var isFontBreakout = name.Equals("font", StringComparison.OrdinalIgnoreCase)
+                && (TryGetAttribute(attributes, "color", out _)
+                    || TryGetAttribute(attributes, "face", out _)
+                    || TryGetAttribute(attributes, "size", out _));
+            if (!isFontBreakout && !IsForeignContentHtmlBreakoutStartTag(name))
+            {
+                return;
+            }
+
+            PopOrdinaryForeignAncestors(elements);
+        }
+
+        private static void PopForForeignContentEndTagBreakout(
+            List<ElementContext> elements,
+            string name)
+        {
+            if (name.Equals("br", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("p", StringComparison.OrdinalIgnoreCase))
+            {
+                PopOrdinaryForeignAncestors(elements);
+            }
+        }
+
+        private static bool ForeignEndTagRequiresFailClosed(
+            List<ElementContext> elements,
+            string name)
+        {
+            if (elements.Count == 0
+                || elements[elements.Count - 1].Namespace == MarkupNamespace.Html
+                || name.Equals("body", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var activeNamespace = elements[elements.Count - 1].Namespace;
+            for (var index = elements.Count - 1;
+                index >= 0 && elements[index].Namespace == activeNamespace;
+                index--)
+            {
+                if (elements[index].Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            // The HTML parser may match an ancestor across the namespace
+            // boundary or reprocess this token in an insertion mode our small
+            // walker does not model. Optional stamping therefore fails closed.
+            return true;
+        }
+
+        private static void PopOrdinaryForeignAncestors(List<ElementContext> elements)
+        {
+            while (elements.Count > 0)
+            {
+                var current = elements[elements.Count - 1];
+                if (current.Namespace == MarkupNamespace.Html
+                    || current.IsHtmlIntegrationPoint
+                    || IsMathMlTextIntegrationPoint(current))
+                {
+                    return;
+                }
+
+                elements.RemoveAt(elements.Count - 1);
+            }
+        }
+
+        private static bool IsForeignContentHtmlBreakoutStartTag(string name) =>
+            name.Equals("b", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("big", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("blockquote", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("body", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("br", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("center", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("code", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("dd", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("div", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("dl", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("dt", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("em", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("embed", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("h1", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("h2", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("h3", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("h4", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("h5", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("h6", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("head", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("hr", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("i", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("img", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("li", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("listing", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("menu", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("meta", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("nobr", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("ol", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("p", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("pre", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("ruby", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("s", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("small", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("span", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("strong", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("strike", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("sub", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("sup", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("table", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("tt", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("u", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("ul", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("var", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsAnnotationXmlHtmlIntegrationPoint(
+            string html,
+            string name,
+            MarkupNamespace elementNamespace,
+            List<TagAttribute> attributes)
+        {
+            if (elementNamespace != MarkupNamespace.MathMl
+                || !name.Equals("annotation-xml", StringComparison.OrdinalIgnoreCase)
+                || !TryGetAttribute(attributes, "encoding", out var encoding))
+            {
+                return false;
+            }
+
+            var value = DecodeAnnotationXmlEncoding(
+                html.Substring(encoding.ValueStart, encoding.ValueLength));
+            return value.Equals("text/html", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("application/xhtml+xml", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string DecodeAnnotationXmlEncoding(string rawValue)
+        {
+            var decoded = new StringBuilder(rawValue.Length);
+            for (var index = 0; index < rawValue.Length; index++)
+            {
+                if (rawValue[index] != '&')
+                {
+                    decoded.Append(rawValue[index]);
+                    continue;
+                }
+
+                if (TryDecodeNumericCharacterReference(
+                        rawValue,
+                        index,
+                        out var numericValue,
+                        out var numericEnd))
+                {
+                    decoded.Append(numericValue);
+                    index = numericEnd - 1;
+                    continue;
+                }
+
+                var semicolon = rawValue.IndexOf(';', index + 1);
+                if (semicolon >= 0)
+                {
+                    var reference = rawValue.Substring(index, semicolon + 1 - index);
+                    string value;
+                    if (reference.Equals("&sol;", StringComparison.Ordinal))
+                    {
+                        value = "/";
+                    }
+                    else if (reference.Equals("&plus;", StringComparison.Ordinal))
+                    {
+                        value = "+";
+                    }
+                    else
+                    {
+                        value = WebUtility.HtmlDecode(reference);
+                    }
+
+                    if (!value.Equals(reference, StringComparison.Ordinal))
+                    {
+                        decoded.Append(value);
+                        index = semicolon;
+                        continue;
+                    }
+                }
+
+                decoded.Append('&');
+            }
+
+            return decoded.ToString();
+        }
+
+        private static bool TryDecodeNumericCharacterReference(
+            string value,
+            int ampersand,
+            out string decoded,
+            out int end)
+        {
+            decoded = string.Empty;
+            end = ampersand;
+            var index = ampersand + 1;
+            if (index >= value.Length || value[index] != '#')
+            {
+                return false;
+            }
+
+            index++;
+            var hexadecimal = index < value.Length
+                && (value[index] == 'x' || value[index] == 'X');
+            if (hexadecimal)
+            {
+                index++;
+            }
+
+            var digitsStart = index;
+            var codePoint = 0L;
+            while (index < value.Length)
+            {
+                var digit = hexadecimal
+                    ? HexDigitValue(value[index])
+                    : value[index] >= '0' && value[index] <= '9'
+                        ? value[index] - '0'
+                        : -1;
+                if (digit < 0)
+                {
+                    break;
+                }
+
+                codePoint = codePoint > 0x110000
+                    ? 0x110000
+                    : (codePoint * (hexadecimal ? 16 : 10)) + digit;
+                index++;
+            }
+
+            if (index == digitsStart)
+            {
+                return false;
+            }
+
+            if (index < value.Length && value[index] == ';')
+            {
+                index++;
+            }
+
+            if (codePoint == 0 || codePoint > 0x10FFFF
+                || (codePoint >= 0xD800 && codePoint <= 0xDFFF))
+            {
+                codePoint = 0xFFFD;
+            }
+
+            decoded = char.ConvertFromUtf32((int)codePoint);
+            end = index;
+            return true;
+        }
+
+        private static int HexDigitValue(char value) =>
+            value >= '0' && value <= '9'
+                ? value - '0'
+                : value >= 'a' && value <= 'f'
+                    ? value - 'a' + 10
+                    : value >= 'A' && value <= 'F'
+                        ? value - 'A' + 10
+                        : -1;
+
+        private static void PushElement(
+            List<ElementContext> elements,
+            string name,
+            MarkupNamespace elementNamespace,
+            bool selfClosing,
+            bool annotationXmlHtmlIntegrationPoint)
+        {
+            if ((elementNamespace != MarkupNamespace.Html && selfClosing)
+                || (elementNamespace == MarkupNamespace.Html && IsHtmlVoidElement(name)))
+            {
+                return;
+            }
+
+            // The self-closing flag is ignored on non-void HTML elements.
+            var isHtmlIntegrationPoint = annotationXmlHtmlIntegrationPoint
+                || (elementNamespace == MarkupNamespace.Svg
+                    && (name.Equals("foreignobject", StringComparison.OrdinalIgnoreCase)
+                        || name.Equals("desc", StringComparison.OrdinalIgnoreCase)
+                        || name.Equals("title", StringComparison.OrdinalIgnoreCase)));
+            elements.Add(new ElementContext(name, elementNamespace, isHtmlIntegrationPoint));
+        }
+
+        private static void PopElement(List<ElementContext> elements, string name)
+        {
+            if (elements.Count == 0)
+            {
+                return;
+            }
+
+            var activeNamespace = elements[elements.Count - 1].Namespace;
+            for (var index = elements.Count - 1;
+                index >= 0 && elements[index].Namespace == activeNamespace;
+                index--)
+            {
+                if (elements[index].Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    elements.RemoveRange(index, elements.Count - index);
+                    return;
+                }
+            }
+        }
+
+        private static bool IsHtmlVoidElement(string name) =>
+            name.Equals("area", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("base", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("br", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("col", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("embed", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("hr", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("img", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("input", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("link", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("meta", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("param", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("source", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("track", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("wbr", StringComparison.OrdinalIgnoreCase);
+
+        private static bool StartTagIsSelfClosing(string html, int nameEnd, int tagEnd)
+        {
+            if (tagEnd <= nameEnd || html[tagEnd - 1] != '/')
+            {
+                return false;
+            }
+
+            var state = AttributeScanState.BeforeName;
+            var quote = '\0';
+            for (var index = nameEnd; index < tagEnd - 1; index++)
+            {
+                var character = html[index];
+                switch (state)
+                {
+                    case AttributeScanState.BeforeName:
+                        if (!IsHtmlSpace(character) && character != '/')
+                        {
+                            state = AttributeScanState.Name;
+                        }
+
+                        break;
+                    case AttributeScanState.Name:
+                        if (IsHtmlSpace(character))
+                        {
+                            state = AttributeScanState.AfterName;
+                        }
+                        else if (character == '=')
+                        {
+                            state = AttributeScanState.BeforeValue;
+                        }
+                        else if (character == '/')
+                        {
+                            state = AttributeScanState.BeforeName;
+                        }
+
+                        break;
+                    case AttributeScanState.AfterName:
+                        if (IsHtmlSpace(character))
+                        {
+                            continue;
+                        }
+
+                        state = character == '='
+                            ? AttributeScanState.BeforeValue
+                            : character == '/'
+                                ? AttributeScanState.BeforeName
+                                : AttributeScanState.Name;
+                        break;
+                    case AttributeScanState.BeforeValue:
+                        if (IsHtmlSpace(character))
+                        {
+                            continue;
+                        }
+
+                        if (character == '"' || character == '\'')
+                        {
+                            quote = character;
+                            state = AttributeScanState.QuotedValue;
+                        }
+                        else
+                        {
+                            state = AttributeScanState.UnquotedValue;
+                        }
+
+                        break;
+                    case AttributeScanState.QuotedValue:
+                        if (character == quote)
+                        {
+                            quote = '\0';
+                            state = AttributeScanState.AfterQuotedValue;
+                        }
+
+                        break;
+                    case AttributeScanState.UnquotedValue:
+                        if (IsHtmlSpace(character))
+                        {
+                            state = AttributeScanState.BeforeName;
+                        }
+
+                        break;
+                    case AttributeScanState.AfterQuotedValue:
+                        state = IsHtmlSpace(character) || character == '/'
+                            ? AttributeScanState.BeforeName
+                            : AttributeScanState.Name;
+                        break;
+                }
+            }
+
+            return state == AttributeScanState.BeforeName
+                || state == AttributeScanState.Name
+                || state == AttributeScanState.AfterName
+                || state == AttributeScanState.AfterQuotedValue;
+        }
+
+        private static int FindSpecialMarkupEnd(string html, int open, bool cdataAllowed)
+        {
+            // In foreign content CDATA is one token whose body may contain any
+            // number of '>' characters. At an HTML adjusted current node this
+            // spelling is instead a bogus comment ending at the first '>'.
+            if (cdataAllowed && StartsWith(html, open, "<![CDATA["))
+            {
+                var cdataEnd = html.IndexOf("]]>", open + 9, StringComparison.Ordinal);
+                return cdataEnd < 0 ? html.Length : cdataEnd + 3;
+            }
+
+            if (StartsWithIgnoreCase(html, open, "<!doctype"))
+            {
+                var doctypeClose = html.IndexOf('>', open + 2);
+                if (doctypeClose < 0)
+                {
+                    return html.Length;
+                }
+
+                for (var index = open + 2; index < doctypeClose; index++)
+                {
+                    if (html[index] == '"' || html[index] == '\'')
+                    {
+                        // Correctly distinguishing a valid public/system ID from
+                        // bogus-doctype recovery requires the full DOCTYPE state
+                        // machine. Optional stamping fails closed instead.
+                        return -1;
+                    }
+                }
+
+                return doctypeClose + 1;
+            }
+
+            if (html[open + 1] == '/')
+            {
+                return TryFindTagEnd(html, open + 2, out var tagEnd)
+                    ? tagEnd + 1
+                    : html.Length;
+            }
+
+            // Processing instructions and other declarations are HTML bogus
+            // comments; their first '>' ends the token regardless of quotes.
+            var close = html.IndexOf('>', open + 1);
+            return close < 0 ? html.Length : close + 1;
+        }
+
+        private static bool TryFindTagEnd(string html, int from, out int tagEnd)
+        {
+            var quote = '\0';
+            for (var index = from; index < html.Length; index++)
+            {
+                var character = html[index];
+                if (quote != '\0')
+                {
+                    if (character == quote)
+                    {
+                        quote = '\0';
+                    }
+
+                    continue;
+                }
+
+                if (character == '"' || character == '\'')
+                {
+                    quote = character;
+                }
+                else if (character == '>')
+                {
+                    tagEnd = index;
+                    return true;
+                }
+            }
+
+            tagEnd = -1;
             return false;
         }
 
@@ -479,7 +1271,7 @@ namespace Jellyfin.Plugin.RefreshKit
                     && string.Compare(html, after, name, 0, name.Length, StringComparison.OrdinalIgnoreCase) == 0)
                 {
                     var tail = after + name.Length;
-                    if (tail >= html.Length || html[tail] == '>' || html[tail] == '/' || char.IsWhiteSpace(html[tail]))
+                    if (tail >= html.Length || html[tail] == '>' || html[tail] == '/' || IsHtmlSpace(html[tail]))
                     {
                         return open;
                     }
@@ -489,6 +1281,141 @@ namespace Jellyfin.Plugin.RefreshKit
             }
 
             return -1;
+        }
+
+        /// <summary>
+        /// Finds the end of an HTML script-data element, including the legacy
+        /// escaped/double-escaped states browsers still implement. In particular,
+        /// inside <c>&lt;!--&lt;script&gt; ... &lt;/script&gt;</c> the first matching
+        /// end-tag-shaped sequence only leaves DOUBLE-ESCAPED state; it does not
+        /// close the outer element. Treating it as a close makes later JavaScript
+        /// source look like HTML and can corrupt a string containing a script tag.
+        /// </summary>
+        private static int IndexOfScriptClosingTag(string html, int from)
+        {
+            var state = ScriptTextState.Normal;
+            var index = from;
+            while (index < html.Length)
+            {
+                if (state != ScriptTextState.DoubleEscaped
+                    && IsTagSequence(html, index, closing: true, name: "script"))
+                {
+                    return index;
+                }
+
+                if (state == ScriptTextState.Normal && StartsWith(html, index, "<!--"))
+                {
+                    state = ScriptTextState.Escaped;
+                    index += 4;
+                    continue;
+                }
+
+                if (state != ScriptTextState.Normal && StartsWith(html, index, "-->"))
+                {
+                    // Both script-data escaped-dash-dash and double-escaped-
+                    // dash-dash return to ordinary script data on `>`.
+                    state = ScriptTextState.Normal;
+                    index += 3;
+                    continue;
+                }
+
+                if (state == ScriptTextState.Escaped
+                    && IsTagSequence(html, index, closing: false, name: "script"))
+                {
+                    state = ScriptTextState.DoubleEscaped;
+                    index += "<script".Length;
+                    continue;
+                }
+
+                if (state == ScriptTextState.DoubleEscaped
+                    && IsTagSequence(html, index, closing: true, name: "script"))
+                {
+                    // In double-escaped state this is source text, not the outer
+                    // end tag; it only returns the tokenizer to escaped state.
+                    state = ScriptTextState.Escaped;
+                    index += "</script".Length;
+                    continue;
+                }
+
+                index++;
+            }
+
+            return -1;
+        }
+
+        private static bool IsTagSequence(
+            string html,
+            int open,
+            bool closing,
+            string name)
+        {
+            var prefixLength = closing ? 2 : 1;
+            if (open < 0 || open + prefixLength + name.Length > html.Length
+                || html[open] != '<'
+                || (closing && html[open + 1] != '/'))
+            {
+                return false;
+            }
+
+            var nameStart = open + prefixLength;
+            if (string.Compare(
+                    html,
+                    nameStart,
+                    name,
+                    0,
+                    name.Length,
+                    StringComparison.OrdinalIgnoreCase) != 0)
+            {
+                return false;
+            }
+
+            var tail = nameStart + name.Length;
+            return tail >= html.Length || html[tail] == '>' || html[tail] == '/'
+                || IsHtmlSpace(html[tail]);
+        }
+
+        private enum ScriptTextState
+        {
+            Normal,
+            Escaped,
+            DoubleEscaped,
+        }
+
+        private enum MarkupNamespace
+        {
+            Html,
+            Svg,
+            MathMl,
+        }
+
+        private enum AttributeScanState
+        {
+            BeforeName,
+            Name,
+            AfterName,
+            BeforeValue,
+            QuotedValue,
+            UnquotedValue,
+            AfterQuotedValue,
+        }
+
+        private readonly struct ElementContext
+        {
+            public ElementContext(
+                string name,
+                MarkupNamespace elementNamespace,
+                bool isHtmlIntegrationPoint)
+            {
+                Name = name;
+                Namespace = elementNamespace;
+                IsHtmlIntegrationPoint = isHtmlIntegrationPoint;
+            }
+
+            public string Name { get; }
+
+            public MarkupNamespace Namespace { get; }
+
+            public bool IsHtmlIntegrationPoint { get; }
         }
 
         private static bool IsRawTextElement(string name)
@@ -510,14 +1437,21 @@ namespace Jellyfin.Plugin.RefreshKit
                 && string.CompareOrdinal(html, index, value, 0, value.Length) == 0;
         }
 
+        private static bool StartsWithIgnoreCase(string html, int index, string value)
+        {
+            return index + value.Length <= html.Length
+                && string.Compare(
+                    html,
+                    index,
+                    value,
+                    0,
+                    value.Length,
+                    StringComparison.OrdinalIgnoreCase) == 0;
+        }
+
         private static bool IsAsciiLetter(char value)
         {
             return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z');
-        }
-
-        private static bool IsNameCharacter(char value)
-        {
-            return IsAsciiLetter(value) || (value >= '0' && value <= '9') || value == '-' || value == ':' || value == '_';
         }
 
         /// <summary>One parsed attribute: its name, and where its value sits in the document.</summary>
@@ -551,7 +1485,66 @@ namespace Jellyfin.Plugin.RefreshKit
                 return null;
             }
 
-            if (url.StartsWith("//", StringComparison.Ordinal) || SchemeRegex.IsMatch(url))
+            // Attribute character references are decoded before the browser's
+            // URL parser runs, and special-scheme URL parsing treats backslashes
+            // as slashes. Consequently each of `&#47;&#47;host/x.js`,
+            // `\\\\host\\x.js`, `/\\host/x.js` and `https&#58;//host/x.js`
+            // can be cross-origin even though the source text does not start
+            // with `//` or a literal scheme. Never attach our query to one.
+            var browserUrl = WebUtility.HtmlDecode(url);
+            // A numeric reference contains a literal '#' in the SOURCE
+            // (`&#35;`) that is not a fragment delimiter until the HTML parser
+            // decodes it. The raw query/fragment splitter below cannot safely
+            // distinguish every such reference without becoming an HTML entity
+            // parser of its own, so keep the fail-safe promise and leave these
+            // unusual URLs byte-for-byte alone.
+            if (url.IndexOf("&#", StringComparison.Ordinal) >= 0)
+            {
+                return null;
+            }
+
+            // WebUtility knows the common character references, but HTML has a
+            // much larger named-entity table (`&sol;`, `&colon;`, `&bsol;`, ...).
+            // An entity in the path can therefore manufacture `//host`, a scheme
+            // or a backslash only after the browser tokenizes the attribute. Do
+            // not guess: an ampersand before query/fragment is an unusual path
+            // spelling and is safer left byte-identical.
+            var structuralEnd = url.Length;
+            var rawQuery = url.IndexOf('?', StringComparison.Ordinal);
+            var rawFragment = url.IndexOf('#', StringComparison.Ordinal);
+            if (rawQuery >= 0)
+            {
+                structuralEnd = rawQuery;
+            }
+
+            if (rawFragment >= 0 && rawFragment < structuralEnd)
+            {
+                structuralEnd = rawFragment;
+            }
+
+            if (url.IndexOf('&', 0, structuralEnd) >= 0)
+            {
+                return null;
+            }
+
+            // WHATWG URL parsing strips ASCII tab/newline/CR anywhere and
+            // leading/trailing C0 controls before deciding whether text is a
+            // scheme. Check the browser-visible spelling, not just the source:
+            // `ht\ttps://host/x.js` and `\u0001https://host/x.js` are external.
+            var originCheckUrl = NormalizeForOriginCheck(browserUrl);
+            if (originCheckUrl.StartsWith("//", StringComparison.Ordinal)
+                || originCheckUrl.IndexOf('\\') >= 0
+                || SchemeRegex.IsMatch(originCheckUrl))
+            {
+                return null;
+            }
+
+            // If a fragment delimiter exists only as a character reference,
+            // appending to the raw source would put `?rkv=` *after* the decoded
+            // `#`; the browser would then keep it in the fragment and never send
+            // it. Leave the URL alone rather than claim to have versioned it.
+            if (url.IndexOf('#', StringComparison.Ordinal) < 0
+                && browserUrl.IndexOf('#', StringComparison.Ordinal) >= 0)
             {
                 return null;
             }
@@ -591,6 +1584,32 @@ namespace Jellyfin.Plugin.RefreshKit
             return string.Equals(result, url, StringComparison.Ordinal) ? null : result;
         }
 
+        private static string NormalizeForOriginCheck(string value)
+        {
+            var builder = new StringBuilder(value.Length);
+            foreach (var character in value)
+            {
+                if (character != '\t' && character != '\n' && character != '\r')
+                {
+                    builder.Append(character);
+                }
+            }
+
+            var start = 0;
+            var end = builder.Length;
+            while (start < end && builder[start] <= '\u0020')
+            {
+                start++;
+            }
+
+            while (end > start && builder[end - 1] <= '\u0020')
+            {
+                end--;
+            }
+
+            return builder.ToString(start, end - start);
+        }
+
         private static bool IsContentHashedPath(string path)
         {
             var lastSlash = path.LastIndexOf('/');
@@ -612,11 +1631,25 @@ namespace Jellyfin.Plugin.RefreshKit
                 return true;
             }
 
-            var kept = new List<string>();
-            foreach (var segment in query.Split('&'))
+            if (ContainsUnsupportedNamedCharacterReference(query))
             {
+                // `WebUtility.HtmlDecode` does not implement HTML5's complete
+                // named-reference table. In particular, source `&num;` becomes
+                // `#` in the browser; appending rkv after it would put the stamp
+                // in a fragment and falsely claim the request was versioned.
+                return false;
+            }
+
+            var kept = new List<QuerySegment>();
+            foreach (var part in SplitHtmlQuery(query))
+            {
+                var segment = part.Value;
                 if (segment.Length == 0)
                 {
+                    // Empty segments are meaningful source spelling (`?&a=1`,
+                    // `a=1&&b=2`, or a trailing `&`). Keep them so adding our
+                    // parameter is the only byte-level normalization we make.
+                    kept.Add(part);
                     continue;
                 }
 
@@ -628,7 +1661,12 @@ namespace Jellyfin.Plugin.RefreshKit
                     return false;
                 }
 
-                var key = segment.Substring(0, equals);
+                var key = DecodeQueryKey(segment.Substring(0, equals));
+                if (key == null)
+                {
+                    return false;
+                }
+
                 if (string.Equals(key, StampParameter, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
@@ -639,11 +1677,135 @@ namespace Jellyfin.Plugin.RefreshKit
                     return false;
                 }
 
-                kept.Add(segment);
+                kept.Add(part);
             }
 
-            scrubbed = string.Join("&", kept);
+            var builder = new StringBuilder();
+            for (var index = 0; index < kept.Count; index++)
+            {
+                if (index > 0)
+                {
+                    builder.Append(kept[index].Separator.Length > 0 ? kept[index].Separator : "&");
+                }
+
+                builder.Append(kept[index].Value);
+            }
+
+            scrubbed = builder.ToString();
             return true;
+        }
+
+        private static bool ContainsUnsupportedNamedCharacterReference(string query)
+        {
+            var index = 0;
+            while ((index = query.IndexOf('&', index)) >= 0)
+            {
+                if (index + 5 <= query.Length
+                    && query.Substring(index, 5).Equals("&amp;", StringComparison.OrdinalIgnoreCase))
+                {
+                    // This is the one named reference SplitHtmlQuery understands
+                    // structurally. HTML character references are decoded once,
+                    // so text exposed by it must not be decoded recursively.
+                    index += 5;
+                    continue;
+                }
+
+                var nameEnd = index + 1;
+                while (nameEnd < query.Length
+                    && ((query[nameEnd] >= 'a' && query[nameEnd] <= 'z')
+                        || (query[nameEnd] >= 'A' && query[nameEnd] <= 'Z')
+                        || (query[nameEnd] >= '0' && query[nameEnd] <= '9')))
+                {
+                    nameEnd++;
+                }
+
+                if (nameEnd > index + 1
+                    && nameEnd < query.Length
+                    && query[nameEnd] == ';')
+                {
+                    return true;
+                }
+
+                index++;
+            }
+
+            return false;
+        }
+
+        private static string? DecodeQueryKey(string source)
+        {
+            try
+            {
+                // HTML character references are resolved while parsing the
+                // attribute; percent escapes are resolved by ordinary query
+                // consumers. Recognise the key the destination sees so `%76`
+                // is not treated as different from `v`, and an encoded old rkv
+                // cannot survive beside the one we append.
+                return Uri.UnescapeDataString(WebUtility.HtmlDecode(source));
+            }
+            catch
+            {
+                // Malformed escapes belong to somebody else. Leaving the URL
+                // untouched is safer than guessing its cache semantics.
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Splits a query as the HTML tokenizer plus URL parser will see it,
+        /// while retaining the source spelling of separators so unrelated
+        /// markup stays byte-identical. A raw ampersand or source
+        /// <c>&amp;amp;</c> both become one query delimiter after the HTML parser's
+        /// single character-reference pass; entities are not recursively
+        /// decoded.
+        /// Numeric references are rejected earlier by <see cref="StampUrl"/>
+        /// because their literal <c>#</c> is structurally ambiguous here.
+        /// </summary>
+        private static List<QuerySegment> SplitHtmlQuery(string query)
+        {
+            var parts = new List<QuerySegment>();
+            var separator = string.Empty;
+            var start = 0;
+            var index = 0;
+            while (index < query.Length)
+            {
+                if (query[index] != '&')
+                {
+                    index++;
+                    continue;
+                }
+
+                parts.Add(new QuerySegment(separator, query.Substring(start, index - start)));
+                if (index + 5 <= query.Length
+                    && query.Substring(index, 5).Equals("&amp;", StringComparison.OrdinalIgnoreCase))
+                {
+                    separator = query.Substring(index, 5);
+                    index += 5;
+                }
+                else
+                {
+                    separator = "&";
+                    index++;
+                }
+
+                start = index;
+            }
+
+            parts.Add(new QuerySegment(separator, query.Substring(start)));
+            return parts;
+        }
+
+        private readonly struct QuerySegment
+        {
+            public QuerySegment(string separator, string value)
+            {
+                Separator = separator;
+                Value = value;
+            }
+
+            public string Separator { get; }
+
+            public string Value { get; }
         }
     }
 }
