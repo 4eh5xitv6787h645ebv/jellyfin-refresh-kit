@@ -545,3 +545,128 @@ throw. The enumeration is now materialised inside the `try`.
 
 **Status: expected-compatible, unverified.** Nothing found would break on
 Windows, but nobody has run it there.
+
+---
+
+## Jellyfin 12.0.0 — the standalone plugin, second server generation (plugin 1.0.0.0, kit 2.4.1)
+
+Jellyfin 12 is a different host from 10.11 in the two ways a plugin can feel:
+it runs a `net10.0` runtime instead of `net9.0`, and its web client is a
+React/MUI rewrite. Both were tested against a throwaway
+`jellyfin/jellyfin:unstable` container reporting `"Version":"12.0.0"`, with the
+`net10.0` build installed, and every check below was run again on a
+`jellyfin/jellyfin:10.11.11` container with the `net9.0` build to prove nothing
+regressed.
+
+### What the server side does
+
+| Check | Jellyfin 12.0.0 | Jellyfin 10.11.11 |
+|---|---|---|
+| Plugin loads | **PASS** — `Loaded plugin: Jellyfin Refresh Kit 1.0.0.0` | **PASS** |
+| Dashboard status | **PASS** — `Active` | **PASS** |
+| `GET /RefreshKit/Generation` | **PASS** — 200, `{Version, BuildId, CacheKey}` | **PASS** |
+| `GET /RefreshKit/Generation.txt` | **PASS** — 200, plain generation | **PASS** |
+| `GET /RefreshKit/kit.js` | **PASS** — 200, `public, max-age=31536000, immutable` | **PASS** |
+| `GET /RefreshKit/Diagnostics` (admin) | **PASS** — 200, per-plugin rows | **PASS** |
+| `index.html` injected exactly once | **PASS** — one owned tag before `</body>` | **PASS** |
+| Strong `rk-` ETag | **PASS** — `"rk-9be430b1…"` | **PASS** — `"rk-509b20b7…"` |
+| Conditional GET → 304 | **PASS** | **PASS** |
+| Per-encoding ETag → gzip 304 | **PASS** — distinct `rk-` ETag, 304 | **PASS** |
+| Jellyfin's own bundle tags left alone | **PASS** — **0** `?rkv=` stamps on the 30-odd webpack tags, which already carry `?<build-hash>`; percent-encoded names (`node_modules.%40mui.material.bundle.js`) intact | **PASS** |
+
+`assemblies` binding is exact rather than tolerated: the `net10.0` build
+references `MediaBrowser.Common/Controller/Model` **12.0.0.0**, and the
+assemblies in the `jellyfin/jellyfin:unstable` image are **12.0.0.0**.
+
+One 12-only observation, not a defect: Jellyfin 12 ships bundled plugins
+(AudioDB, MusicBrainz, OMDb, TMDb, Studio Images, ListenBrainz) that live inside
+the server image rather than in the plugins directory, so they do not appear in
+the generation's `Diagnostics` rows and cannot move the generation. They can
+only change when the server itself is replaced, which restarts every tab anyway.
+
+### One manifest, two server generations
+
+Both builds are published under one `manifest.json` and one repository URL.
+Proven by adding that manifest as a plugin repository on each server and
+installing **without pinning a version**, letting the server choose:
+
+| Server | Versions offered by the catalogue | Installed | Verdict |
+|---|---|---|---|
+| Jellyfin 12.0.0 | both (`12.0.0.0`, `10.11.0.0`) | `targetAbi 12.0.0.0` — the `net10.0` zip | **PASS** |
+| Jellyfin 10.11.11 | **only** `10.11.0.0` — the 12 entry is filtered out by ABI | `targetAbi 10.11.0.0` — the `net9.0` zip | **PASS** |
+
+Both `sourceUrl`s resolve (HTTP 200) and both published `checksum`s match the
+downloaded bytes.
+
+The asymmetry is the thing to understand. A 10.11 server is protected by the ABI
+filter alone. A 12 server can run **both** entries, and they carry the **same
+version number**, so the only thing that separates them is that Jellyfin sorts
+with `OrderByDescending(VersionNumber)` — a stable sort, which preserves the
+manifest's own order among equals — and installs the first. Highest `targetAbi`
+first is therefore load-bearing, and `build.sh` fails the build rather than
+write the entries in an order that would hand a 12 server a `net9.0` build it
+cannot load.
+
+### What the client runtime does on the React client
+
+Puppeteer, headless Chrome, against the real web client. The identical suite ran
+on both servers: **15/15 on Jellyfin 12.0.0, 15/15 on Jellyfin 10.11.11.**
+
+| Proof | Jellyfin 12.0.0 | Jellyfin 10.11.11 |
+|---|---|---|
+| Kit registers on the React client | **PASS** — one instance `RefreshKitPlugin`, `polling: true`, `#reactRoot` rendered | **PASS** |
+| Zero kit-attributed page errors | **PASS** — the only console errors are Jellyfin's own pre-auth `ws://…/socket` 403s | **PASS** — zero errors at all |
+| `#/login` is still a hash route | **PASS** — `#/login?serverid=…&url=%2Fhome` | **PASS** |
+| `#/video` still hits the playback gate | **PASS** — `wouldBlockNow: 'playback_route'` | **PASS** |
+| Media gate, genuinely playing `<video src>` | **PASS** — `wouldBlockNow: 'media_element'` (`paused:false, currentTime:3.01, played:1, readyState:4`) | **PASS** |
+| Clean home screen permits a reload | **PASS** — `wouldBlockNow: null` | **PASS** |
+| Plugin DLL touched → generation moves | **PASS** | **PASS** |
+| …→ exactly ONE document load | **PASS** — 1, converged to the new generation, `updatePending: false` | **PASS** |
+| …→ no reload storm 8 s later | **PASS** — still exactly 1 | **PASS** |
+
+The 12 client's DOM turned out to be the same DOM: `#txtManualName` /
+`#txtManualPassword` on the login form, plain `<video>`/`<audio>` on
+`document.body`, `.dialog`/`.dialogContainer` for modals, `screensaver-noScroll`
+still applied to `<body>` (present in both the served `index.html` and
+`main.jellyfin.bundle.js`), and navigation still by `pushState`, which fires
+neither `hashchange` nor `popstate`. The login view is a *legacy* view inside the
+React shell, byte-identical to 10.11's. No version-sniffing was needed anywhere
+in the client runtime.
+
+### The one bug this found — and it was never a 12 bug
+
+Testing the login route on 12 surfaced a defect that had been live on **both**
+generations since 2.4.0: `wouldBlockNow: 'active_editor'` on an untouched login
+page, idle, with nothing typed — permanently.
+
+2.4.0 relaxed the idle requirement on `#/login` and `#/selectserver` on the
+grounds that they hold nothing a user can lose. That relaxation was unreachable.
+Jellyfin's login controller calls `.focus()` on the username field as the form
+appears (`controllers/session/login/index.js`, identical on 10.11 and 12), so
+`document.activeElement` is an `INPUT` for the entire life of a parked login
+tab, and `active_editor` refused two gates earlier. The page a stale tab is most
+likely to be sitting on, and can sit on for days, was the one page that could
+never take an update.
+
+Fixed in kit **2.4.1**: `active_editor` no longer fires for a field the user has
+typed *nothing* into, and only on an empty route. Verified in both directions, on
+both servers:
+
+| Proof | Result |
+|---|---|
+| Untouched, auto-focused login field | `wouldBlockNow: null` — was `'active_editor'` before 2.4.1 |
+| Username with text typed into it | `wouldBlockNow: 'active_editor'` — still refuses |
+| Password typed, focus moved away | `wouldBlockNow: 'password_entry'` — still refuses |
+
+### Not covered
+
+* Real Jellyfin playback of a library item. The media gate was exercised with a
+  genuine decoding `<video src>` of the shape `htmlVideoPlayer` builds
+  (`document.body > div.videoPlayerContainer > video.htmlvideoplayer`), not with
+  a transcoded session from a seeded library.
+* Third-party plugins on 12. The ecosystem sweeps above are all 10.11; nothing
+  here says how a 12-native plugin ecosystem coexists with the kit.
+* `12.0.0` here is the `unstable` image. The NuGet packages the `net10.0` build
+  compiles against are `12.0.0-rc4`, the newest published at the time; the
+  assembly versions match exactly (`12.0.0.0`), but a later 12.x that breaks the
+  plugin surface would need a rebuild.

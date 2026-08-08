@@ -13,16 +13,16 @@
                 "changelog": "Initial standalone plugin release - Jellyfin 12 build (net10.0).",
                 "targetAbi": "12.0.0.0",
                 "sourceUrl": "https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.0.0.0/jellyfin-refresh-kit_1.0.0.0_jf12.zip",
-                "checksum": "4f1097e24228b3e9a04a3a7963679d28",
-                "timestamp": "2026-08-08T11:44:16Z"
+                "checksum": "1b7ad43803d1756bcb18c4c0351efcd1",
+                "timestamp": "2026-08-08T11:54:54Z"
             },
             {
                 "version": "1.0.0.0",
                 "changelog": "Initial standalone plugin release.",
                 "targetAbi": "10.11.0.0",
                 "sourceUrl": "https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.0.0.0/jellyfin-refresh-kit_1.0.0.0.zip",
-                "checksum": "cd72deb2c0ae137cb56f4420dd64cb5e",
-                "timestamp": "2026-08-08T11:44:16Z"
+                "checksum": "57ad873276ad2f998596fead0767af57",
+                "timestamp": "2026-08-08T11:54:54Z"
             }
         ]
     }

@@ -44,8 +44,11 @@ coexist on one page by design.
 
 ### Method 2 — manual folder install
 
-1. Download `jellyfin-refresh-kit_<version>.zip` from the
-   [releases](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases).
+1. Download the zip for your server from the
+   [releases](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases):
+   `jellyfin-refresh-kit_<version>.zip` for Jellyfin 10.11.x, or
+   `jellyfin-refresh-kit_<version>_jf12.zip` for Jellyfin 12.x. (See
+   [Requirements](#requirements) — the wrong one will not load.)
 2. Unzip it into a folder named `Jellyfin Refresh Kit_<version>` inside your
    Jellyfin config's `plugins` directory — e.g.
    `/config/plugins/Jellyfin Refresh Kit_1.0.0.0/`, containing
@@ -60,8 +63,23 @@ coexist on one page by design.
 Verify: Dashboard → Plugins shows **Jellyfin Refresh Kit — Active**, and
 `GET /RefreshKit/Generation` returns JSON.
 
-**Requirements:** Jellyfin **10.11.x** (built against `Jellyfin.Controller`
-10.11.11, `net9.0`, which is what the 10.11 server runs).
+**Requirements:** Jellyfin **10.11.x** or **12.x**. There is one plugin per
+server generation, because a plugin assembly has to match the framework its host
+runs on:
+
+| Server | Zip | Framework | Built against | `targetAbi` |
+|---|---|---|---|---|
+| Jellyfin 10.11.x | `jellyfin-refresh-kit_<version>.zip` | `net9.0` | `Jellyfin.Controller` 10.11.11 | `10.11.0.0` |
+| Jellyfin 12.x | `jellyfin-refresh-kit_<version>_jf12.zip` | `net10.0` | `Jellyfin.Controller` 12.0.0 | `12.0.0.0` |
+
+Installing from the plugin repository, this is not a choice you have to make:
+both are listed in the one `manifest.json`, and the server offers only the build
+it can run. A 10.11 server never sees the 12 entry at all. Installing by hand,
+take the zip whose row matches the server.
+
+The two builds are the SAME SOURCE, compiled twice — the plugin uses only the
+part of the plugin surface that survived the 12 rewrite, so there is no
+`#if`-ed code and no second project to keep in step.
 
 **Verified on:** root Docker, non-root Docker (`--user 1000:1000`), and a native
 non-root Linux install from the generic tarball (unprivileged user, custom
@@ -428,10 +446,11 @@ Nothing about the copy-the-file path changes.
 ## Repository layout
 
 ```
-manifest.json                                 plugin-repository manifest (root)
-plugin/build.sh                               build → zip + meta.json + md5
+manifest.json                                 plugin-repository manifest (root),
+                                              both ABIs, highest first
+plugin/build.sh                               build → 2 zips + meta.json + md5
 plugin/Jellyfin.Plugin.RefreshKit/
-    Jellyfin.Plugin.RefreshKit.csproj         net9.0, Jellyfin.Controller 10.11.11
+    Jellyfin.Plugin.RefreshKit.csproj         net9.0 (JF 10.11) + net10.0 (JF 12)
     Plugin.cs                                 plugin identity, embedded runtime
     PluginServiceRegistrator.cs               wires all three mechanisms
     PluginGenerationProvider.cs               the generation aggregator
@@ -462,10 +481,13 @@ export DOTNET_ROOT=$HOME/.dotnet
 bash plugin/build.sh --update-manifest
 ```
 
-Produces `plugin/build/jellyfin-refresh-kit_<version>.zip` (DLL + `meta.json`),
-prints its MD5, and writes that checksum and timestamp into the root
-`manifest.json`. Attach the zip to a GitHub release tagged `v<version>` so the
-manifest's `sourceUrl` resolves.
+Produces one zip per server generation — `jellyfin-refresh-kit_<version>.zip`
+(`net9.0`) and `jellyfin-refresh-kit_<version>_jf12.zip` (`net10.0`), each a DLL
+plus its own `meta.json` — prints both MD5s, and writes each checksum and the
+timestamp into the matching root `manifest.json` entry, paired on
+(version, `targetAbi`) so the two builds cannot overwrite each other. Attach
+**both** zips to a GitHub release tagged `v<version>` so both `sourceUrl`s
+resolve.
 
 ## Known limitations
 

@@ -41,10 +41,10 @@ Install one plugin and Refresh Kit watches the plugin environment for changes. O
 
 ## Requirements
 
-- Jellyfin **10.11.x**
+- Jellyfin **10.11.x** or **12.x**
 - Permission to install plugins and restart the Jellyfin server
 
-The standalone plugin targets `net9.0` and is built against Jellyfin `10.11.11` packages.
+The standalone plugin is built for both, from one source tree: a `net9.0` build against Jellyfin `10.11.11` packages, and a `net10.0` build against Jellyfin `12.0.0` packages. One plugin-repository URL serves both — the server picks the build matching its own generation.
 
 ## Installation
 
@@ -496,7 +496,7 @@ If `jellyfin-refresh-kit.js` is one of the injected scripts, put it **before** s
 
 # Compatibility
 
-The standalone plugin is built for **Jellyfin 10.11.x**. The reusable `RefreshKit.cs` integration is also exercised separately against Jellyfin 12 development/release-candidate environments in this repository's compatibility work.
+The standalone plugin is built and verified for **Jellyfin 10.11.x and Jellyfin 12.x**, and both builds are validated on live servers of their own generation. The reusable `RefreshKit.cs` integration is also exercised separately against Jellyfin 12 development/release-candidate environments in this repository's compatibility work.
 
 The project includes compatibility testing across a broad set of community plugins and common reverse-proxy configurations. The detailed environments, tested plugin builds, verdicts, edge cases, and reproducible evidence live in [COMPATIBILITY.md](COMPATIBILITY.md).
 
