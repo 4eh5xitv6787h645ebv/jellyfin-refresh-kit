@@ -633,6 +633,12 @@ A few constraints are intentional and should be preserved when changing the proj
 
 ---
 
+## AI-assisted development
+
+This project was developed with extensive use of AI: the code, tests, and documentation were written by Anthropic's Claude (via a multi-agent Claude Code workflow) working under human direction and review. Because of that, the project deliberately does not rely on the model's say-so for any behavioural claim — everything described in this README is backed by the xUnit suite, the disposable proxy/browser E2E rig in `e2e/`, and the live-server evidence recorded in [COMPATIBILITY.md](COMPATIBILITY.md), all of which can be re-run from scratch.
+
+---
+
 ## License
 
 Jellyfin Refresh Kit is licensed under the [MIT License](LICENSE).
