@@ -4169,6 +4169,10 @@
      * the live instance names, because the fix is always "use one of these".
      */
     function auditKeyedConfigs() {
+        // Handed off: this copy's registry is empty by design, so every key
+        // would look like it "matched NO registered instance". The manager that
+        // took over inherited the audit — and the keys already judged with it.
+        if (handedOff) return;
         safe(function () {
             var all = window.JellyfinRefreshKitConfigs;
             if (!all || typeof all !== 'object') return;
@@ -4251,6 +4255,9 @@
     /** Debounce the audit to KEYED_AUDIT_SETTLE_MS after the latest arm. */
     function armKeyedConfigAudit() {
         if (keyedAuditTimer !== null) { clearTimeout(keyedAuditTimer); keyedAuditTimer = null; }
+        // A DOMContentLoaded arm registered before a handoff still fires after
+        // it; a retired manager must hold no timers.
+        if (handedOff) return;
         keyedAuditTimer = setTimeout(function () {
             keyedAuditTimer = null;
             safe(auditKeyedConfigs);
@@ -4258,8 +4265,321 @@
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Manager handoff (REGISTRATION CONTRACT clause 7) — the newest-wins rule
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * One registered instance, packed for the manager taking the page over.
+     *
+     * TWO configs travel, and the difference matters:
+     *   • `effectiveConfig` is what the instance is actually RUNNING (tag
+     *     attributes + singular global + keyed entry, normalized). The new
+     *     manager re-normalizes it under ITS OWN rules — that is the point of
+     *     newest-wins: a clamp or a validation the newer copy tightened governs
+     *     the transferred instances too, not just the ones registered after it.
+     *   • `declaredConfig` is the adoption AS ITS TAG DECLARED IT, which is
+     *     what a later duplicate registration is compared against
+     *     (configsEquivalent). Losing it would break dedupe across a handoff:
+     *     the same adoption's second tag would register a "#2" and re-run the
+     *     collection's entry chain.
+     * @param {Object} r Internal instance record.
+     * @returns {Object}
+     */
+    function instanceTransferRecord(r) {
+        return {
+            name: r.name,
+            anonymous: r.anonymous === true,
+            keyedConfigKey: r.keyedConfigKey || null,
+            registeredByKitVersion: r.sourceKitVersion,
+            entriesSuppressed: r.entriesSuppressed === true,
+            declaredConfig: r.declaredCfg,
+            effectiveConfig: r.cfg,
+            state: safe(function () { return r.transferState(); }, null) || null
+        };
+    }
+
+    /**
+     * HAND THE PAGE OVER to a newer kit copy, and become an inert delegate.
+     *
+     * The whole newest-wins rule reduces to this method. It must be LOSSLESS —
+     * the page keeps running while the swap happens, and a user must not be
+     * able to tell it occurred — so it does four things in one synchronous
+     * step, with no window in between:
+     *
+     *   1. STOPS this copy. Every instance is deactivated (timers cancelled,
+     *      entry points latched off, so a version request already in flight
+     *      cannot act on a manager that no longer exists), the shared retry
+     *      ladder and keyed-config audit are cancelled, the reload-survival
+     *      watchdog is cancelled — its re-arming is the new manager's job —
+     *      and every page listener is removed.
+     *   2. NEUTRALIZES the interception layer. The createElement wrapper CANNOT
+     *      be uninstalled (see installCreateElementHook): third-party code may
+     *      already hold a reference to it, and restoring the native function
+     *      would strip whatever the new manager installs. So it flips to a
+     *      permanent inert-delegate mode instead: brand-new elements are left
+     *      entirely to the new manager's wrapper, while elements this copy
+     *      already handed out keep their accessors and delegate the versioning
+     *      DECISION to the current manager (versionUrlForPage).
+     *   3. RETURNS everything the new manager needs to continue: every instance
+     *      with its live state, and the shared page state that exists only in
+     *      memory. Note what is NOT here: the reload budget and the per-tab
+     *      flip/left/recovery records already live in session/localStorage
+     *      under page-wide keys, so they survive a handoff (and a reload) by
+     *      themselves; and the singular-global claim is recorded either as a
+     *      non-enumerable marker ON the config object or in a WeakSet held on
+     *      `window`, both of which are page-level and equally unaffected.
+     *   4. Points this copy at the new manager, permanently.
+     *
+     * NEVER THROWS, and returns null when it declines. A null return is the
+     * caller's signal to register as an ordinary instance instead — a failed
+     * handoff must never leave the page with no manager, and this copy has not
+     * changed anything until the point of no return below.
+     *
+     * @param {Object} newManager The arriving copy's manager API object.
+     * @returns {Object|null} The transfer record, or null when declined.
+     */
+    function handoffTo(newManager) {
+        if (!newManager || typeof newManager.__registerInstance !== 'function') return null;
+        // Handing off to ourselves would retire the page's only manager.
+        if (newManager === api) return null;
+
+        if (handedOff) {
+            // CHAINED HANDOFF (old → new → newer). This copy is already inert,
+            // and the caller reached it only because the global still points
+            // here; the live manager is at the end of the chain. Forward, then
+            // re-point straight at the newest so the chain stays FLAT — a
+            // document with N kit copies must not build an N-deep forwarding
+            // chain that every later contract call walks.
+            var chained = safe(function () {
+                return (delegate && typeof delegate.__handoffTo === 'function')
+                    ? delegate.__handoffTo(newManager)
+                    : null;
+            }, null) || null;
+            if (chained) delegate = newManager;
+            return chained;
+        }
+
+        var payload = {
+            contractVersion: CONTRACT_VERSION,
+            kitVersion: KIT_VERSION,
+            // Chain depth and lineage, so the newest manager can report the
+            // whole sequence of copies that ran this page before it.
+            handoffs: handoffsReceived,
+            lineage: inheritedFrom.concat([KIT_VERSION]),
+            anonymousCount: anonymousCount,
+            instances: registry.map(instanceTransferRecord),
+            lateKeys: (function () {
+                var out = {}, k;
+                for (k in warnedLateKeys) {
+                    if (Object.prototype.hasOwnProperty.call(warnedLateKeys, k)) out[k] = true;
+                }
+                return out;
+            })(),
+            shared: {
+                lastInteractionAt: lastInteractionAt,
+                blockedRetries: blockedRetries,
+                lastBlockReason: lastBlockReason,
+                warnedOverlap: warnedOverlap,
+                warnedBudgetRefusal: warnedBudgetRefusal,
+                warnedReloadSurvived: warnedReloadSurvived,
+                warnedMediaStarvation: warnedMediaStarvation,
+                mediaBlockSince: mediaBlockSince,
+                mediaBlockSignature: mediaBlockSignature,
+                // THE RELOAD LATCH. A handoff can land in the window between
+                // location.reload() and the new document committing. The latch
+                // has to travel or the new manager would pass every gate again
+                // and spend a second budget slot on a navigation that is
+                // already in flight — and the disarmed set has to travel with
+                // it so a navigation the host blocks can still be recovered.
+                reloadCommitted: reloadCommitted,
+                reloadsSurvived: reloadsSurvived,
+                reloadRecordsWritten: reloadRecordsWritten.slice(),
+                reloadDisarmed: (function () {
+                    var names = [];
+                    for (var i = 0; i < reloadDisarmed.length; i++) {
+                        if (names.indexOf(reloadDisarmed[i].name) === -1) names.push(reloadDisarmed[i].name);
+                    }
+                    return names;
+                })()
+            }
+        };
+
+        // ── Point of no return: this copy stops owning the page here. ────────
+        handedOff = true;
+        interceptorInert = true;
+
+        var i;
+        for (i = 0; i < registry.length; i++) {
+            safe(function (r) { return function () { r.deactivate(); }; }(registry[i]));
+        }
+        clearRetry();
+        if (keyedAuditTimer !== null) { clearTimeout(keyedAuditTimer); keyedAuditTimer = null; }
+        if (reloadWatchdogTimer !== null) { clearTimeout(reloadWatchdogTimer); reloadWatchdogTimer = null; }
+        safe(removePageListeners);
+
+        registry = [];
+        byName = Object.create(null);
+        reloadDisarmed = [];
+        reloadRecordsWritten = [];
+        delegate = newManager;
+        return payload;
+    }
+
+    /**
+     * Register ONE instance that came across a handoff.
+     *
+     * Deliberately NOT registerInstance(): every merge decision this instance
+     * was subject to has already been taken, once, by the manager it is coming
+     * from, and re-taking them would be wrong rather than merely wasteful —
+     *   • the singular window config has been CLAIMED (once per page, by
+     *     design), so re-offering it would warn "already claimed" about this
+     *     instance's own config;
+     *   • the keyed entry is already merged into `effectiveConfig`; re-reading
+     *     it would be harmless but re-deriving the name from it is not;
+     *   • the name is FINAL, including any "#N" collision suffix, and must not
+     *     be re-derived — a transferred instance keeps its identity or the
+     *     per-tab flip records, the keyed config key and get(name) all break;
+     *   • the entryScripts duplicate scan already ran, and its verdict travels
+     *     as `entriesSuppressed`; running it again against the transferred
+     *     siblings would suppress the ORIGINAL owner's chain instead.
+     * @param {Object} rec One entry of a transfer record's `instances`.
+     * @returns {Object|null} The internal instance record.
+     */
+    function adoptTransferredInstance(rec) {
+        if (!rec || typeof rec !== 'object') return null;
+        if (typeof rec.name !== 'string' || !rec.name) return null;
+        // Defensive: never adopt one name twice (a malformed transfer record).
+        if (byName[rec.name]) return byName[rec.name];
+
+        var cfg = normalizeConfig(rec.effectiveConfig);
+        cfg.name = rec.name;
+        var declared = normalizeConfig(rec.declaredConfig);
+        declared.name = rec.name;
+
+        var inst = createInstance(rec.name, cfg, String(rec.registeredByKitVersion || 'unknown'),
+            rec.entriesSuppressed === true, rec.state || {});
+        inst.declaredCfg = declared;
+        inst.keyedConfigKey = rec.keyedConfigKey || null;
+        inst.anonymous = rec.anonymous === true;
+        registry.push(inst);
+        byName[rec.name] = inst;
+        inst.start();
+        return inst;
+    }
+
+    /**
+     * Adopt a transfer record: become the manager of everything the previous
+     * copy was running. Called exactly once, from the boot section, and only
+     * after the interceptor and listeners of THIS copy are installed — an
+     * instance is resumed into a running engine, never into a half-built one.
+     * @param {Object} t A transfer record from handoffTo().
+     * @returns {boolean} True when the page was taken over.
+     */
+    function applyHandoffTransfer(t) {
+        if (!t || typeof t !== 'object') return false;
+
+        var adopted = [];
+        var list = Array.isArray(t.instances) ? t.instances : [];
+        var i;
+        for (i = 0; i < list.length; i++) {
+            var inst = safe(function (rec) {
+                return function () { return adoptTransferredInstance(rec); };
+            }(list[i]), null);
+            if (inst) adopted.push(inst.name);
+        }
+
+        // Anonymous numbering is a page-level sequence ("instance-<N>" is the
+        // only handle such an adoption has); continue it rather than restart it.
+        var count = Number(t.anonymousCount);
+        if (isFinite(count) && count > anonymousCount) anonymousCount = count;
+
+        var s = (t.shared && typeof t.shared === 'object') ? t.shared : {};
+        if (typeof s.lastInteractionAt === 'number' && isFinite(s.lastInteractionAt)) {
+            lastInteractionAt = s.lastInteractionAt;
+        }
+        if (typeof s.blockedRetries === 'number' && isFinite(s.blockedRetries)) blockedRetries = s.blockedRetries;
+        if (typeof s.lastBlockReason === 'string') lastBlockReason = s.lastBlockReason;
+        // One-shot warning latches: the page has already been told these things
+        // once. "Warned once" is a promise to the operator reading the console,
+        // not a per-copy allowance.
+        warnedOverlap = s.warnedOverlap === true;
+        warnedBudgetRefusal = s.warnedBudgetRefusal === true;
+        warnedReloadSurvived = s.warnedReloadSurvived === true;
+        warnedMediaStarvation = s.warnedMediaStarvation === true;
+        if (typeof s.mediaBlockSince === 'number') mediaBlockSince = s.mediaBlockSince;
+        if (typeof s.mediaBlockSignature === 'string') mediaBlockSignature = s.mediaBlockSignature;
+        if (typeof s.reloadsSurvived === 'number' && isFinite(s.reloadsSurvived)) {
+            reloadsSurvived = s.reloadsSurvived;
+        }
+        if (t.lateKeys && typeof t.lateKeys === 'object') {
+            for (var k in t.lateKeys) {
+                if (Object.prototype.hasOwnProperty.call(t.lateKeys, k)) warnedLateKeys[k] = true;
+            }
+        }
+        handoffsReceived = (typeof t.handoffs === 'number' && isFinite(t.handoffs) ? t.handoffs : 0) + 1;
+        inheritedFrom = Array.isArray(t.lineage) ? t.lineage.slice() : [String(t.kitVersion || 'unknown')];
+
+        // A COMMITTED RELOAD IN FLIGHT. Inherit the latch (so this manager
+        // cannot fire a second navigation for the one already under way), the
+        // records it wrote (so a navigation that never lands can retract them)
+        // and the instances it disarmed (so they can be re-armed) — then re-arm
+        // the survival watchdog, because the one that was watching this
+        // navigation was cancelled as part of the handoff. This manager must
+        // NOT call location.reload() again: that is the double-fire.
+        if (s.reloadCommitted === true) {
+            reloadCommitted = true;
+            if (Array.isArray(s.reloadRecordsWritten)) {
+                for (i = 0; i < s.reloadRecordsWritten.length; i++) {
+                    var rec2 = s.reloadRecordsWritten[i];
+                    if (Array.isArray(rec2) && rec2.length === 2) reloadRecordsWritten.push(rec2);
+                }
+            }
+            if (Array.isArray(s.reloadDisarmed)) {
+                for (i = 0; i < s.reloadDisarmed.length; i++) {
+                    var disarmed = byName[s.reloadDisarmed[i]];
+                    if (disarmed && reloadDisarmed.indexOf(disarmed) === -1) reloadDisarmed.push(disarmed);
+                }
+            }
+            armReloadSurvivalWatchdog();
+        }
+
+        safe(function () {
+            console.log(LOG, 'manager HANDOFF: kit ' + (t.kitVersion || 'unknown') + ' → ' + KIT_VERSION +
+                ' (newest wins, registration contract ' + CONTRACT_VERSION + '). Took over ' +
+                adopted.length + ' instance' + (adopted.length === 1 ? '' : 's') +
+                (adopted.length ? ' [' + adopted.join(', ') + ']' : '') +
+                ' with their resolved versions, pending updates and entry progress' +
+                (reloadCommitted ? ', INCLUDING a reload already committed' : '') +
+                '. The previous manager is now an inert delegate; page-level reload semantics, ' +
+                'safety gates and URL versioning are ' + KIT_VERSION + "'s from here.");
+        });
+
+        scheduleKeyedConfigAudit();
+        // Anything that was waiting for a reload under the old engine is now
+        // waiting under this one — give it a tick.
+        if (pendingInstances().length > 0) safe(tryReload);
+        return true;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Public API — the manager
     // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * The manager that answers for this copy: null while this copy owns the
+     * page, and the copy it handed off to once it does not.
+     *
+     * Everything on the public API consults this, because the object this
+     * function belongs to STAYS REACHABLE FOREVER: window.JellyfinRefreshKit is
+     * installed non-configurable by whichever copy got there first, so a
+     * handoff can never re-point the global — the retired object has to answer
+     * for the live manager instead. That is the inert-delegate half of the
+     * newest-wins rule (REGISTRATION CONTRACT clause 7).
+     * @returns {Object|null}
+     */
+    function forwardTo() {
+        return handedOff ? delegate : null;
+    }
 
     /** @returns {Object|null} First-registered instance (the 1.x delegate). */
     function firstInstance() {
@@ -4277,13 +4597,48 @@
      *
      * Frozen: __registerInstance is the cross-version compatibility promise and
      * must not be reassignable by anyone, including a later kit copy.
+     *
+     * EVERY member forwards to `forwardTo()` once this copy has handed the page
+     * over, so this object keeps answering correctly forever — including
+     * `kitVersion` and `__contractVersion`, which an arriving copy reads to
+     * decide whether IT should take over. Those two are accessors, not values,
+     * for exactly that reason: a stale kitVersion on the object the global
+     * points at would make every later copy compare itself against a manager
+     * that retired long ago (and a newer one would try to hand off to itself).
      */
     var api = Object.freeze({
-        /** @type {string} The manager copy's kit version. */
-        kitVersion: KIT_VERSION,
+        /** @returns {string} The CURRENT manager copy's kit version. */
+        get kitVersion() {
+            var d = forwardTo();
+            return d ? (safe(function () { return String(d.kitVersion); }, KIT_VERSION) || KIT_VERSION)
+                : KIT_VERSION;
+        },
 
-        /** @type {number} REGISTRATION CONTRACT revision this manager speaks. */
-        __contractVersion: CONTRACT_VERSION,
+        /** @returns {number} REGISTRATION CONTRACT revision the CURRENT manager speaks. */
+        get __contractVersion() {
+            var d = forwardTo();
+            return d ? (safe(function () { return Number(d.__contractVersion); }, CONTRACT_VERSION) || CONTRACT_VERSION)
+                : CONTRACT_VERSION;
+        },
+
+        /**
+         * REGISTRATION CONTRACT clause 7 (additive, contract revision 3) — hand
+         * the page over to a STRICTLY NEWER kit copy.
+         *
+         * The newest-wins rule: an arriving copy that is newer than the sitting
+         * manager and finds `__contractVersion >= 3` calls this, becomes the
+         * manager, and re-registers everything the returned record describes.
+         * The caller must be prepared for null (this manager declined, or the
+         * transfer could not be built) and register as an ordinary instance
+         * instead — a page must never be left with no manager.
+         *
+         * Never throws. See handoffTo() for what "lossless" means here.
+         * @param {Object} newManager The arriving copy's manager API object.
+         * @returns {Object|null} Transfer record, or null when declined.
+         */
+        __handoffTo: function (newManager) {
+            return safe(function () { return handoffTo(newManager); }, null) || null;
+        },
 
         /**
          * REGISTRATION CONTRACT clause 3 — the frozen, forward-stable entry
@@ -4294,6 +4649,8 @@
          * @returns {Object|null}
          */
         __registerInstance: function (config, kitVersion) {
+            var d = forwardTo();
+            if (d) return safe(function () { return d.__registerInstance(config, kitVersion); }, null) || null;
             return safe(function () { return registerInstance(config, kitVersion); }, null) || null;
         },
 
@@ -4311,6 +4668,14 @@
          *
          * Idempotent per object: the FIRST caller gets true, every later caller
          * gets false. Never throws.
+         *
+         * This is the ONE member that does NOT forward after a handoff, and
+         * deliberately: the claim it records is page-level either way (a marker
+         * on the object, or a WeakSet held on `window`), so a retired copy
+         * answers it exactly as correctly as the live manager — while
+         * forwarding would build a cycle, because claimSingularGlobal()'s own
+         * last-resort branch asks whatever `window.JellyfinRefreshKit` holds,
+         * which after a handoff is this very object.
          * @param {Object} obj The singular config object being claimed.
          * @returns {boolean} True when THIS caller now holds the claim.
          */
@@ -4323,12 +4688,16 @@
 
         /** @returns {string|null} Sole/first instance's running version (1.x compat). */
         get version() {
+            var d = forwardTo();
+            if (d) return safe(function () { return d.version; }, null) || null;
             var f = firstInstance();
             return f ? f.getBaselineVersion() : null;
         },
 
         /** @returns {string|null} Sole/first instance's newest seen version (1.x compat). */
         get latestVersion() {
+            var d = forwardTo();
+            if (d) return safe(function () { return d.latestVersion; }, null) || null;
             var f = firstInstance();
             return f ? f.getLatestVersion() : null;
         },
@@ -4345,6 +4714,8 @@
          * @returns {string}
          */
         versionedUrl: function (url, force) {
+            var d = forwardTo();
+            if (d) return safe(function () { return d.versionedUrl(url, force); }, url);
             return safe(function () {
                 if (force) {
                     var f = firstInstance();
@@ -4360,6 +4731,8 @@
          * @returns {Promise<void>}
          */
         checkNow: function () {
+            var d = forwardTo();
+            if (d) return safe(function () { return d.checkNow(); }, Promise.resolve());
             return safe(function () {
                 return Promise.all(registry.map(function (inst) {
                     return safe(function () { return inst.poll(true); }, Promise.resolve());
@@ -4372,6 +4745,8 @@
          * @returns {Object|null} The named instance's handle, or null.
          */
         get: function (name) {
+            var d = forwardTo();
+            if (d) return safe(function () { return d.get(name); }, null) || null;
             return safe(function () {
                 var inst = byName[name];
                 return inst ? inst.handle : null;
@@ -4380,6 +4755,8 @@
 
         /** @returns {string[]} Registered instance names, in registration order. */
         instances: function () {
+            var d = forwardTo();
+            if (d) return safe(function () { return d.instances(); }, []) || [];
             return safe(function () {
                 return registry.map(function (inst) { return inst.name; });
             }, []) || [];
@@ -4394,6 +4771,8 @@
          * @returns {Object}
          */
         state: function () {
+            var d = forwardTo();
+            if (d) return safe(function () { return d.state(); }, { kitVersion: KIT_VERSION });
             return safe(function () {
                 var f = firstInstance();
                 var out = f ? f.state() : { kitVersion: KIT_VERSION };
@@ -4425,6 +4804,13 @@
                     reloadCommitted: reloadCommitted,
                     reloadsSurvived: reloadsSurvived,
                     blockedRetries: blockedRetries,
+                    // MANAGER LINEAGE. 0 handoffs is the ordinary page (one kit
+                    // copy, or several of the same version). Anything higher
+                    // means an older copy parsed first and a newer one took the
+                    // page over — `managerLineage` lists the copies in the
+                    // order they ran it, oldest first, this one last.
+                    managerHandoffs: handoffsReceived,
+                    managerLineage: inheritedFrom.concat([KIT_VERSION]),
                     // How long a media element has held the gate with zero
                     // playback progress. At MEDIA_STARVATION_MS the parked-media
                     // starvation escape fires.
@@ -4441,6 +4827,33 @@
     // ─────────────────────────────────────────────────────────────────────────
     // Boot — manager path
     // ─────────────────────────────────────────────────────────────────────────
+
+    // NEWEST-WINS TAKEOVER (REGISTRATION CONTRACT clause 2b/7). Ask the sitting
+    // manager to hand the page over BEFORE anything of this copy is installed:
+    // the handoff is what makes its createElement wrapper inert, and installing
+    // ours on top of a still-active wrapper would version every URL twice.
+    // Both steps run in the same synchronous turn, so no asset can be created
+    // in between.
+    //
+    // A REFUSED handoff is not fatal and not even unusual (a manager that has
+    // itself just been retired, an exotic failure inside it): fall back to the
+    // pre-2.3.0 behaviour — register with it as an ordinary instance and stop.
+    // Nothing of this copy has been installed at this point, so that fallback
+    // is exactly the clause-2b path, taken a few microseconds later.
+    /** @type {Object|null} */
+    var handoffTransfer = null;
+    if (handoffFrom) {
+        handoffTransfer = safe(function () { return handoffFrom.__handoffTo(api); }, null) || null;
+        if (!handoffTransfer) {
+            safe(function () {
+                console.warn(LOG, 'this ' + KIT_VERSION + ' copy is newer than the manager on this page ' +
+                    'but the handoff was declined, so the older copy keeps the page. Registering as an ' +
+                    'instance instead; page-level reload semantics are the older copy\'s.');
+            });
+            safe(function () { handoffFrom.__registerInstance(ownConfig, KIT_VERSION); });
+            return;
+        }
+    }
 
     // Install the createElement hook FIRST and synchronously. Any sub-script the
     // host bootstrap creates before this point is unversioned forever, so the
@@ -4468,34 +4881,58 @@
         addPageListener(window, 'pageshow', wakeListener, false);
     });
 
-    // REGISTRATION CONTRACT clause 1 makes "the first copy installs
-    // window.JellyfinRefreshKit" a load-bearing invariant, so install it
-    // NON-CONFIGURABLE: writable:false alone only blocks plain assignment, and
-    // a configurable property can still be replaced wholesale by
-    // defineProperty — which is precisely what an older 1.x copy loading second
-    // does. That used to strip __registerInstance off the page while this
-    // manager's registry, timers and interceptor kept running invisibly, so
-    // every LATER copy went inert blaming a "pre-2.0 singleton" that wasn't
-    // there. Nothing legitimate needs to replace this object: a second 2.x copy
-    // never reaches this line (it registers and returns), and a 1.x copy's own
-    // defineProperty now throws into its own safe() and it keeps running.
-    safe(function () {
-        Object.defineProperty(window, 'JellyfinRefreshKit', {
-            value: api, writable: false, configurable: false, enumerable: true
+    /**
+     * Publish this manager on `window`, unless the slot is already permanently
+     * owned.
+     *
+     * REGISTRATION CONTRACT clause 1 makes "the first copy installs
+     * window.JellyfinRefreshKit" a load-bearing invariant, so it goes in
+     * NON-CONFIGURABLE: writable:false alone only blocks plain assignment, and
+     * a configurable property can still be replaced wholesale by
+     * defineProperty — which is precisely what an older 1.x copy loading second
+     * does. That used to strip __registerInstance off the page while this
+     * manager's registry, timers and interceptor kept running invisibly, so
+     * every LATER copy went inert blaming a "pre-2.0 singleton" that wasn't
+     * there.
+     *
+     * The consequence, since 2.3.0, is that a HANDOFF cannot re-point the
+     * global: the first manager's object owns that slot for the life of the
+     * document. It does not need to be re-pointed — that object is an inert
+     * delegate now and forwards the entire contract surface here (clause 7) —
+     * so the right thing is to leave the slot alone rather than call
+     * defineProperty just to have it throw into safe() on every takeover.
+     * Checking first also keeps the console clean when an unrelated plugin owns
+     * the name.
+     * @param {string} prop
+     * @param {boolean} enumerable
+     */
+    function publishManagerGlobal(prop, enumerable) {
+        safe(function () {
+            var existing = Object.getOwnPropertyDescriptor(window, prop);
+            if (existing && !existing.configurable) return;
+            Object.defineProperty(window, prop, {
+                value: api, writable: false, configurable: false, enumerable: enumerable
+            });
         });
-    });
+    }
+
+    publishManagerGlobal('JellyfinRefreshKit', true);
 
     // Belt and braces for the case the line above could not win (an unrelated
-    // plugin got there first with its own non-configurable property, or a
-    // future engine quirk): a non-enumerable backup handle that a later copy's
-    // role decision consults before concluding the page belongs to a 1.x
-    // singleton. Non-enumerable so it stays out of for-in / Object.keys sweeps
-    // over window, which some plugins do.
-    safe(function () {
-        Object.defineProperty(window, '__jellyfinRefreshKitManager', {
-            value: api, writable: false, configurable: false, enumerable: false
-        });
-    });
+    // plugin got there first with its own non-configurable property, a handoff
+    // left the slot with the first manager, or a future engine quirk): a
+    // non-enumerable backup handle that a later copy's role decision consults
+    // before concluding the page belongs to a 1.x singleton. Non-enumerable so
+    // it stays out of for-in / Object.keys sweeps over window, which some
+    // plugins do.
+    publishManagerGlobal('__jellyfinRefreshKitManager', false);
+
+    // Adopt everything the previous manager was running, BEFORE this copy's own
+    // tag registers: the transferred instances were on the page first, and
+    // registration order is what versionUrlForPage arbitrates ambiguous asset
+    // URLs by. It is also what makes this copy's own tag dedupe against a
+    // transferred instance when they are the same adoption.
+    if (handoffTransfer) safe(function () { applyHandoffTransfer(handoffTransfer); });
 
     // Finally: register THIS copy's own instance from its tag config, through
     // exactly the same contract path a later copy would use.
