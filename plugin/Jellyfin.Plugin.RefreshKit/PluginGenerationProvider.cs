@@ -32,7 +32,26 @@ namespace Jellyfin.Plugin.RefreshKit
     /// a same-version binary replaced in place (a dev copying a DLL over, a
     /// re-published build). This is exactly why RefreshKit.CacheKey carries the
     /// DLL ticks for its own assembly.</description></item>
+    /// <item><description><b>newest CONFIGURATION ticks</b> — the case the binary
+    /// misses entirely, and the one users hit most often: an admin enables a
+    /// custom tab in a plugin's settings, or flips any option that the plugin
+    /// renders from at page load. Nothing on disk changes except one XML file
+    /// under <c>plugins/configurations</c>, yet every open tab is now running
+    /// UI built from the old settings. A config save is a client-visible change
+    /// and must move the generation.</description></item>
     /// </list>
+    ///
+    /// <para>
+    /// Configuration files are matched to a plugin by ASSEMBLY NAME, which is
+    /// how Jellyfin names them: the plugin folder holding
+    /// <c>Jellyfin.Plugin.JellyfinEnhanced.dll</c> owns
+    /// <c>configurations/Jellyfin.Plugin.JellyfinEnhanced.xml</c> and any
+    /// <c>configurations/Jellyfin.Plugin.JellyfinEnhanced/</c> subtree. Only
+    /// files matched that way are folded in — an unmatched file in the
+    /// configurations folder belongs to nobody the scan can name, and counting
+    /// it would let a stale leftover (or an unrelated writer) move the
+    /// generation for no user-visible reason.
+    /// </para>
     ///
     /// <para>
     /// The scan deliberately reads the FILESYSTEM rather than the host's loaded
@@ -58,6 +77,9 @@ namespace Jellyfin.Plugin.RefreshKit
         /// large asset tree cannot turn the scan into a per-request stat storm.
         /// </summary>
         private const int MaxFilesPerPlugin = 4000;
+
+        /// <summary>Jellyfin's plugin-configuration folder, a sibling of the plugin folders.</summary>
+        private const string ConfigurationsFolderName = "configurations";
 
         private static readonly Lazy<PluginGenerationProvider> _instance =
             new Lazy<PluginGenerationProvider>(() => new PluginGenerationProvider());
@@ -148,6 +170,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 return Array.Empty<PluginFingerprint>();
             }
 
+            var configurationsPath = ResolveConfigurationsPath(pluginsPath);
             var results = new List<PluginFingerprint>();
             IEnumerable<string> directories;
             try
@@ -161,22 +184,31 @@ namespace Jellyfin.Plugin.RefreshKit
 
             foreach (var directory in directories)
             {
+                if (string.Equals(
+                        Path.GetFileName(directory),
+                        ConfigurationsFolderName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    // "plugins/configurations" is not a plugin.
+                    continue;
+                }
+
                 try
                 {
-                    results.Add(Fingerprint(directory));
+                    results.Add(Fingerprint(directory, configurationsPath));
                 }
                 catch
                 {
                     // One unreadable plugin folder must not blind the aggregate
                     // to the other twenty. Record its name so it still counts.
-                    results.Add(new PluginFingerprint(Path.GetFileName(directory), string.Empty, string.Empty, 0));
+                    results.Add(new PluginFingerprint(Path.GetFileName(directory), string.Empty, string.Empty, 0, 0));
                 }
             }
 
             return results;
         }
 
-        private static PluginFingerprint Fingerprint(string directory)
+        private static PluginFingerprint Fingerprint(string directory, string configurationsPath)
         {
             var folder = Path.GetFileName(directory);
             var id = string.Empty;
@@ -200,6 +232,7 @@ namespace Jellyfin.Plugin.RefreshKit
 
             long newestTicks = 0;
             var seen = 0;
+            var assemblyNames = new List<string>();
             foreach (var file in Directory.EnumerateFiles(directory, "*.dll", SearchOption.AllDirectories))
             {
                 if (++seen > MaxFilesPerPlugin)
@@ -207,6 +240,7 @@ namespace Jellyfin.Plugin.RefreshKit
                     break;
                 }
 
+                assemblyNames.Add(Path.GetFileNameWithoutExtension(file));
                 try
                 {
                     var ticks = new FileInfo(file).LastWriteTimeUtc.Ticks;
@@ -221,7 +255,74 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
             }
 
-            return new PluginFingerprint(folder, id, version, newestTicks);
+            return new PluginFingerprint(
+                folder,
+                id,
+                version,
+                newestTicks,
+                NewestConfigurationTicks(configurationsPath, assemblyNames));
+        }
+
+        /// <summary>
+        /// Newest write time across everything Jellyfin stores as configuration
+        /// for the assemblies in one plugin folder: <c>&lt;assembly&gt;.xml</c>
+        /// and, for plugins that keep more than one file, the
+        /// <c>&lt;assembly&gt;/</c> subtree next to it.
+        /// </summary>
+        private static long NewestConfigurationTicks(string configurationsPath, IReadOnlyList<string> assemblyNames)
+        {
+            if (string.IsNullOrEmpty(configurationsPath) || assemblyNames.Count == 0)
+            {
+                return 0;
+            }
+
+            long newest = 0;
+            foreach (var assemblyName in assemblyNames)
+            {
+                if (string.IsNullOrEmpty(assemblyName))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var file = Path.Combine(configurationsPath, assemblyName + ".xml");
+                    if (File.Exists(file))
+                    {
+                        var ticks = File.GetLastWriteTimeUtc(file).Ticks;
+                        if (ticks > newest)
+                        {
+                            newest = ticks;
+                        }
+                    }
+
+                    var folder = Path.Combine(configurationsPath, assemblyName);
+                    if (Directory.Exists(folder))
+                    {
+                        var seen = 0;
+                        foreach (var nested in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))
+                        {
+                            if (++seen > MaxFilesPerPlugin)
+                            {
+                                break;
+                            }
+
+                            var ticks = File.GetLastWriteTimeUtc(nested).Ticks;
+                            if (ticks > newest)
+                            {
+                                newest = ticks;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // A config file being rewritten as we look at it is normal;
+                    // the next scan (>= CacheTtlSeconds later) sees the result.
+                }
+            }
+
+            return newest;
         }
 
         private static string ReadStringProperty(JsonElement root, string name)
@@ -236,6 +337,32 @@ namespace Jellyfin.Plugin.RefreshKit
             }
 
             return string.Empty;
+        }
+
+        /// <summary>
+        /// The plugin-configuration root. Prefers the host's own
+        /// <c>PluginConfigurationsPath</c>; falls back to the
+        /// <c>configurations</c> folder Jellyfin keeps beside the plugin
+        /// folders.
+        /// </summary>
+        private static string ResolveConfigurationsPath(string pluginsPath)
+        {
+            try
+            {
+                var fromHost = Plugin.Paths?.PluginConfigurationsPath;
+                if (!string.IsNullOrEmpty(fromHost))
+                {
+                    return fromHost!;
+                }
+            }
+            catch
+            {
+                // Fall through to the conventional layout.
+            }
+
+            return string.IsNullOrEmpty(pluginsPath)
+                ? string.Empty
+                : Path.Combine(pluginsPath, ConfigurationsFolderName);
         }
 
         /// <summary>
@@ -281,12 +408,13 @@ namespace Jellyfin.Plugin.RefreshKit
     /// <summary>One installed plugin's contribution to the generation.</summary>
     public sealed class PluginFingerprint
     {
-        public PluginFingerprint(string folder, string id, string version, long newestDllTicks)
+        public PluginFingerprint(string folder, string id, string version, long newestDllTicks, long newestConfigTicks)
         {
             Folder = folder;
             Id = id;
             Version = version;
             NewestDllTicks = newestDllTicks;
+            NewestConfigTicks = newestConfigTicks;
         }
 
         public string Folder { get; }
@@ -297,12 +425,19 @@ namespace Jellyfin.Plugin.RefreshKit
 
         public long NewestDllTicks { get; }
 
+        /// <summary>
+        /// Newest write time of this plugin's configuration (settings saved from
+        /// the dashboard). Zero when the plugin has never been configured.
+        /// </summary>
+        public long NewestConfigTicks { get; }
+
         internal string ToMaterial() => string.Format(
             CultureInfo.InvariantCulture,
-            "{0}|{1}|{2}|{3}",
+            "{0}|{1}|{2}|{3}|{4}",
             Folder,
             Id,
             Version,
-            NewestDllTicks);
+            NewestDllTicks,
+            NewestConfigTicks);
     }
 }

@@ -82,6 +82,7 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
                         d.Id,
                         d.Version,
                         d.NewestDllTicks,
+                        d.NewestConfigTicks,
                     })
                     .OrderBy(d => d.Folder, System.StringComparer.Ordinal)
                     .ToList(),
