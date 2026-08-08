@@ -8,7 +8,7 @@ set -euo pipefail
 umask 077
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=common.sh
+# shellcheck source=e2e/jellyfin/lib/common.sh
 source "${HERE}/common.sh"
 
 JF101110_IMAGE='jellyfin/jellyfin:10.11.10@sha256:f66273e014b307e4ac46778845ebc1e9ee24b2e57c1fc17d5ec5ac3015649bfa'
@@ -150,9 +150,9 @@ except Exception:
 }
 
 wizard_request() {
-    local label="$1" attempt
+    local label="$1"
     shift
-    for attempt in $(seq 1 30); do
+    for _ in {1..30}; do
         if curl --fail --silent --show-error --connect-timeout 2 --max-time 15 "$@"; then
             return 0
         fi

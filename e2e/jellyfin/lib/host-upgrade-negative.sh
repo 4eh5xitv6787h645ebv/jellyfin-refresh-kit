@@ -24,7 +24,7 @@ python3 "${HERE}/verify-host-upgrade-results.py" --self-test
 # Source-only tests stop before any Docker invocation: whitelist, offline-mode,
 # and timeout validation all precede image inspection/pull by contract.
 (
-    # shellcheck source=host-upgrade.sh
+    # shellcheck source=e2e/jellyfin/lib/host-upgrade.sh
     source "${HERE}/host-upgrade.sh"
     if ensure_exact_image 'jellyfin/jellyfin:10.11.10' 2>/dev/null; then
         printf 'FATAL: tag-only image escaped the exact whitelist\n' >&2
