@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
+    <ProbeRelease Condition="'$(ProbeRelease)' == ''">v1</ProbeRelease>
+    <ProbeVersion Condition="'$(ProbeVersion)' == ''">1.0.0.0</ProbeVersion>
+    <AssemblyVersion>$(ProbeVersion)</AssemblyVersion>
+    <FileVersion>$(ProbeVersion)</FileVersion>
+    <Version>$(ProbeVersion)</Version>
+    <RootNamespace>Jellyfin.Plugin.RefreshKitLifecycleProbe</RootNamespace>
+    <AssemblyName>Jellyfin.Plugin.RefreshKitLifecycleProbe</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>false</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <DebugType>portable</DebugType>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <NuGetAudit>false</NuGetAudit>
+    <EnableSourceLink>false</EnableSourceLink>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(ProbeRelease)' == 'v1'">
+    <DefineConstants>$(DefineConstants);PROBE_V1</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(ProbeRelease)' == 'v2'">
+    <DefineConstants>$(DefineConstants);PROBE_V2</DefineConstants>
+  </PropertyGroup>
+
+  <Target Name="ValidateProbeRelease" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(ProbeRelease)' != 'v1' and '$(ProbeRelease)' != 'v2'"
+           Text="ProbeRelease must be v1 or v2." />
+    <Error Condition="'$(ProbeRelease)' == 'v1' and '$(ProbeVersion)' != '1.0.0.0'"
+           Text="ProbeRelease v1 must compile as 1.0.0.0." />
+    <Error Condition="'$(ProbeRelease)' == 'v2' and '$(ProbeVersion)' != '2.0.0.0'"
+           Text="ProbeRelease v2 must compile as 2.0.0.0." />
+  </Target>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
+    <PackageReference Include="Jellyfin.Controller" Version="[10.11.11]" />
+    <PackageReference Include="Jellyfin.Model" Version="[10.11.11]" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Jellyfin.Controller" Version="[12.0.0-rc4]" />
+    <PackageReference Include="Jellyfin.Model" Version="[12.0.0-rc4]" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(ProbeRelease)' == 'v1'">
+    <EmbeddedResource Include="Assets/probe-v1.html"
+                      LogicalName="Jellyfin.Plugin.RefreshKitLifecycleProbe.Configuration.probe.html" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(ProbeRelease)' == 'v2'">
+    <EmbeddedResource Include="Assets/probe-v2.html"
+                      LogicalName="Jellyfin.Plugin.RefreshKitLifecycleProbe.Configuration.probe.html" />
+  </ItemGroup>
+</Project>
