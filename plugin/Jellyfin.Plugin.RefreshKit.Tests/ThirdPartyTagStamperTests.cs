@@ -691,6 +691,27 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Same(Html, Stamp(Html));
         }
 
+        [Theory]
+        [InlineData("object")]
+        [InlineData("select")]
+        public void MismatchedEndTagAcrossHtmlScopeBoundaryFailsClosed(string boundary)
+        {
+            var html = "<div><" + boundary + "></div>"
+                + "<script src=\"still-scoped.js\"></script>";
+
+            Assert.Same(html, Stamp(html));
+        }
+
+        [Fact]
+        public void ValidQuotedPublicDoctypeConservativelyDisablesStamping()
+        {
+            const string Html = "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" "
+                + "\"http://www.w3.org/TR/html4/strict.dtd\">"
+                + "<script src=\"plugin.js\"></script>";
+
+            Assert.Same(Html, Stamp(Html));
+        }
+
         [Fact]
         public void BaseWithoutHref_DoesNotPreemptTheFirstEffectiveBase()
         {

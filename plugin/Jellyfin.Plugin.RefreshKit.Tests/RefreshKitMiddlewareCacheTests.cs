@@ -955,6 +955,34 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Theory]
+        [InlineData("assets/")]
+        [InlineData("/elsewhere/")]
+        [InlineData("https://cdn.example.invalid/root/")]
+        [InlineData("//cdn.example.invalid/root/")]
+        public async Task DocumentBaseHref_ServesSourceByteExactWithoutRuntimeInjection(
+            string href)
+        {
+            var source = Encoding.UTF8.GetBytes(
+                "<html><head><base href=\"" + href + "\"></head>"
+                + "<body><main>source shell</main></body></html>");
+            using var application = CreateApplication(async context =>
+            {
+                context.Response.ContentType = "text/html; charset=utf-8";
+                context.Response.Headers["Cache-Control"] = "no-cache";
+                context.Response.Headers["ETag"] = "\"base-source\"";
+                context.Response.ContentLength = source.Length;
+                await context.Response.Body.WriteAsync(source).ConfigureAwait(false);
+            });
+
+            var response = await application.SendAsync();
+
+            Assert.Equal(StatusCodes.Status200OK, response.StatusCode);
+            Assert.Equal(source, response.Body);
+            Assert.DoesNotContain("Jellyfin Refresh Kit", response.BodyText, StringComparison.Ordinal);
+            Assert.Equal("\"base-source\"", response.Header("ETag"));
+        }
+
+        [Theory]
         [InlineData("text/html; charset=UTF-8")]
         [InlineData("text/html; charset=\"utf-8\"")]
         [InlineData("text/html; charset=utf8")]

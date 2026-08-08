@@ -726,6 +726,11 @@ namespace JellyfinRefreshKit
                     break;
                 }
 
+                if (HtmlContainsNonSpace(html, index, open))
+                {
+                    HtmlEnsureImplicitBody(elements);
+                }
+
                 if (HtmlStartsWith(html, open, "<!--"))
                 {
                     index = FindHtmlCommentEnd(html, open);
@@ -795,13 +800,23 @@ namespace JellyfinRefreshKit
                 var name = html.Substring(nameStart, nameEnd - nameStart);
                 if (closing)
                 {
+                    var isBodyEnd = name.Equals("body", StringComparison.OrdinalIgnoreCase);
+                    if (isBodyEnd
+                        && !HtmlEndTagTargetsNamespace(
+                            elements,
+                            "body",
+                            HtmlMarkupNamespace.Html))
+                    {
+                        HtmlEnsureImplicitBody(elements);
+                    }
+
                     HtmlPopForForeignContentEndTagBreakout(elements, name);
                     if (HtmlForeignEndTagRequiresFailClosed(elements, name))
                     {
                         return -1;
                     }
 
-                    if (HtmlEndTagCrossesTemplateBoundary(elements, name))
+                    if (HtmlEndTagCrossesScopeBoundary(elements, name))
                     {
                         return -1;
                     }
@@ -811,7 +826,6 @@ namespace JellyfinRefreshKit
                         elements,
                         name,
                         HtmlMarkupNamespace.Html);
-                    var isBodyEnd = name.Equals("body", StringComparison.OrdinalIgnoreCase);
                     var acceptsBodyEnd = isBodyEnd
                         && templateDepth == 0
                         && framesetDepth == 0
@@ -879,6 +893,11 @@ namespace JellyfinRefreshKit
                                 "size",
                                 out _,
                                 out _)));
+                if (HtmlStartTagImpliesBody(name))
+                {
+                    HtmlEnsureImplicitBody(elements);
+                }
+
                 var elementNamespace = HtmlResolveStartTagNamespace(elements, name);
                 var annotationXmlHtmlIntegrationPoint =
                     HtmlIsAnnotationXmlHtmlIntegrationPoint(
@@ -887,6 +906,25 @@ namespace JellyfinRefreshKit
                         elementNamespace,
                         nameEnd,
                         tagEnd);
+                if (elementNamespace == HtmlMarkupNamespace.Html
+                    && name.Equals("base", StringComparison.OrdinalIgnoreCase)
+                    && templateDepth == 0
+                    && HtmlTryGetAttributeValue(
+                        html,
+                        nameEnd,
+                        tagEnd,
+                        "href",
+                        out _,
+                        out _))
+                {
+                    // The injected runtime URL is intentionally relative so it
+                    // follows Jellyfin's configured PathBase. Any effective base
+                    // can redirect that URL to a different path or origin. A small
+                    // server-side walker cannot prove DOM base ordering under every
+                    // recovery mode, so preserve the source shell byte-for-byte.
+                    return -1;
+                }
+
                 var selfClosing = HtmlStartTagIsSelfClosing(html, nameEnd, tagEnd);
                 if (elementNamespace == HtmlMarkupNamespace.Html
                     && name.Equals("frameset", StringComparison.OrdinalIgnoreCase))
@@ -1146,17 +1184,20 @@ namespace JellyfinRefreshKit
             return true;
         }
 
-        private static bool HtmlEndTagCrossesTemplateBoundary(
+        private static bool HtmlEndTagCrossesScopeBoundary(
             List<HtmlElementContext> elements,
             string name)
         {
             if (name.Equals("body", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("html", StringComparison.OrdinalIgnoreCase))
             {
+                // These tokens are governed by insertion mode/scope checks and
+                // are often ignored while a blocker is active. Do not turn a
+                // harmless ignored decoy into a whole-document failure.
                 return false;
             }
 
-            var crossedTemplate = false;
+            var crossedBoundary = false;
             for (var index = elements.Count - 1; index >= 0; index--)
             {
                 var element = elements[index];
@@ -1167,12 +1208,110 @@ namespace JellyfinRefreshKit
 
                 if (element.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
                 {
-                    return crossedTemplate;
+                    return crossedBoundary;
                 }
 
-                if (element.Name.Equals("template", StringComparison.OrdinalIgnoreCase))
+                if (HtmlIsScopeBoundary(element.Name))
                 {
-                    crossedTemplate = true;
+                    crossedBoundary = true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HtmlIsScopeBoundary(string name) =>
+            name.Equals("select", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("applet", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("caption", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("marquee", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("object", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("table", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("td", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("th", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("template", StringComparison.OrdinalIgnoreCase);
+
+        private static bool HtmlEnsureImplicitBody(
+            List<HtmlElementContext> elements)
+        {
+            var hasHtml = false;
+            foreach (var element in elements)
+            {
+                if (element.Namespace != HtmlMarkupNamespace.Html)
+                {
+                    return false;
+                }
+
+                if (element.Name.Equals("html", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasHtml = true;
+                }
+                else if (element.Name.Equals("body", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+                else if (element.Name.Equals("head", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                else if (element.Name.Equals("frameset", StringComparison.OrdinalIgnoreCase)
+                    || element.Name.Equals("template", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
+            elements.RemoveAll(element =>
+                element.Namespace == HtmlMarkupNamespace.Html
+                && element.Name.Equals("head", StringComparison.OrdinalIgnoreCase));
+            if (!hasHtml)
+            {
+                elements.Insert(
+                    0,
+                    new HtmlElementContext(
+                        "html",
+                        HtmlMarkupNamespace.Html,
+                        isHtmlIntegrationPoint: false));
+            }
+
+            elements.Add(new HtmlElementContext(
+                "body",
+                HtmlMarkupNamespace.Html,
+                isHtmlIntegrationPoint: false));
+            return true;
+        }
+
+        private static bool HtmlStartTagImpliesBody(string name) =>
+            !name.Equals("html", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("head", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("body", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("frameset", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("base", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("basefont", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("bgsound", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("link", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("meta", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("noframes", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("noscript", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("script", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("style", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("template", StringComparison.OrdinalIgnoreCase)
+            && !name.Equals("title", StringComparison.OrdinalIgnoreCase);
+
+        private static bool HtmlContainsNonSpace(
+            string html,
+            int start,
+            int end)
+        {
+            for (var index = start; index < end; index++)
+            {
+                if (!HtmlIsSpace(html[index]))
+                {
+                    return true;
                 }
             }
 
@@ -1724,12 +1863,16 @@ namespace JellyfinRefreshKit
                             return html;
                         }
 
-                        if (HtmlEndTagCrossesTemplateBoundary(elements, closeName))
+                        if (HtmlEndTagCrossesScopeBoundary(elements, closeName))
                         {
                             return html;
                         }
 
-                        HtmlPopElement(elements, closeName);
+                        if (!closeName.Equals("body", StringComparison.OrdinalIgnoreCase)
+                            && !closeName.Equals("html", StringComparison.OrdinalIgnoreCase))
+                        {
+                            HtmlPopElement(elements, closeName);
+                        }
                     }
 
                     index = closeTagEnd + 1;

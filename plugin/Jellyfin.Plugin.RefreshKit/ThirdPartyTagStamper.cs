@@ -279,12 +279,16 @@ namespace Jellyfin.Plugin.RefreshKit
                             return html;
                         }
 
-                        if (EndTagCrossesHtmlTemplateBoundary(elements, closeName))
+                        if (EndTagCrossesHtmlScopeBoundary(elements, closeName))
                         {
                             return html;
                         }
 
-                        PopElement(elements, closeName);
+                        if (!closeName.Equals("body", StringComparison.OrdinalIgnoreCase)
+                            && !closeName.Equals("html", StringComparison.OrdinalIgnoreCase))
+                        {
+                            PopElement(elements, closeName);
+                        }
                     }
 
                     index = closeTagEnd + 1;
@@ -816,7 +820,7 @@ namespace Jellyfin.Plugin.RefreshKit
             return true;
         }
 
-        private static bool EndTagCrossesHtmlTemplateBoundary(
+        private static bool EndTagCrossesHtmlScopeBoundary(
             List<ElementContext> elements,
             string name)
         {
@@ -826,7 +830,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 return false;
             }
 
-            var crossedTemplate = false;
+            var crossedBoundary = false;
             for (var index = elements.Count - 1; index >= 0; index--)
             {
                 var element = elements[index];
@@ -837,17 +841,28 @@ namespace Jellyfin.Plugin.RefreshKit
 
                 if (element.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
                 {
-                    return crossedTemplate;
+                    return crossedBoundary;
                 }
 
-                if (element.Name.Equals("template", StringComparison.OrdinalIgnoreCase))
+                if (IsHtmlScopeBoundary(element.Name))
                 {
-                    crossedTemplate = true;
+                    crossedBoundary = true;
                 }
             }
 
             return false;
         }
+
+        private static bool IsHtmlScopeBoundary(string name) =>
+            name.Equals("select", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("applet", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("caption", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("marquee", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("object", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("table", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("td", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("th", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("template", StringComparison.OrdinalIgnoreCase);
 
         private static void PopOrdinaryForeignAncestors(List<ElementContext> elements)
         {

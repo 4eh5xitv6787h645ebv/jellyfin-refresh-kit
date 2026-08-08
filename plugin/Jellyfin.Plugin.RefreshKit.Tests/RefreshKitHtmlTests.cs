@@ -478,6 +478,18 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Same(Html, RefreshKit.ReplaceOwnedScriptTags(Html, PluginName, CurrentTag));
         }
 
+        [Theory]
+        [InlineData("object")]
+        [InlineData("select")]
+        public void ReplaceOwnedScriptTags_MismatchedEndTagAcrossHtmlScopeFailsClosed(
+            string scopeBoundary)
+        {
+            var html = "<html><body><div><" + scopeBoundary + "></div></body>"
+                + "<script plugin=\"Kit &amp; Co\" src=\"/still-scoped.js\"></script>";
+
+            Assert.Same(html, RefreshKit.ReplaceOwnedScriptTags(html, PluginName, CurrentTag));
+        }
+
         [Fact]
         public void ReplaceOwnedScriptTags_InvalidEndTagUsesBogusCommentClose()
         {
@@ -519,6 +531,16 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Same(Html, result);
             Assert.Contains(OldTag, result, StringComparison.Ordinal);
             Assert.DoesNotContain(CurrentTag, result, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void ReplaceOwnedScriptTags_ValidQuotedPublicDoctypeFailsClosed()
+        {
+            const string Html = "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" "
+                + "\"http://www.w3.org/TR/html4/strict.dtd\">"
+                + "<html><body><main>legacy shell</main></body></html>";
+
+            Assert.Same(Html, RefreshKit.ReplaceOwnedScriptTags(Html, PluginName, CurrentTag));
         }
 
         [Fact]
@@ -724,6 +746,46 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
                 "<script id=\"late\"></script>" + CurrentTag + "\n</body>",
                 result,
                 StringComparison.Ordinal);
+            Assert.Equal(1, Count(result, CurrentTag));
+        }
+
+        [Theory]
+        [InlineData("<html><head></head><main>app</main></body></html>")]
+        [InlineData("<main>app</main></body>")]
+        [InlineData("<html><head><title>x</title><main>app</main></body></html>")]
+        public void ReplaceOwnedScriptTags_AcceptsBodyEndAfterImplicitDocumentTransitions(
+            string html)
+        {
+            var result = RefreshKit.ReplaceOwnedScriptTags(html, PluginName, CurrentTag);
+
+            Assert.Contains("</main>" + CurrentTag + "\n</body>", result, StringComparison.Ordinal);
+            Assert.Equal(1, Count(result, CurrentTag));
+        }
+
+        [Theory]
+        [InlineData("assets/")]
+        [InlineData("/elsewhere/")]
+        [InlineData("https://cdn.example.invalid/root/")]
+        [InlineData("//cdn.example.invalid/root/")]
+        public void ReplaceOwnedScriptTags_AnyDocumentBaseHrefFailsClosed(string href)
+        {
+            var html = "<html><head><base href=\"" + href + "\"></head><body>"
+                + "<script plugin=\"Kit &amp; Co\" src=\"/old.js\"></script>"
+                + "</body></html>";
+
+            Assert.Same(html, RefreshKit.ReplaceOwnedScriptTags(html, PluginName, CurrentTag));
+        }
+
+        [Fact]
+        public void ReplaceOwnedScriptTags_BaseInsideTemplateRemainsInert()
+        {
+            const string Html = "<html><body><template>"
+                + "<base href=\"https://cdn.example.invalid/root/\">"
+                + "</template></body></html>";
+
+            var result = RefreshKit.ReplaceOwnedScriptTags(Html, PluginName, CurrentTag);
+
+            Assert.Contains(CurrentTag + "\n</body>", result, StringComparison.Ordinal);
             Assert.Equal(1, Count(result, CurrentTag));
         }
 
