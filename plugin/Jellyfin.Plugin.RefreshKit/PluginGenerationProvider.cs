@@ -45,12 +45,37 @@ namespace Jellyfin.Plugin.RefreshKit
     /// Configuration files are matched to a plugin by ASSEMBLY NAME, which is
     /// how Jellyfin names them: the plugin folder holding
     /// <c>Jellyfin.Plugin.JellyfinEnhanced.dll</c> owns
-    /// <c>configurations/Jellyfin.Plugin.JellyfinEnhanced.xml</c> and any
-    /// <c>configurations/Jellyfin.Plugin.JellyfinEnhanced/</c> subtree. Only
-    /// files matched that way are folded in — an unmatched file in the
-    /// configurations folder belongs to nobody the scan can name, and counting
-    /// it would let a stale leftover (or an unrelated writer) move the
-    /// generation for no user-visible reason.
+    /// <c>configurations/Jellyfin.Plugin.JellyfinEnhanced.xml</c>. Only that
+    /// file — Jellyfin's own plugin-configuration store, the one the dashboard
+    /// writes when an admin saves settings — is watched.
+    /// </para>
+    ///
+    /// <para>
+    /// WHAT IS DELIBERATELY NOT WATCHED, and why. Plugins also get a private
+    /// <c>configurations/&lt;assembly&gt;/</c> DIRECTORY, and what lands there
+    /// is not admin settings. Measured on a live 10.11.11 server with Jellyfin
+    /// Enhanced 12.1.0.0 installed, that directory holds
+    /// <c>&lt;userId&gt;/settings.json</c> (PER-USER preferences),
+    /// <c>tag-cache.json</c> and a <c>cdn-cache/</c> tree (runtime caches).
+    /// Saving one user's personal preference rewrites
+    /// <c>&lt;userId&gt;/settings.json</c> and leaves the admin XML untouched —
+    /// so watching the directory would reload EVERY client on the server
+    /// because ONE user toggled a personal setting, and the runtime caches
+    /// would move the generation on their own schedule with no user-visible
+    /// change at all. The signal has to stay clean: the client-side safety net
+    /// (idle gate, media gate, reload budget, flap guard) is a backstop, not a
+    /// licence to emit noise.
+    /// </para>
+    ///
+    /// <para>
+    /// Even watching only the XML, a plugin is free to persist churn there, so
+    /// config-driven bumps additionally go through a DEBOUNCE (a burst of
+    /// writes coalesces into one) and a per-plugin COOLDOWN (at most one
+    /// config-driven bump per
+    /// <see cref="Configuration.PluginConfiguration.ConfigCooldownMinutes"/>).
+    /// Version/DLL changes bypass both — a new binary is unambiguous and rare.
+    /// Admins can turn config watching off globally or exclude individual
+    /// plugins (<see cref="Configuration.PluginConfiguration.ConfigWatchExclusions"/>).
     /// </para>
     ///
     /// <para>
@@ -81,10 +106,20 @@ namespace Jellyfin.Plugin.RefreshKit
         /// <summary>Jellyfin's plugin-configuration folder, a sibling of the plugin folders.</summary>
         private const string ConfigurationsFolderName = "configurations";
 
+        /// <summary>
+        /// How long a new configuration timestamp must stand still before it is
+        /// allowed to move the generation. A settings page that writes three
+        /// times as the admin clicks Save is one change, not three.
+        /// </summary>
+        private const int ConfigDebounceSeconds = 10;
+
         private static readonly Lazy<PluginGenerationProvider> _instance =
             new Lazy<PluginGenerationProvider>(() => new PluginGenerationProvider());
 
         private readonly object _lock = new object();
+        private readonly Dictionary<string, ConfigSignal> _configSignals =
+            new Dictionary<string, ConfigSignal>(StringComparer.Ordinal);
+
         private string _cached = string.Empty;
         private IReadOnlyList<PluginFingerprint> _cachedDetails = Array.Empty<PluginFingerprint>();
         private DateTime _cachedAtUtc = DateTime.MinValue;
@@ -126,7 +161,7 @@ namespace Jellyfin.Plugin.RefreshKit
                     return (_cached, _cachedDetails);
                 }
 
-                var details = ScanPlugins();
+                var details = ScanPlugins(now);
                 _cachedDetails = details;
                 _cached = Fold(details);
                 _cachedAtUtc = now;
@@ -162,7 +197,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 Convert.ToHexString(hash, 0, 8).ToLowerInvariant());
         }
 
-        private static IReadOnlyList<PluginFingerprint> ScanPlugins()
+        private IReadOnlyList<PluginFingerprint> ScanPlugins(DateTime now)
         {
             var pluginsPath = ResolvePluginsPath();
             if (string.IsNullOrEmpty(pluginsPath) || !Directory.Exists(pluginsPath))
@@ -195,7 +230,7 @@ namespace Jellyfin.Plugin.RefreshKit
 
                 try
                 {
-                    results.Add(Fingerprint(directory, configurationsPath));
+                    results.Add(Fingerprint(directory, configurationsPath, now));
                 }
                 catch
                 {
@@ -205,10 +240,30 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
             }
 
+            PruneConfigSignals(results);
             return results;
         }
 
-        private static PluginFingerprint Fingerprint(string directory, string configurationsPath)
+        /// <summary>
+        /// Drops debounce/cooldown state for plugins that no longer exist, so an
+        /// uninstall-reinstall cycle starts clean and the dictionary cannot grow
+        /// without bound over a long uptime.
+        /// </summary>
+        private void PruneConfigSignals(IReadOnlyList<PluginFingerprint> results)
+        {
+            if (_configSignals.Count == 0)
+            {
+                return;
+            }
+
+            var live = new HashSet<string>(results.Select(r => r.Folder), StringComparer.Ordinal);
+            foreach (var stale in _configSignals.Keys.Where(k => !live.Contains(k)).ToList())
+            {
+                _configSignals.Remove(stale);
+            }
+        }
+
+        private PluginFingerprint Fingerprint(string directory, string configurationsPath, DateTime now)
         {
             var folder = Path.GetFileName(directory);
             var id = string.Empty;
@@ -255,21 +310,19 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
             }
 
-            return new PluginFingerprint(
-                folder,
-                id,
-                version,
-                newestTicks,
-                NewestConfigurationTicks(configurationsPath, assemblyNames));
+            var rawConfigTicks = ObserveConfigurationTicks(configurationsPath, assemblyNames);
+            var publishedConfigTicks = PublishConfigTicks(folder, id, assemblyNames, rawConfigTicks, now);
+
+            return new PluginFingerprint(folder, id, version, newestTicks, publishedConfigTicks);
         }
 
         /// <summary>
-        /// Newest write time across everything Jellyfin stores as configuration
-        /// for the assemblies in one plugin folder: <c>&lt;assembly&gt;.xml</c>
-        /// and, for plugins that keep more than one file, the
-        /// <c>&lt;assembly&gt;/</c> subtree next to it.
+        /// Newest write time of the plugin-configuration files Jellyfin itself
+        /// writes for the assemblies in one plugin folder:
+        /// <c>&lt;assembly&gt;.xml</c>, and nothing else (see the class doc for
+        /// why the private <c>&lt;assembly&gt;/</c> directory is excluded).
         /// </summary>
-        private static long NewestConfigurationTicks(string configurationsPath, IReadOnlyList<string> assemblyNames)
+        private static long ObserveConfigurationTicks(string configurationsPath, IReadOnlyList<string> assemblyNames)
         {
             if (string.IsNullOrEmpty(configurationsPath) || assemblyNames.Count == 0)
             {
@@ -295,25 +348,6 @@ namespace Jellyfin.Plugin.RefreshKit
                             newest = ticks;
                         }
                     }
-
-                    var folder = Path.Combine(configurationsPath, assemblyName);
-                    if (Directory.Exists(folder))
-                    {
-                        var seen = 0;
-                        foreach (var nested in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))
-                        {
-                            if (++seen > MaxFilesPerPlugin)
-                            {
-                                break;
-                            }
-
-                            var ticks = File.GetLastWriteTimeUtc(nested).Ticks;
-                            if (ticks > newest)
-                            {
-                                newest = ticks;
-                            }
-                        }
-                    }
                 }
                 catch
                 {
@@ -323,6 +357,149 @@ namespace Jellyfin.Plugin.RefreshKit
             }
 
             return newest;
+        }
+
+        /// <summary>
+        /// The debounce + cooldown gate between "the config file changed" and
+        /// "every open client reloads".
+        ///
+        /// <list type="bullet">
+        /// <item><description>FIRST OBSERVATION of a plugin adopts whatever is on
+        /// disk silently — a server restart is not a settings change.</description></item>
+        /// <item><description>DEBOUNCE: a new timestamp must stand still for
+        /// <see cref="ConfigDebounceSeconds"/>; each further write restarts the
+        /// clock, so a burst collapses into one bump.</description></item>
+        /// <item><description>COOLDOWN: after a bump is published, later config
+        /// changes for that plugin wait out
+        /// <see cref="Configuration.PluginConfiguration.ConfigCooldownMinutes"/>.
+        /// The change is never dropped — it publishes when the cooldown expires,
+        /// carrying the latest timestamp — so the worst case is "one reload per
+        /// cooldown", not "one reload per save".</description></item>
+        /// <item><description>The FIRST change after startup is not delayed: the
+        /// cooldown starts at the first publish, so the ordinary "admin saves a
+        /// setting once" case propagates within seconds.</description></item>
+        /// </list>
+        /// </summary>
+        private long PublishConfigTicks(
+            string folder,
+            string id,
+            IReadOnlyList<string> assemblyNames,
+            long rawTicks,
+            DateTime now)
+        {
+            var configuration = ReadConfiguration();
+            if (configuration?.EnableConfigWatching == false
+                || IsConfigWatchExcluded(configuration, folder, id, assemblyNames))
+            {
+                // Excluded plugins fall back to version/DLL detection only.
+                _configSignals.Remove(folder);
+                return 0;
+            }
+
+            if (!_configSignals.TryGetValue(folder, out var signal))
+            {
+                signal = new ConfigSignal { PublishedTicks = rawTicks };
+                _configSignals[folder] = signal;
+                return signal.PublishedTicks;
+            }
+
+            if (rawTicks == signal.PublishedTicks)
+            {
+                signal.PendingTicks = 0;
+                return signal.PublishedTicks;
+            }
+
+            if (rawTicks != signal.PendingTicks)
+            {
+                signal.PendingTicks = rawTicks;
+                signal.PendingFirstSeenUtc = now;
+                return signal.PublishedTicks;
+            }
+
+            if ((now - signal.PendingFirstSeenUtc).TotalSeconds < ConfigDebounceSeconds)
+            {
+                return signal.PublishedTicks;
+            }
+
+            var cooldownMinutes = Math.Clamp(configuration?.ConfigCooldownMinutes ?? 5, 0, 1440);
+            if (signal.LastPublishedUtc != DateTime.MinValue
+                && (now - signal.LastPublishedUtc).TotalMinutes < cooldownMinutes)
+            {
+                return signal.PublishedTicks;
+            }
+
+            signal.PublishedTicks = rawTicks;
+            signal.PendingTicks = 0;
+            signal.LastPublishedUtc = now;
+            return signal.PublishedTicks;
+        }
+
+        private static Configuration.PluginConfiguration? ReadConfiguration()
+        {
+            try
+            {
+                return Plugin.Instance?.Configuration;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// An exclusion entry matches a plugin by any of the names an admin
+        /// could reasonably type: the install folder (<c>Media Bar_2.4.12.0</c>),
+        /// its display-name part (<c>Media Bar</c>), the plugin GUID, or an
+        /// assembly name (<c>Jellyfin.Plugin.MediaBar</c>).
+        /// </summary>
+        private static bool IsConfigWatchExcluded(
+            Configuration.PluginConfiguration? configuration,
+            string folder,
+            string id,
+            IReadOnlyList<string> assemblyNames)
+        {
+            var exclusions = configuration?.ConfigWatchExclusions;
+            if (exclusions == null || exclusions.Length == 0)
+            {
+                return false;
+            }
+
+            var underscore = folder.LastIndexOf('_');
+            var displayName = underscore > 0 ? folder.Substring(0, underscore) : folder;
+
+            foreach (var raw in exclusions)
+            {
+                var entry = (raw ?? string.Empty).Trim();
+                if (entry.Length == 0)
+                {
+                    continue;
+                }
+
+                if (entry.Equals(folder, StringComparison.OrdinalIgnoreCase)
+                    || entry.Equals(displayName, StringComparison.OrdinalIgnoreCase)
+                    || (id.Length > 0 && entry.Replace("-", string.Empty, StringComparison.Ordinal)
+                        .Equals(id.Replace("-", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase))
+                    || assemblyNames.Any(a => entry.Equals(a, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>Debounce/cooldown state for one plugin's configuration file.</summary>
+        private sealed class ConfigSignal
+        {
+            /// <summary>The value currently folded into the generation.</summary>
+            public long PublishedTicks { get; set; }
+
+            /// <summary>A newer value waiting out the debounce and/or cooldown.</summary>
+            public long PendingTicks { get; set; }
+
+            public DateTime PendingFirstSeenUtc { get; set; }
+
+            public DateTime LastPublishedUtc { get; set; } = DateTime.MinValue;
         }
 
         private static string ReadStringProperty(JsonElement root, string name)
