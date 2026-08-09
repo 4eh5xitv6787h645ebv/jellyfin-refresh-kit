@@ -412,6 +412,33 @@ def main() -> int:
             '[[ "${token}" =~ ^[0-9A-Fa-f]{32}$ ]]' in runtime,
             "runtime authentication must accept only exact 32-hex Jellyfin tokens",
         )
+        complete_wizard_source = runtime.split("complete_wizard() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        wizard_request_source = runtime.split("wizard_request() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        require(
+            'public_info="$(wizard_request public-info '
+            '"${ORIGIN}/System/Info/Public")"' in complete_wizard_source
+            and 'public_info="$(curl --fail' not in complete_wizard_source
+            and 'case "${wizard_done,,}" in' in complete_wizard_source
+            and 'true) return ;;' in complete_wizard_source
+            and 'false) ;;' in complete_wizard_source
+            and 'public info returned no boolean StartupWizardCompleted'
+            in complete_wizard_source,
+            "first-boot public-info must retry through the SetupServer handoff "
+            "and reject a non-boolean wizard state",
+        )
+        require(
+            'for _ in {1..25}; do' in wizard_request_source
+            and 'response="$(curl --fail --silent --show-error '
+            '--connect-timeout 2 --max-time 12 "$@")"'
+            in wizard_request_source
+            and 'printf \'%s\' "${response}"' in wizard_request_source
+            and 'sleep 1' in wizard_request_source,
+            "wizard requests must retry bounded isolated response candidates",
+        )
         for fragment in (
             'CONDITIONAL_ETAG=\'"rk-compat-probe"\'',
             ': > "${OUT}/conditional.html"',

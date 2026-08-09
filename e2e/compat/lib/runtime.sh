@@ -66,10 +66,11 @@ except Exception:
 }
 
 wizard_request() {
-    local label="$1"
+    local label="$1" response
     shift
     for _ in {1..25}; do
-        if curl --fail --silent --show-error --connect-timeout 2 --max-time 12 "$@"; then
+        if response="$(curl --fail --silent --show-error --connect-timeout 2 --max-time 12 "$@")"; then
+            printf '%s' "${response}"
             return 0
         fi
         sleep 1
@@ -103,11 +104,17 @@ PY
 
 complete_wizard() {
     local public_info wizard_done user_payload
-    public_info="$(curl --fail --silent --show-error "${ORIGIN}/System/Info/Public")"
+    # Jellyfin's first boot hands the port from its temporary SetupServer host
+    # to the main application host.  A readiness request can succeed just
+    # before that handoff, so this fetch must tolerate the short refusal window
+    # rather than turning an infrastructure race into a matrix failure.
+    public_info="$(wizard_request public-info "${ORIGIN}/System/Info/Public")"
     wizard_done="$(printf '%s' "${public_info}" | json_field StartupWizardCompleted)"
-    if [ "${wizard_done,,}" = "true" ]; then
-        return
-    fi
+    case "${wizard_done,,}" in
+        true) return ;;
+        false) ;;
+        *) compat_die "${MATRIX_ID}: public info returned no boolean StartupWizardCompleted" ;;
+    esac
     compat_log "${MATRIX_ID}: completing the disposable startup wizard"
     compat_wait_http "${ORIGIN}/Startup/User" 200 120 1
     wizard_request configuration -o /dev/null \
