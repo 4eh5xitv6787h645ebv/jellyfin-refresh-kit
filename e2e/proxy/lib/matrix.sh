@@ -119,7 +119,7 @@ assert_same_header() { # label current-headers reference-headers header-name
         "$(header_value "$reference" "$name")" "$(header_value "$current" "$name")"
 }
 
-canonical_token_list() { # comma-separated-value
+canonical_vary_list() { # comma-separated field-name list
     printf '%s\n' "$1" | awk -F',' '
         {
             for (item_index = 1; item_index <= NF; item_index++) {
@@ -133,24 +133,24 @@ canonical_token_list() { # comma-separated-value
     ' | LC_ALL=C sort -u | paste -sd ',' -
 }
 
-assert_same_token_header() { # label current-headers reference-headers header-name
-    local label="$1" current="$2" reference="$3" name="$4"
+assert_same_vary() { # label current-headers reference-headers
+    local label="$1" current="$2" reference="$3" name=Vary
     local reference_value current_value
     r "$label $name header count" \
         "$(header_count "$reference" "$name")" "$(header_count "$current" "$name")"
-    if ! reference_value="$(canonical_token_list "$(header_value "$reference" "$name")")"; then
+    if ! reference_value="$(canonical_vary_list "$(header_value "$reference" "$name")")"; then
         bad "$label could not normalize the reference $name value"
         return
     fi
-    if ! current_value="$(canonical_token_list "$(header_value "$current" "$name")")"; then
+    if ! current_value="$(canonical_vary_list "$(header_value "$current" "$name")")"; then
         bad "$label could not normalize the current $name value"
         return
     fi
     r "$label $name semantic value" "$reference_value" "$current_value"
 }
 
-assert_optional_same_token_header() { # label current-headers reference-headers header-name
-    local label="$1" current="$2" reference="$3" name="$4" count
+assert_optional_same_vary() { # label current-headers reference-headers
+    local label="$1" current="$2" reference="$3" name=Vary count
     local reference_value current_value
     count="$(header_count "$current" "$name")"
     if [ "$count" = 0 ]; then
@@ -162,11 +162,11 @@ assert_optional_same_token_header() { # label current-headers reference-headers 
         return
     fi
     r "$label reference has one $name header" 1 "$(header_count "$reference" "$name")"
-    if ! reference_value="$(canonical_token_list "$(header_value "$reference" "$name")")"; then
+    if ! reference_value="$(canonical_vary_list "$(header_value "$reference" "$name")")"; then
         bad "$label could not normalize the reference $name value"
         return
     fi
-    if ! current_value="$(canonical_token_list "$(header_value "$current" "$name")")"; then
+    if ! current_value="$(canonical_vary_list "$(header_value "$current" "$name")")"; then
         bad "$label could not normalize the current $name value"
         return
     fi
@@ -237,13 +237,13 @@ assert_full_representation() { # label headers body reference-headers reference-
         r "$label has no Content-Encoding" 0 "$encoding_count"
     fi
     assert_same_header "$label" "$headers" "$reference_headers" Content-Type
-    assert_same_token_header "$label" "$headers" "$reference_headers" Cache-Control
+    assert_same_header "$label" "$headers" "$reference_headers" Cache-Control
     case "$vary_mode" in
         required)
-            assert_same_token_header "$label" "$headers" "$reference_headers" Vary
+            assert_same_vary "$label" "$headers" "$reference_headers"
             ;;
         optional)
-            assert_optional_same_token_header "$label" "$headers" "$reference_headers" Vary
+            assert_optional_same_vary "$label" "$headers" "$reference_headers"
             ;;
         *)
             bad "$label has unknown Vary comparison mode '$vary_mode'"
@@ -260,8 +260,8 @@ assert_full_representation() { # label headers body reference-headers reference-
 assert_not_modified() { # label headers body reference-headers reference-body etag
     local label="$1" headers="$2" body="$3" reference_headers="$4" reference_body="$5" etag="$6"
     r "$label ETag" "$etag" "$(header_value "$headers" ETag)"
-    assert_same_token_header "$label" "$headers" "$reference_headers" Cache-Control
-    assert_same_token_header "$label" "$headers" "$reference_headers" Vary
+    assert_same_header "$label" "$headers" "$reference_headers" Cache-Control
+    assert_same_vary "$label" "$headers" "$reference_headers"
     # A 304 has no content. Representation metadata is optional; when supplied
     # it must still describe the selected 200 response. RFC 9110 also permits a
     # Content-Length equal to that selected representation's octet count.
@@ -410,12 +410,16 @@ test_coded_representation() { # request encoding file stem
             bad "$requested body did not decode to HTML"
         fi
     elif [ -z "$encoding" ]; then
-        r "$requested identity fallback has no Content-Encoding" 0 "$encoding_count"
-        r "$requested identity fallback ETag" "$ID_ETAG" "$etag"
-        if cmp -s -- "$TMP/id.html" "$body"; then
-            ok "$requested identity fallback carries the exact complete identity body"
+        if [ "$requested" = gzip ]; then
+            bad "gzip request degraded to identity; proxy variant negotiation was not preserved"
         else
-            bad "$requested identity fallback differs from the identity body"
+            r "$requested identity fallback has no Content-Encoding" 0 "$encoding_count"
+            r "$requested identity fallback ETag" "$ID_ETAG" "$etag"
+            if cmp -s -- "$TMP/id.html" "$body"; then
+                ok "$requested identity fallback carries the exact complete identity body"
+            else
+                bad "$requested identity fallback differs from the identity body"
+            fi
         fi
     else
         bad "$requested response has unexpected Content-Encoding '$encoding'"

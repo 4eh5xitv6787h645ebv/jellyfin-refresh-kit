@@ -42,6 +42,7 @@ def etags_for(mode: str) -> dict[str, str]:
 class MatrixHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     suppress_conditionals = False
+    disable_gzip = False
     etags = BASE_ETAGS
 
     def log_message(self, _format: str, *_args: object) -> None:
@@ -68,7 +69,7 @@ class MatrixHandler(BaseHTTPRequestHandler):
         tokens = {part.split(";", 1)[0].strip().lower() for part in accepted.split(",")}
         if "br" in tokens and brotli is not None:
             return "br", BROTLI, "br"
-        if "gzip" in tokens:
+        if "gzip" in tokens and not self.disable_gzip:
             return "gzip", GZIP, "gzip"
         return "identity", HTML, ""
 
@@ -89,9 +90,9 @@ class MatrixHandler(BaseHTTPRequestHandler):
             if self.headers.get("If-None-Match") == etag:
                 self.send_response(304)
                 self.send_header("ETag", etag)
-                # Directive and field-name tokens are case-insensitive. Exercise
-                # semantic comparison rather than accidentally pinning wire case.
-                self.send_header("Cache-Control", "NO-CACHE")
+                # Vary field names are case-insensitive. Exercise semantic
+                # comparison rather than accidentally pinning wire case.
+                self.send_header("Cache-Control", "no-cache")
                 self.send_header("Vary", "accept-encoding")
                 if name == "gzip":
                     # RFC 9110 permits these optional fields when they describe
@@ -133,6 +134,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port-file", type=Path, required=True)
     parser.add_argument("--suppress-conditionals", action="store_true")
+    parser.add_argument("--disable-gzip", action="store_true")
     parser.add_argument(
         "--etag-mode",
         choices=(
@@ -151,6 +153,7 @@ def main() -> None:
         (MatrixHandler,),
         {
             "suppress_conditionals": args.suppress_conditionals,
+            "disable_gzip": args.disable_gzip,
             "etags": etags_for(args.etag_mode),
         },
     )

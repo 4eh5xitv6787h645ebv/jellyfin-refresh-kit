@@ -132,6 +132,15 @@ stop_fixture
 grep -q 'rk- ETag is weak' "$TMP/weak.log" \
     || die "weak-validator negative fixture failed for an unrelated reason"
 
+start_fixture gzip-degraded --disable-gzip
+if bash "$HERE/matrix.sh" static-gzip-degraded "$FIXTURE_PORT" '' strict \
+    > "$TMP/gzip-degraded.log"; then
+    die "strict matrix accepted loss of explicit gzip negotiation"
+fi
+stop_fixture
+grep -q 'gzip request degraded to identity' "$TMP/gzip-degraded.log" \
+    || die "gzip-negotiation negative fixture failed for an unrelated reason"
+
 start_fixture gzip-shared --etag-mode gzip-equals-identity
 if bash "$HERE/matrix.sh" static-gzip-shared "$FIXTURE_PORT" '' strict \
     > "$TMP/gzip-shared.log"; then
