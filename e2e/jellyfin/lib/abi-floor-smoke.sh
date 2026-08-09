@@ -14,7 +14,6 @@ source "${ABI_FLOOR_HERE}/common.sh"
 
 ABI_FLOOR_IMAGE='jellyfin/jellyfin:10.11.0@sha256:59417f441213e236a9f907d4e71a13472042409d85f9e9310dbdd87ee33d7bd4'
 ABI_FLOOR_SERVICE='abi-floor'
-ABI_FLOOR_ORIGIN="$(rk_origin abi-floor)"
 ABI_FLOOR_OUT="${RK_ARTIFACT_DIR}/abi-floor"
 ABI_FLOOR_RESULT="${ABI_FLOOR_OUT}/result.json"
 ABI_FLOOR_TOKEN="$(rk_token_file abi-floor)"
@@ -34,12 +33,12 @@ validate_runtime_controls() {
         0|1) ;;
         *) printf 'FATAL: RK_ABI_FLOOR_SKIP_PULL must be exactly 0 or 1\n' >&2; return 1 ;;
     esac
-    [[ "${RK_ABI_FLOOR_PORT}" =~ ^[0-9]{4,5}$ ]] \
-        && [ "${RK_ABI_FLOOR_PORT}" -ge 1024 ] \
-        && [ "${RK_ABI_FLOOR_PORT}" -le 65535 ] || {
+    if ! [[ "${RK_ABI_FLOOR_PORT}" =~ ^[0-9]{4,5}$ ]] \
+        || [ "${RK_ABI_FLOOR_PORT}" -lt 1024 ] \
+        || [ "${RK_ABI_FLOOR_PORT}" -gt 65535 ]; then
         printf 'FATAL: RK_ABI_FLOOR_PORT must be an integer from 1024 through 65535\n' >&2
         return 1
-    }
+    fi
     local pull_timeout="${RK_ABI_FLOOR_PULL_TIMEOUT_SECONDS:-900}"
     [[ "${pull_timeout}" =~ ^[1-9][0-9]{0,3}$ ]] || {
         printf 'FATAL: RK_ABI_FLOOR_PULL_TIMEOUT_SECONDS must be 1..9999\n' >&2
@@ -115,10 +114,10 @@ pin_floor_snapshot() {
     local requested resolved
     requested="${RK_BUILD_SNAPSHOT:-${RK_REPO_ROOT}/plugin/build}"
     resolved="$(readlink -f -- "${requested}" 2>/dev/null || true)"
-    [ -n "${resolved}" ] && [ -d "${resolved}" ] || {
+    if [ -z "${resolved}" ] || [ ! -d "${resolved}" ]; then
         printf 'FATAL: plugin build snapshot does not exist: %s\n' "${requested}" >&2
         return 1
-    }
+    fi
     case "${resolved}" in
         "${RK_REPO_ROOT}/plugin/.builds/"*) ;;
         *) printf 'FATAL: plugin build resolved outside plugin/.builds: %s\n' "${resolved}" >&2; return 1 ;;
@@ -128,7 +127,6 @@ pin_floor_snapshot() {
         --manifest-mode structure --require-immutable-snapshot || return $?
     RK_BUILD_SNAPSHOT="${resolved}"
     RK_STAGE_JF10="${resolved}/stage"
-    RK_STAGE_JF12="${resolved}/stage-jf12"
     export RK_BUILD_SNAPSHOT
     rk_log "pinned plugin snapshot $(basename "${resolved}") for the ABI-floor smoke"
 }
