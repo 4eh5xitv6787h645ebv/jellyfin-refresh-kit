@@ -1199,6 +1199,128 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
 
 class CompatibilityEvidenceTests(unittest.TestCase):
     @staticmethod
+    def make_locked_artifact(artifact_id: str, runtime: str) -> dict[str, object]:
+        digest = hashlib.sha256(f"archive:{artifact_id}".encode()).hexdigest()
+        framework = "net9.0" if runtime == "jf10" else "net10.0"
+        abi = "10.11.0.0" if runtime == "jf10" else "12.0.0.0"
+        return {
+            "id": artifact_id,
+            "disposition": "testable",
+            "runtime": runtime,
+            "archive": {
+                "name": f"{artifact_id}.zip",
+                "url": (
+                    "https://github.com/example/fixture/releases/download/v1/"
+                    f"{artifact_id}.zip"
+                ),
+                "sha256": digest,
+            },
+            "plugin": {
+                "archiveMeta": "absent-generate",
+                "assembly": f"{artifact_id}.dll",
+                "framework": framework,
+                "guid": "11111111-2222-3333-4444-555555555555",
+                "name": artifact_id,
+                "targetAbi": abi,
+                "version": "1.0.0.0",
+            },
+        }
+
+    @staticmethod
+    def make_artifact_report(
+        artifacts: list[dict[str, object]],
+    ) -> dict[str, object]:
+        rows = []
+        for artifact in artifacts:
+            archive = artifact["archive"]
+            plugin = artifact["plugin"]
+            assembly = str(plugin["assembly"])
+            assembly_sha = hashlib.sha256(
+                f"assembly:{artifact['id']}".encode()
+            ).hexdigest()
+            if plugin["archiveMeta"] == "upstream":
+                meta = {
+                    "policy": "upstream",
+                    "archivePath": "meta.json",
+                    "present": True,
+                    "checks": {
+                        field: {
+                            "expected": plugin[field],
+                            "actual": plugin[field],
+                            "matched": True,
+                        }
+                        for field in ("guid", "name", "version")
+                    }
+                    | {
+                        "targetAbi": {
+                            "expected": plugin["targetAbi"],
+                            "actual": plugin["targetAbi"],
+                            "matched": True,
+                            "present": True,
+                        },
+                        "assemblies": [],
+                    },
+                }
+            else:
+                meta = {
+                    "policy": plugin["archiveMeta"],
+                    "archivePath": None,
+                    "present": False,
+                    "checks": None,
+                }
+            rows.append(
+                {
+                    "id": artifact["id"],
+                    "disposition": artifact["disposition"],
+                    "runtime": artifact["runtime"],
+                    "archive": {
+                        "path": f"/fixture-cache/{archive['sha256']}-{archive['name']}",
+                    "url": archive["url"],
+                    "sha256": archive["sha256"],
+                    "size": 100,
+                    "memberCount": 2 if plugin["archiveMeta"] == "upstream" else 1,
+                    },
+                    "plugin": {
+                        **plugin,
+                        "assemblyPath": assembly,
+                        "assemblySha256": assembly_sha,
+                        "managedDlls": {assembly: assembly_sha},
+                        "binaryTokenChecks": {"guid": True, "version": True},
+                        "meta": meta,
+                        "frameworkEvidence": {
+                            "expected": plugin["framework"],
+                            "depsPath": None,
+                            "runtimeTarget": None,
+                            "matched": None,
+                        },
+                    },
+                    "verified": True,
+                }
+            )
+        return {"schemaVersion": 1, "artifacts": rows, "allPassed": True}
+
+    @staticmethod
+    def write_json_fixture(path: pathlib.Path, value: object) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    @staticmethod
+    def result_plugin(row: dict[str, object]) -> dict[str, object]:
+        plugin = row["plugin"]
+        return {
+            "artifactId": row["id"],
+            "artifactVerification": copy.deepcopy(row),
+            "materialization": {
+                "materialized": True,
+                "archiveSha256": row["archive"]["sha256"],
+                "assemblySha256": plugin["assemblySha256"],
+                "dllInventory": copy.deepcopy(plugin["managedDlls"]),
+            },
+        }
+
+    @staticmethod
     def make_cache_http_fixture(
         expectation: str,
     ) -> tuple[dict[str, bytes], dict[str, object], str]:
@@ -1261,6 +1383,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         artifact_root = root / "artifacts"
         output = root / "output"
         matrix_path = root / "matrices.json"
+        lock_path = root / "ecosystem.lock.json"
         build = root / "build"
         stage = build / "stage"
         stage.mkdir(parents=True)
@@ -1272,7 +1395,6 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         disk_id = "direct-disk"
         nondisk_id = "ordinary-transform"
         order_pair = "direct-order"
-        runtime_order = ["direct-plugin", "@refresh-kit"]
         marker = "<!-- direct-raw-marker -->"
         asset_marker = "/DirectWriter/inject.js"
         requirements = {
@@ -1282,6 +1404,20 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 "markers": [marker, asset_marker],
             }
         }
+        locked_artifacts = [
+            CompatibilityEvidenceTests.make_locked_artifact(
+                "direct-plugin", "jf10"
+            ),
+            CompatibilityEvidenceTests.make_locked_artifact(
+                "sidecar-plugin", "jf10"
+            ),
+        ]
+        CompatibilityEvidenceTests.write_json_fixture(
+            lock_path,
+            {"schemaVersion": 1, "artifacts": locked_artifacts},
+        )
+        install_order = ["@refresh-kit", "direct-plugin", "sidecar-plugin"]
+        runtime_order = ["direct-plugin", "sidecar-plugin", "@refresh-kit"]
         rows = [
             {
                 "id": disk_id,
@@ -1290,6 +1426,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 "cacheExpectation": "required",
                 "orderPair": order_pair,
                 "expectedRuntimePluginOrder": runtime_order,
+                "installOrder": install_order,
                 "requiredUnversionedOuterArtifacts": [],
                 "webrootDiskRequirements": requirements,
             },
@@ -1300,6 +1437,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 "cacheExpectation": "required",
                 "orderPair": order_pair,
                 "expectedRuntimePluginOrder": runtime_order,
+                "installOrder": install_order,
                 "requiredUnversionedOuterArtifacts": [],
                 "webrootDiskRequirements": {},
             },
@@ -1322,6 +1460,17 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             "pairRuntimeOrderChecks": {order_pair: True},
         }
         artifact_root.mkdir()
+        all_locked = CompatibilityEvidenceTests.make_artifact_report(
+            locked_artifacts
+        )
+        CompatibilityEvidenceTests.write_json_fixture(
+            artifact_root / "all-locked-verification.json", all_locked
+        )
+        summary["allLockedVerification"] = (
+            evidence_validation.artifact_verification_summary(
+                artifact_root / "all-locked-verification.json", all_locked
+            )
+        )
         (artifact_root / "summary.json").write_text(
             json.dumps(summary), encoding="utf-8"
         )
@@ -1348,6 +1497,8 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         ):
             directory = artifact_root / matrix_id
             directory.mkdir()
+            matrix_report = copy.deepcopy(all_locked)
+            report_rows = matrix_report["artifacts"]
             values = {
                 "static.json": {"schemaVersion": 1, "allPassed": True},
                 "stage.json": {
@@ -1375,8 +1526,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     "publishedLoopbackActive": False,
                 },
                 "artifact-verification.json": {
-                    "schemaVersion": 1,
-                    "allPassed": True,
+                    **matrix_report,
                 },
                 "result.json": {
                     "schemaVersion": 1,
@@ -1388,6 +1538,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     "errors": [],
                     "outcome": "pass",
                     "cacheExpectation": "required",
+                    "requestedInstallOrder": install_order,
                     "orderPair": order_pair,
                     "expectedRuntimePluginOrder": runtime_order,
                     "observedRuntimePluginOrder": runtime_order,
@@ -1397,6 +1548,10 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         "generationAfter": generation,
                         "cacheEvidence": cache_evidence,
                     },
+                    "plugins": [
+                        CompatibilityEvidenceTests.result_plugin(report_row)
+                        for report_row in report_rows
+                    ],
                 },
             }
             for name, value in values.items():
@@ -1416,6 +1571,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             "artifact_root": artifact_root,
             "output": output,
             "matrix_path": matrix_path,
+            "lock_path": lock_path,
             "build": build,
             "disk_id": disk_id,
             "nondisk_id": nondisk_id,
@@ -1437,6 +1593,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 collector, "COMPAT_ARTIFACTS", fixture["artifact_root"]
             ),
             mock.patch.object(collector, "COMPAT_MATRICES", fixture["matrix_path"]),
+            mock.patch.object(collector, "COMPAT_LOCK", fixture["lock_path"]),
         ):
             collector.collect_compatibility(
                 fixture["output"],
@@ -1447,6 +1604,207 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 0,
             )
         return evidence, errors
+
+    def test_archive_verification_receipt_mutations_fail_closed(self) -> None:
+        artifacts = [
+            self.make_locked_artifact("first-plugin", "jf10"),
+            self.make_locked_artifact("second-plugin", "jf10"),
+        ]
+        artifacts[1]["plugin"]["archiveMeta"] = "upstream"
+        report = self.make_artifact_report(artifacts)
+        second_plugin = report["artifacts"][1]["plugin"]
+        second_plugin["frameworkEvidence"] = {
+            "expected": "net9.0",
+            "depsPath": "second-plugin.deps.json",
+            "runtimeTarget": ".NETCoreApp,Version=v9.0",
+            "matched": True,
+        }
+        report["artifacts"][1]["archive"]["memberCount"] = 3
+        expected_ids = ["first-plugin", "second-plugin"]
+        evidence_validation.validate_artifact_verification_report(
+            report, artifacts, expected_ids, "fixture"
+        )
+
+        scenarios = (
+            "schema",
+            "all-passed-false",
+            "all-passed-int",
+            "missing-row",
+            "extra-row",
+            "reordered",
+            "duplicate-row",
+            "id",
+            "disposition",
+            "runtime",
+            "verified",
+            "archive-url",
+            "archive-query",
+            "archive-final-url",
+            "archive-sha",
+            "archive-cache-name",
+            "archive-size-bool",
+            "archive-size-zero",
+            "archive-size-over-limit",
+            "archive-members-bool",
+            "archive-members-zero",
+            "archive-members-over-limit",
+            "archive-members-too-small",
+            "plugin-identity",
+            "assembly-path",
+            "assembly-path-noncanonical",
+            "assembly-path-nul",
+            "assembly-sha",
+            "managed-main-missing",
+            "managed-nondll",
+            "managed-sha",
+            "token-false",
+            "token-int",
+            "token-missing",
+            "absent-meta-contradiction",
+            "upstream-meta-mismatch",
+            "framework-absent-contradiction",
+            "framework-runtime-mismatch",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario):
+                changed = copy.deepcopy(report)
+                rows = changed["artifacts"]
+                row = rows[0]
+                if scenario == "schema":
+                    changed["schemaVersion"] = 2
+                elif scenario == "all-passed-false":
+                    changed["allPassed"] = False
+                elif scenario == "all-passed-int":
+                    changed["allPassed"] = 1
+                elif scenario == "missing-row":
+                    rows.pop()
+                elif scenario == "extra-row":
+                    rows.append(copy.deepcopy(rows[-1]))
+                elif scenario == "reordered":
+                    rows.reverse()
+                elif scenario == "duplicate-row":
+                    rows[1] = copy.deepcopy(rows[0])
+                elif scenario == "id":
+                    row["id"] = "changed-plugin"
+                elif scenario == "disposition":
+                    row["disposition"] = "quarantined"
+                elif scenario == "runtime":
+                    row["runtime"] = "jf12"
+                elif scenario == "verified":
+                    row["verified"] = False
+                elif scenario == "archive-url":
+                    row["archive"]["url"] = row["archive"]["url"].replace(
+                        "example", "changed"
+                    )
+                elif scenario == "archive-query":
+                    row["archive"]["url"] += "?token=forbidden"
+                elif scenario == "archive-final-url":
+                    row["archive"]["finalUrl"] = "https://example.invalid/private"
+                elif scenario == "archive-sha":
+                    row["archive"]["sha256"] = "0" * 64
+                elif scenario == "archive-cache-name":
+                    row["archive"]["path"] = "/fixture-cache/wrong.zip"
+                elif scenario == "archive-size-bool":
+                    row["archive"]["size"] = True
+                elif scenario == "archive-size-zero":
+                    row["archive"]["size"] = 0
+                elif scenario == "archive-size-over-limit":
+                    row["archive"]["size"] = 512 * 1024 * 1024 + 1
+                elif scenario == "archive-members-bool":
+                    row["archive"]["memberCount"] = True
+                elif scenario == "archive-members-zero":
+                    row["archive"]["memberCount"] = 0
+                elif scenario == "archive-members-over-limit":
+                    row["archive"]["memberCount"] = 20_001
+                elif scenario == "archive-members-too-small":
+                    rows[1]["archive"]["memberCount"] = 2
+                elif scenario == "plugin-identity":
+                    row["plugin"]["name"] = "changed"
+                elif scenario == "assembly-path":
+                    row["plugin"]["assemblyPath"] = "../unsafe.dll"
+                elif scenario == "assembly-path-noncanonical":
+                    assembly = row["plugin"]["assemblyPath"]
+                    row["plugin"]["assemblyPath"] = f"./{assembly}"
+                elif scenario == "assembly-path-nul":
+                    assembly = row["plugin"]["assemblyPath"]
+                    row["plugin"]["assemblyPath"] = f"unsafe\x00/{assembly}"
+                elif scenario == "assembly-sha":
+                    row["plugin"]["assemblySha256"] = "invalid"
+                elif scenario == "managed-main-missing":
+                    row["plugin"]["managedDlls"] = {
+                        "sidecar.dll": "0" * 64
+                    }
+                elif scenario == "managed-nondll":
+                    row["plugin"]["managedDlls"]["sidecar.txt"] = "0" * 64
+                elif scenario == "managed-sha":
+                    assembly = row["plugin"]["assemblyPath"]
+                    row["plugin"]["managedDlls"][assembly] = "invalid"
+                elif scenario == "token-false":
+                    row["plugin"]["binaryTokenChecks"]["guid"] = False
+                elif scenario == "token-int":
+                    row["plugin"]["binaryTokenChecks"]["guid"] = 1
+                elif scenario == "token-missing":
+                    row["plugin"]["binaryTokenChecks"].pop("version")
+                elif scenario == "absent-meta-contradiction":
+                    row["plugin"]["meta"]["present"] = True
+                elif scenario == "upstream-meta-mismatch":
+                    rows[1]["plugin"]["meta"]["checks"]["name"]["actual"] = (
+                        "changed"
+                    )
+                elif scenario == "framework-absent-contradiction":
+                    row["plugin"]["frameworkEvidence"]["matched"] = True
+                else:
+                    rows[1]["plugin"]["frameworkEvidence"]["runtimeTarget"] = (
+                        ".NETCoreApp,Version=v8.0"
+                    )
+                with self.assertRaises(evidence_validation.EvidenceValidationError):
+                    evidence_validation.validate_artifact_verification_report(
+                        changed, artifacts, expected_ids, f"fixture/{scenario}"
+                    )
+
+    def test_real_nonruntime_receipt_rows_are_mandatory_and_ordered(self) -> None:
+        artifacts = evidence_validation.load_compatibility_artifact_lock(
+            ROOT / "e2e" / "compat" / "ecosystem.lock.json"
+        )
+        report = self.make_artifact_report(artifacts)
+        expected_ids = [row["id"] for row in artifacts]
+        evidence_validation.validate_artifact_verification_report(
+            report, artifacts, expected_ids, "real-lock-fixture"
+        )
+        self.assertEqual(
+            {
+                disposition: sum(
+                    row["disposition"] == disposition
+                    for row in report["artifacts"]
+                )
+                for disposition in ("testable", "quarantined", "unsupported")
+            },
+            {"testable": 40, "quarantined": 3, "unsupported": 1},
+        )
+        nonruntime_indexes = [
+            index
+            for index, row in enumerate(report["artifacts"])
+            if row["disposition"] != "testable"
+        ]
+        self.assertEqual(len(nonruntime_indexes), 4)
+
+        dropped = copy.deepcopy(report)
+        dropped["artifacts"].pop(nonruntime_indexes[0])
+        with self.assertRaises(evidence_validation.EvidenceValidationError):
+            evidence_validation.validate_artifact_verification_report(
+                dropped, artifacts, expected_ids, "real-lock-dropped-nonruntime"
+            )
+
+        reordered = copy.deepcopy(report)
+        left, right = nonruntime_indexes[:2]
+        reordered["artifacts"][left], reordered["artifacts"][right] = (
+            reordered["artifacts"][right],
+            reordered["artifacts"][left],
+        )
+        with self.assertRaises(evidence_validation.EvidenceValidationError):
+            evidence_validation.validate_artifact_verification_report(
+                reordered, artifacts, expected_ids, "real-lock-reordered-nonruntime"
+            )
 
     def test_manifest_raw_inventory_and_service_contract_are_exact(self) -> None:
         matrices_path = ROOT / "e2e" / "compat" / "matrices.json"
@@ -1459,6 +1817,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             disk_requirements,
             order_pairs,
             runtime_orders,
+            install_orders,
         ) = evidence_validation._matrix_contract(matrices_path)
         direct_ids = {
             "jf10-direct-writers-readonly",
@@ -1473,6 +1832,17 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         self.assertEqual(
             runtime_orders["jf10-response-transformers-forward"],
             runtime_orders["jf10-response-transformers-reverse"],
+        )
+        self.assertEqual(
+            install_orders["jf10-response-transformers-forward"],
+            [
+                "@refresh-kit",
+                "jellyfin-security-jf10",
+                "powertoys-jellytag-jf10",
+                "powertoys-privacy-mode-jf10",
+                "powertoys-remote-trailers-jf10",
+                "powertoys-thumbnail-previews-jf10",
+            ],
         )
         collector_pairs, collector_orders, pair_members = (
             collector.compatibility_runtime_order_contract()
@@ -1512,7 +1882,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             for matrix_id in ids
             for name in evidence_validation.COMPAT_RAW_HTTP_FILES
         }
-        expected_inventory = {"summary.json"} | {
+        expected_inventory = {"summary.json", "all-locked-verification.json"} | {
             f"{matrix_id}/{name}"
             for matrix_id in ids
             for name in evidence_validation.COMPAT_MATRIX_FILES
@@ -1521,14 +1891,18 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         } | {
             path.removeprefix("compat/") for path in http_paths
         }
-        self.assertEqual(len(expected_inventory), 145)
+        self.assertEqual(len(expected_inventory), 146)
         self.assertEqual(
             {
                 path
                 for path in validation_run.REQUIRED_COLLECTED
                 if path.startswith("compat/")
             },
-            {"compat/summary.json", *raw_paths},
+            {
+                "compat/summary.json",
+                "compat/all-locked-verification.json",
+                *raw_paths,
+            },
         )
         self.assertTrue(
             set(collector.COMPAT_WEBROOT_FILES).isdisjoint(collector.COMPAT_MATRIX_FILES)
@@ -1830,10 +2204,136 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     errors,
                 )
 
+    def test_collector_rejects_all_locked_projection_and_result_mutations(
+        self,
+    ) -> None:
+        scenarios = (
+            "missing-all-locked",
+            "all-locked-failed",
+            "summary-binding",
+            "matrix-projection",
+            "requested-install-order",
+            "result-plugin-order",
+            "embedded-verification",
+            "materialization-archive",
+            "materialization-assembly",
+            "materialization-dlls",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                fixture = self.make_direct_webroot_fixture(pathlib.Path(temporary))
+                artifact_root = pathlib.Path(fixture["artifact_root"])
+                matrix_id = str(fixture["disk_id"])
+                all_path = artifact_root / "all-locked-verification.json"
+                summary_path = artifact_root / "summary.json"
+                report_path = artifact_root / matrix_id / "artifact-verification.json"
+                result_path = artifact_root / matrix_id / "result.json"
+                if scenario == "missing-all-locked":
+                    all_path.unlink()
+                elif scenario == "all-locked-failed":
+                    value = json.loads(all_path.read_text(encoding="utf-8"))
+                    value["artifacts"][0]["verified"] = False
+                    all_path.write_text(json.dumps(value), encoding="utf-8")
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    summary["allLockedVerification"] = (
+                        evidence_validation.artifact_verification_summary(
+                            all_path, value
+                        )
+                    )
+                    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                elif scenario == "summary-binding":
+                    value = json.loads(summary_path.read_text(encoding="utf-8"))
+                    value["allLockedVerification"]["artifactCount"] = 0
+                    summary_path.write_text(json.dumps(value), encoding="utf-8")
+                elif scenario == "matrix-projection":
+                    value = json.loads(report_path.read_text(encoding="utf-8"))
+                    value["artifacts"][0]["archive"]["size"] += 1
+                    report_path.write_text(json.dumps(value), encoding="utf-8")
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    result["plugins"][0]["artifactVerification"] = copy.deepcopy(
+                        value["artifacts"][0]
+                    )
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    summary["results"] = [
+                        copy.deepcopy(result)
+                        if row.get("matrix") == matrix_id
+                        else row
+                        for row in summary["results"]
+                    ]
+                    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                else:
+                    value = json.loads(result_path.read_text(encoding="utf-8"))
+                    plugin = value["plugins"][0]
+                    if scenario == "requested-install-order":
+                        value["requestedInstallOrder"].reverse()
+                    elif scenario == "result-plugin-order":
+                        value["plugins"].reverse()
+                    elif scenario == "embedded-verification":
+                        plugin["artifactVerification"]["archive"]["size"] += 1
+                    elif scenario == "materialization-archive":
+                        plugin["materialization"]["archiveSha256"] = "0" * 64
+                    elif scenario == "materialization-assembly":
+                        plugin["materialization"]["assemblySha256"] = "0" * 64
+                    else:
+                        plugin["materialization"]["dllInventory"] = {}
+                    result_path.write_text(json.dumps(value), encoding="utf-8")
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    summary["results"] = [
+                        copy.deepcopy(value)
+                        if row.get("matrix") == matrix_id
+                        else row
+                        for row in summary["results"]
+                    ]
+                    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                _evidence, errors = self.collect_direct_webroot_fixture(fixture)
+                if scenario == "all-locked-failed":
+                    self.assertTrue(
+                        any("row identity is invalid" in error for error in errors),
+                        errors,
+                    )
+                elif scenario == "matrix-projection":
+                    self.assertTrue(
+                        any(
+                            "artifact report differs from all-locked projection" in error
+                            for error in errors
+                        ),
+                        errors,
+                    )
+                elif scenario in {"requested-install-order", "result-plugin-order"}:
+                    self.assertTrue(
+                        any("result artifact/install order differs" in error for error in errors),
+                        errors,
+                    )
+                elif scenario in {
+                    "embedded-verification",
+                    "materialization-archive",
+                    "materialization-assembly",
+                    "materialization-dlls",
+                }:
+                    self.assertTrue(
+                        any("result artifact binding differs" in error for error in errors),
+                        errors,
+                    )
+                else:
+                    self.assertTrue(errors, scenario)
+
     def test_retained_webroot_mutations_fail_closed(self) -> None:
         scenarios = (
             "missing",
             "unexpected",
+            "all-locked-missing",
+            "all-locked-verified",
+            "summary-all-locked-sha",
+            "matrix-artifact-missing",
+            "matrix-artifact-stale",
+            "requested-install-order",
+            "plugin-artifact-id",
+            "plugin-order",
+            "embedded-artifact-verification",
+            "materialization-archive",
+            "materialization-assembly",
+            "materialization-dlls",
             "one-byte",
             "hash",
             "count",
@@ -1872,6 +2372,84 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 elif scenario == "unexpected":
                     unexpected = output / "compat" / nondisk_id / "webroot-before.html"
                     unexpected.write_bytes(b"<html></html>")
+                elif scenario == "all-locked-missing":
+                    (output / "compat" / "all-locked-verification.json").unlink()
+                elif scenario == "all-locked-verified":
+                    report_path = output / "compat" / "all-locked-verification.json"
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    report["artifacts"][0]["verified"] = False
+                    report_path.write_text(json.dumps(report), encoding="utf-8")
+                    summary_path = output / "compat" / "summary.json"
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    summary["allLockedVerification"] = (
+                        evidence_validation.artifact_verification_summary(
+                            report_path, report
+                        )
+                    )
+                    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                elif scenario == "summary-all-locked-sha":
+                    summary_path = output / "compat" / "summary.json"
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    summary["allLockedVerification"]["reportSha256"] = "0" * 64
+                    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                elif scenario.startswith("matrix-artifact-"):
+                    report_path = disk_directory / "artifact-verification.json"
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    if scenario == "matrix-artifact-missing":
+                        report["artifacts"] = []
+                    else:
+                        report["artifacts"][0]["archive"]["size"] += 1
+                    report_path.write_text(json.dumps(report), encoding="utf-8")
+                    if scenario == "matrix-artifact-stale":
+                        result = json.loads(result_path.read_text(encoding="utf-8"))
+                        result["plugins"][0]["artifactVerification"] = copy.deepcopy(
+                            report["artifacts"][0]
+                        )
+                        result_path.write_text(json.dumps(result), encoding="utf-8")
+                        summary_path = output / "compat" / "summary.json"
+                        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                        summary["results"] = [
+                            copy.deepcopy(result)
+                            if row.get("matrix") == disk_id
+                            else row
+                            for row in summary["results"]
+                        ]
+                        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                elif scenario in {
+                    "requested-install-order",
+                    "plugin-artifact-id",
+                    "plugin-order",
+                    "embedded-artifact-verification",
+                    "materialization-archive",
+                    "materialization-assembly",
+                    "materialization-dlls",
+                }:
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    plugin = result["plugins"][0]
+                    if scenario == "requested-install-order":
+                        result["requestedInstallOrder"].reverse()
+                    elif scenario == "plugin-artifact-id":
+                        plugin["artifactId"] = "wrong-plugin"
+                    elif scenario == "plugin-order":
+                        result["plugins"].reverse()
+                    elif scenario == "embedded-artifact-verification":
+                        plugin["artifactVerification"]["archive"]["size"] += 1
+                    elif scenario == "materialization-archive":
+                        plugin["materialization"]["archiveSha256"] = "0" * 64
+                    elif scenario == "materialization-assembly":
+                        plugin["materialization"]["assemblySha256"] = "0" * 64
+                    else:
+                        plugin["materialization"]["dllInventory"] = {}
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                    summary_path = output / "compat" / "summary.json"
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    summary["results"] = [
+                        copy.deepcopy(result)
+                        if row.get("matrix") == disk_id
+                        else row
+                        for row in summary["results"]
+                    ]
+                    summary_path.write_text(json.dumps(summary), encoding="utf-8")
                 elif scenario == "one-byte":
                     after_path.write_bytes(after_path.read_bytes() + b" ")
                 elif scenario in {"hash", "count", "count-bool", "check-bool"}:
@@ -1962,7 +2540,23 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     raw_path = disk_directory / "shell-after.html"
                     raw_path.write_bytes(raw_path.read_bytes() + b" ")
 
-                with self.assertRaises(evidence_validation.EvidenceValidationError):
+                expected_error = {
+                    "all-locked-verified": "row identity is invalid",
+                    "matrix-artifact-stale": (
+                        "matrix artifact receipt differs from all-locked verification"
+                    ),
+                    "requested-install-order": "requested install order differs",
+                    "plugin-artifact-id": "result plugins differ",
+                    "plugin-order": "result plugins differ",
+                    "embedded-artifact-verification": "result plugins differ",
+                    "materialization-archive": "result plugins differ",
+                    "materialization-assembly": "result plugins differ",
+                    "materialization-dlls": "result plugins differ",
+                }.get(scenario, ".+")
+                with self.assertRaisesRegex(
+                    evidence_validation.EvidenceValidationError,
+                    expected_error,
+                ):
                     evidence_validation.validate_compatibility_tree(
                         output,
                         pathlib.Path(fixture["build"]),
@@ -1975,8 +2569,20 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             artifact_root = root / "artifacts"
             output = root / "output"
             matrix_path = root / "matrices.json"
+            lock_path = root / "ecosystem.lock.json"
             ids = ["first-matrix", "second-matrix"]
             runtimes = {ids[0]: "jf10", ids[1]: "jf12"}
+            artifact_ids = {
+                matrix_id: f"{matrix_id}-plugin" for matrix_id in ids
+            }
+            locked_artifacts = [
+                self.make_locked_artifact(artifact_ids[matrix_id], runtimes[matrix_id])
+                for matrix_id in ids
+            ]
+            self.write_json_fixture(
+                lock_path,
+                {"schemaVersion": 1, "artifacts": locked_artifacts},
+            )
             matrix_path.write_text(
                 json.dumps({
                     "matrices": [
@@ -1984,6 +2590,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                             "id": value,
                             "runtime": runtimes[value],
                             "service": runtimes[value],
+                            "installOrder": ["@refresh-kit", artifact_ids[value]],
                             "cacheExpectation": "safe-degrade"
                             if value == ids[1]
                             else "required",
@@ -2014,6 +2621,15 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 "pairRuntimeOrderChecks": {},
             }
             (artifact_root).mkdir()
+            all_locked = self.make_artifact_report(locked_artifacts)
+            self.write_json_fixture(
+                artifact_root / "all-locked-verification.json", all_locked
+            )
+            summary["allLockedVerification"] = (
+                evidence_validation.artifact_verification_summary(
+                    artifact_root / "all-locked-verification.json", all_locked
+                )
+            )
             (artifact_root / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
             build = root / "build"
             for runtime, stage_name in (("jf10", "stage"), ("jf12", "stage-jf12")):
@@ -2035,6 +2651,17 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 )
                 stage_name = "stage" if runtime == "jf10" else "stage-jf12"
                 stage = build / stage_name
+                all_locked_by_id = {
+                    row["id"]: row for row in all_locked["artifacts"]
+                }
+                verification_row = copy.deepcopy(
+                    all_locked_by_id[artifact_ids[matrix_id]]
+                )
+                matrix_report = {
+                    "schemaVersion": 1,
+                    "artifacts": [verification_row],
+                    "allPassed": True,
+                }
                 values = {
                     "static.json": {"schemaVersion": 1, "allPassed": True},
                     "stage.json": {
@@ -2059,7 +2686,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         "originMode": "verified-internal-bridge",
                         "publishedLoopbackActive": False,
                     },
-                    "artifact-verification.json": {"schemaVersion": 1, "allPassed": True},
+                    "artifact-verification.json": matrix_report,
                     "result.json": {
                         "schemaVersion": 1,
                         "matrix": matrix_id,
@@ -2072,6 +2699,10 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         if matrix_id == ids[1]
                         else "pass",
                         "cacheExpectation": cache_expectation,
+                        "requestedInstallOrder": [
+                            "@refresh-kit",
+                            artifact_ids[matrix_id],
+                        ],
                         "orderPair": None,
                         "expectedRuntimePluginOrder": None,
                         "observedRuntimePluginOrder": None,
@@ -2090,6 +2721,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                             "generationAfter": generation,
                             "cacheEvidence": cache_evidence,
                         },
+                        "plugins": [self.result_plugin(verification_row)],
                     },
                 }
                 for name, value in values.items():
@@ -2105,8 +2737,12 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 json.dumps(summary), encoding="utf-8"
             )
 
-            old_artifacts, old_matrices = collector.COMPAT_ARTIFACTS, collector.COMPAT_MATRICES
-            collector.COMPAT_ARTIFACTS, collector.COMPAT_MATRICES = artifact_root, matrix_path
+            old_artifacts = collector.COMPAT_ARTIFACTS
+            old_matrices = collector.COMPAT_MATRICES
+            old_lock = collector.COMPAT_LOCK
+            collector.COMPAT_ARTIFACTS = artifact_root
+            collector.COMPAT_MATRICES = matrix_path
+            collector.COMPAT_LOCK = lock_path
             try:
                 evidence = {"missing": [], "collected": []}
                 errors: list[str] = []
@@ -2160,7 +2796,9 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 collector.collect_compatibility(output, evidence, errors, True, build, 0)
                 self.assertTrue(any("missing required" in error for error in errors))
             finally:
-                collector.COMPAT_ARTIFACTS, collector.COMPAT_MATRICES = old_artifacts, old_matrices
+                collector.COMPAT_ARTIFACTS = old_artifacts
+                collector.COMPAT_MATRICES = old_matrices
+                collector.COMPAT_LOCK = old_lock
 
 
 class EvidenceRedactionTests(unittest.TestCase):

@@ -797,20 +797,256 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 def validate_fetch_report(report: dict[str, Any], artifacts: list[dict[str, Any]]) -> None:
-    """Keep artifact evidence tied to public lock URLs and free of redirect credentials."""
+    """Validate an inspection receipt against an exact ordered lock selection.
+
+    This deliberately rechecks the serialized evidence rather than trusting that
+    :func:`inspect_archive` produced it.  Release tooling has a separate copy of
+    this contract so retained evidence is also checked outside the runtime
+    harness.
+    """
+    if set(report) != {"schemaVersion", "artifacts", "allPassed"}:
+        raise HarnessError("artifact verification report has unexpected fields")
+    if type(report.get("schemaVersion")) is not int or report["schemaVersion"] != 1:
+        raise HarnessError("artifact verification report has the wrong schema")
+    if report.get("allPassed") is not True:
+        raise HarnessError("artifact verification report is not a pass")
     rows = report.get("artifacts")
     if not isinstance(rows, list) or len(rows) != len(artifacts):
         raise HarnessError("artifact verification report has the wrong row count")
     for row, artifact in zip(rows, artifacts, strict=True):
+        artifact_id = artifact["id"]
+        if not isinstance(row, dict) or set(row) != {
+            "id",
+            "disposition",
+            "runtime",
+            "archive",
+            "plugin",
+            "verified",
+        }:
+            raise HarnessError(f"{artifact_id}: verification row shape is invalid")
+        if (
+            row.get("id") != artifact_id
+            or row.get("disposition") != artifact["disposition"]
+            or row.get("runtime") != artifact["runtime"]
+            or row.get("verified") is not True
+        ):
+            raise HarnessError(f"{artifact_id}: verification identity differs from the lock")
+
         archive = row.get("archive") if isinstance(row, dict) else None
-        if not isinstance(archive, dict):
-            raise HarnessError("artifact verification report has no archive object")
+        if not isinstance(archive, dict) or set(archive) != {
+            "path",
+            "url",
+            "sha256",
+            "size",
+            "memberCount",
+        }:
+            raise HarnessError(f"{artifact_id}: archive receipt shape is invalid")
         if "finalUrl" in archive:
             raise HarnessError("artifact verification report exposes an effective redirect URL")
         public_url = archive.get("url")
         parsed = urllib.parse.urlparse(str(public_url))
         if public_url != artifact["archive"]["url"] or parsed.query or parsed.fragment:
             raise HarnessError("artifact verification report URL differs from its public lock URL")
+        archive_path = archive.get("path")
+        expected_cache_name = (
+            f"{artifact['archive']['sha256']}-{artifact['archive']['name']}"
+        )
+        if (
+            not isinstance(archive_path, str)
+            or not archive_path
+            or Path(archive_path).name != expected_cache_name
+            or archive.get("sha256") != artifact["archive"]["sha256"]
+            or type(archive.get("size")) is not int
+            or not 0 < archive["size"] <= MAX_ARCHIVE_BYTES
+            or type(archive.get("memberCount")) is not int
+            or not 0 < archive["memberCount"] <= MAX_MEMBER_COUNT
+        ):
+            raise HarnessError(f"{artifact_id}: archive receipt differs from the lock")
+
+        plugin = row.get("plugin")
+        computed_plugin_fields = {
+            "assemblyPath",
+            "assemblySha256",
+            "managedDlls",
+            "binaryTokenChecks",
+            "meta",
+            "frameworkEvidence",
+        }
+        if not isinstance(plugin, dict) or set(plugin) != (
+            set(artifact["plugin"]) | computed_plugin_fields
+        ):
+            raise HarnessError(f"{artifact_id}: plugin receipt shape is invalid")
+        for field, expected in artifact["plugin"].items():
+            if type(plugin.get(field)) is not type(expected) or plugin.get(field) != expected:
+                raise HarnessError(
+                    f"{artifact_id}: plugin {field} differs from the lock"
+                )
+
+        assembly_path = plugin.get("assemblyPath")
+        assembly_sha = plugin.get("assemblySha256")
+        if (
+            not _safe_receipt_path(assembly_path)
+            or PurePosixPath(assembly_path).name.casefold()
+            != artifact["plugin"]["assembly"].casefold()
+            or not isinstance(assembly_sha, str)
+            or SHA256_RE.fullmatch(assembly_sha) is None
+        ):
+            raise HarnessError(f"{artifact_id}: main assembly evidence is invalid")
+        token_checks = plugin.get("binaryTokenChecks")
+        if (
+            not isinstance(token_checks, dict)
+            or set(token_checks) != {"guid", "version"}
+            or any(
+                token_checks[field] is not True
+                for field in ("guid", "version")
+            )
+        ):
+            raise HarnessError(f"{artifact_id}: binary identity tokens were not verified")
+        managed_dlls = plugin.get("managedDlls")
+        if (
+            not isinstance(managed_dlls, dict)
+            or not managed_dlls
+            or len({str(path).casefold() for path in managed_dlls}) != len(managed_dlls)
+            or any(
+                not _safe_receipt_path(path)
+                or PurePosixPath(path).suffix.casefold() != ".dll"
+                or not isinstance(digest, str)
+                or SHA256_RE.fullmatch(digest) is None
+                for path, digest in managed_dlls.items()
+            )
+            or managed_dlls.get(assembly_path) != assembly_sha
+        ):
+            raise HarnessError(f"{artifact_id}: managed DLL evidence is incoherent")
+
+        _validate_meta_receipt(plugin.get("meta"), artifact)
+        _validate_framework_receipt(plugin.get("frameworkEvidence"), artifact, assembly_path)
+        evidenced_paths = {
+            str(path).casefold() for path in managed_dlls
+        }
+        for optional_path in (
+            plugin["meta"].get("archivePath"),
+            plugin["frameworkEvidence"].get("depsPath"),
+        ):
+            if optional_path is not None:
+                evidenced_paths.add(str(optional_path).casefold())
+        if archive["memberCount"] < len(evidenced_paths):
+            raise HarnessError(
+                f"{artifact_id}: archive member count contradicts its evidence paths"
+            )
+
+
+def _safe_receipt_path(value: Any) -> bool:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\\" in value
+        or "\x00" in value
+    ):
+        return False
+    path = PurePosixPath(value)
+    return (
+        not path.is_absolute()
+        and value == path.as_posix()
+        and all(part not in {"", ".", ".."} for part in path.parts)
+    )
+
+
+def _validate_meta_receipt(value: Any, artifact: dict[str, Any]) -> None:
+    artifact_id = artifact["id"]
+    policy = artifact["plugin"]["archiveMeta"]
+    if not isinstance(value, dict) or set(value) != {
+        "policy",
+        "archivePath",
+        "present",
+        "checks",
+    }:
+        raise HarnessError(f"{artifact_id}: metadata receipt shape is invalid")
+    if value.get("policy") != policy:
+        raise HarnessError(f"{artifact_id}: metadata policy differs from the lock")
+    if policy != "upstream":
+        if (
+            value.get("archivePath") is not None
+            or value.get("present") is not False
+            or value.get("checks") is not None
+        ):
+            raise HarnessError(f"{artifact_id}: absent metadata evidence is incoherent")
+        return
+
+    archive_path = value.get("archivePath")
+    checks = value.get("checks")
+    if (
+        value.get("present") is not True
+        or not _safe_receipt_path(archive_path)
+        or PurePosixPath(archive_path).name.casefold() != "meta.json"
+        or not isinstance(checks, dict)
+        or set(checks) != {"guid", "name", "version", "targetAbi", "assemblies"}
+    ):
+        raise HarnessError(f"{artifact_id}: upstream metadata evidence is incomplete")
+    for field in ("guid", "name", "version"):
+        check = checks.get(field)
+        expected = artifact["plugin"][field]
+        if (
+            not isinstance(check, dict)
+            or set(check) != {"expected", "actual", "matched"}
+            or check.get("expected") != expected
+            or check.get("matched") is not True
+            or str(check.get("actual", "")).casefold() != str(expected).casefold()
+        ):
+            raise HarnessError(f"{artifact_id}: metadata {field} evidence is invalid")
+    target = checks.get("targetAbi")
+    expected_abi = artifact["plugin"]["targetAbi"]
+    if (
+        not isinstance(target, dict)
+        or set(target) != {"expected", "actual", "matched", "present"}
+        or target.get("expected") != expected_abi
+        or target.get("matched") is not True
+        or type(target.get("present")) is not bool
+        or target["present"] != (target.get("actual") is not None)
+        or (
+            target["present"]
+            and normalized_abi(target.get("actual")) != normalized_abi(expected_abi)
+        )
+    ):
+        raise HarnessError(f"{artifact_id}: metadata target ABI evidence is invalid")
+    assemblies = checks.get("assemblies")
+    if assemblies not in (None, []) and (
+        not isinstance(assemblies, list)
+        or any(not isinstance(item, str) or not item for item in assemblies)
+        or len(assemblies) != len(set(assemblies))
+        or artifact["plugin"]["assembly"] not in assemblies
+    ):
+        raise HarnessError(f"{artifact_id}: metadata assembly evidence is invalid")
+
+
+def _validate_framework_receipt(
+    value: Any, artifact: dict[str, Any], assembly_path: str
+) -> None:
+    artifact_id = artifact["id"]
+    if not isinstance(value, dict) or set(value) != {
+        "expected",
+        "depsPath",
+        "runtimeTarget",
+        "matched",
+    }:
+        raise HarnessError(f"{artifact_id}: framework receipt shape is invalid")
+    expected = artifact["plugin"]["framework"]
+    if value.get("expected") != expected:
+        raise HarnessError(f"{artifact_id}: framework expectation differs from the lock")
+    deps_path = value.get("depsPath")
+    if deps_path is None:
+        if value.get("runtimeTarget") is not None or value.get("matched") is not None:
+            raise HarnessError(f"{artifact_id}: absent framework evidence is incoherent")
+        return
+    expected_deps_name = PurePosixPath(assembly_path).stem + ".deps.json"
+    expected_major = expected.removeprefix("net").split(".")[0]
+    if (
+        not _safe_receipt_path(deps_path)
+        or PurePosixPath(deps_path).name.casefold() != expected_deps_name.casefold()
+        or not isinstance(value.get("runtimeTarget"), str)
+        or f"Version=v{expected_major}.0" not in value["runtimeTarget"]
+        or value.get("matched") is not True
+    ):
+        raise HarnessError(f"{artifact_id}: framework evidence is invalid")
 
 
 def cmd_lint(args: argparse.Namespace) -> int:

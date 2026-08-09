@@ -104,6 +104,9 @@ IMAGE_REFERENCES = {
 GENERATION = re.compile(r"^g-[0-9a-f]{16}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 MD5 = re.compile(r"^[0-9a-f]{32}$")
+COMPAT_DISPOSITIONS = ("testable", "quarantined", "unsupported")
+COMPAT_MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
+COMPAT_MAX_MEMBER_COUNT = 20_000
 COMPAT_MATRIX_FILES = (
     "static.json",
     "stage.json",
@@ -193,6 +196,354 @@ def exact_json_value(actual: Any, expected: Any) -> bool:
             exact_json_value(left, right) for left, right in zip(actual, expected)
         )
     return actual == expected
+
+
+def _safe_compat_archive_path(value: Any) -> bool:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\\" in value
+        or "\x00" in value
+    ):
+        return False
+    path = pathlib.PurePosixPath(value)
+    return (
+        not path.is_absolute()
+        and value == path.as_posix()
+        and all(part not in {"", ".", ".."} for part in path.parts)
+    )
+
+
+def _normalized_compat_abi(value: Any) -> str:
+    text = str(value or "").strip()
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", text):
+        return text + ".0"
+    return text
+
+
+def load_compatibility_artifact_lock(path: pathlib.Path) -> list[dict[str, Any]]:
+    value = load_object(path)
+    artifacts = value.get("artifacts")
+    require(
+        type(value.get("schemaVersion")) is int
+        and value["schemaVersion"] == 1
+        and isinstance(artifacts, list)
+        and bool(artifacts)
+        and all(isinstance(row, dict) for row in artifacts),
+        "compatibility artifact lock is invalid",
+    )
+    ids = [row.get("id") for row in artifacts]
+    require(
+        all(
+            isinstance(artifact_id, str)
+            and re.fullmatch(r"[a-z0-9][a-z0-9-]*", artifact_id) is not None
+            for artifact_id in ids
+        )
+        and len(ids) == len(set(ids)),
+        "compatibility artifact lock ids are invalid",
+    )
+    for artifact in artifacts:
+        artifact_id = artifact["id"]
+        archive = artifact.get("archive")
+        plugin = artifact.get("plugin")
+        require(
+            artifact.get("disposition") in COMPAT_DISPOSITIONS
+            and (
+                artifact.get("runtime") in ("jf10", "jf12")
+                if artifact.get("disposition") == "testable"
+                else artifact.get("runtime") is None
+            )
+            and isinstance(archive, dict)
+            and set(archive) == {"name", "url", "sha256"}
+            and isinstance(plugin, dict)
+            and set(plugin)
+            == {
+                "archiveMeta",
+                "assembly",
+                "framework",
+                "guid",
+                "name",
+                "targetAbi",
+                "version",
+            }
+            and isinstance(archive.get("sha256"), str)
+            and SHA256.fullmatch(archive["sha256"]) is not None
+            and isinstance(archive.get("name"), str)
+            and bool(archive["name"])
+            and isinstance(archive.get("url"), str)
+            and archive["url"].startswith("https://github.com/")
+            and "?" not in archive["url"]
+            and "#" not in archive["url"],
+            f"compatibility artifact lock row is invalid: {artifact_id}",
+        )
+        require(
+            plugin.get("archiveMeta") in {"upstream", "absent-generate", "absent"}
+            and isinstance(plugin.get("assembly"), str)
+            and plugin["assembly"].casefold().endswith(".dll")
+            and plugin.get("framework") in {"net8.0", "net9.0", "net10.0"}
+            and isinstance(plugin.get("guid"), str)
+            and re.fullmatch(
+                r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",
+                plugin["guid"],
+            )
+            is not None
+            and isinstance(plugin.get("name"), str)
+            and bool(plugin["name"])
+            and all(
+                isinstance(plugin.get(field), str)
+                and re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", plugin[field])
+                is not None
+                for field in ("targetAbi", "version")
+            ),
+            f"compatibility locked plugin identity is invalid: {artifact_id}",
+        )
+    return artifacts
+
+
+def validate_artifact_verification_report(
+    report: dict[str, Any],
+    locked_artifacts: list[dict[str, Any]],
+    expected_ids: list[str],
+    label: str,
+) -> list[dict[str, Any]]:
+    """Independently validate a serialized archive-inspection receipt."""
+    locked_by_id = {row["id"]: row for row in locked_artifacts}
+    require(
+        len(locked_by_id) == len(locked_artifacts)
+        and all(artifact_id in locked_by_id for artifact_id in expected_ids)
+        and len(expected_ids) == len(set(expected_ids)),
+        f"{label}: expected artifact selection is invalid",
+    )
+    rows = report.get("artifacts")
+    require(
+        set(report) == {"schemaVersion", "artifacts", "allPassed"}
+        and type(report.get("schemaVersion")) is int
+        and report["schemaVersion"] == 1
+        and report.get("allPassed") is True
+        and isinstance(rows, list)
+        and len(rows) == len(expected_ids),
+        f"{label}: report envelope is invalid",
+    )
+    require(
+        [row.get("id") if isinstance(row, dict) else None for row in rows]
+        == expected_ids,
+        f"{label}: artifact ids/order differ from the lock selection",
+    )
+    for row, artifact_id in zip(rows, expected_ids, strict=True):
+        artifact = locked_by_id[artifact_id]
+        require(
+            isinstance(row, dict)
+            and set(row)
+            == {"id", "disposition", "runtime", "archive", "plugin", "verified"}
+            and row.get("id") == artifact_id
+            and row.get("disposition") == artifact["disposition"]
+            and row.get("runtime") == artifact["runtime"]
+            and row.get("verified") is True,
+            f"{label}/{artifact_id}: row identity is invalid",
+        )
+        archive = row.get("archive")
+        locked_archive = artifact["archive"]
+        expected_cache_name = f"{locked_archive['sha256']}-{locked_archive['name']}"
+        require(
+            isinstance(archive, dict)
+            and set(archive) == {"path", "url", "sha256", "size", "memberCount"}
+            and isinstance(archive.get("path"), str)
+            and pathlib.Path(archive["path"]).name == expected_cache_name
+            and archive.get("url") == locked_archive["url"]
+            and "?" not in archive["url"]
+            and "#" not in archive["url"]
+            and archive.get("sha256") == locked_archive["sha256"]
+            and type(archive.get("size")) is int
+            and 0 < archive["size"] <= COMPAT_MAX_ARCHIVE_BYTES
+            and type(archive.get("memberCount")) is int
+            and 0 < archive["memberCount"] <= COMPAT_MAX_MEMBER_COUNT,
+            f"{label}/{artifact_id}: archive evidence is invalid",
+        )
+        plugin = row.get("plugin")
+        computed_fields = {
+            "assemblyPath",
+            "assemblySha256",
+            "managedDlls",
+            "binaryTokenChecks",
+            "meta",
+            "frameworkEvidence",
+        }
+        require(
+            isinstance(plugin, dict)
+            and set(plugin) == set(artifact["plugin"]) | computed_fields
+            and all(
+                field in plugin and exact_json_value(plugin[field], expected)
+                for field, expected in artifact["plugin"].items()
+            ),
+            f"{label}/{artifact_id}: locked plugin identity differs",
+        )
+        assembly_path = plugin.get("assemblyPath")
+        assembly_sha = plugin.get("assemblySha256")
+        require(
+            _safe_compat_archive_path(assembly_path)
+            and pathlib.PurePosixPath(assembly_path).name.casefold()
+            == artifact["plugin"]["assembly"].casefold()
+            and isinstance(assembly_sha, str)
+            and SHA256.fullmatch(assembly_sha) is not None
+            and exact_json_value(
+                plugin.get("binaryTokenChecks"), {"guid": True, "version": True}
+            ),
+            f"{label}/{artifact_id}: assembly identity evidence is invalid",
+        )
+        managed_dlls = plugin.get("managedDlls")
+        require(
+            isinstance(managed_dlls, dict)
+            and bool(managed_dlls)
+            and len({str(path).casefold() for path in managed_dlls})
+            == len(managed_dlls)
+            and all(
+                _safe_compat_archive_path(path)
+                and pathlib.PurePosixPath(path).suffix.casefold() == ".dll"
+                and isinstance(digest, str)
+                and SHA256.fullmatch(digest) is not None
+                for path, digest in managed_dlls.items()
+            )
+            and managed_dlls.get(assembly_path) == assembly_sha,
+            f"{label}/{artifact_id}: managed DLL hashes are incoherent",
+        )
+        _validate_artifact_meta_receipt(plugin.get("meta"), artifact, label)
+        _validate_artifact_framework_receipt(
+            plugin.get("frameworkEvidence"), artifact, assembly_path, label
+        )
+        evidenced_paths = {
+            str(path).casefold() for path in managed_dlls
+        }
+        for optional_path in (
+            plugin["meta"].get("archivePath"),
+            plugin["frameworkEvidence"].get("depsPath"),
+        ):
+            if optional_path is not None:
+                evidenced_paths.add(str(optional_path).casefold())
+        require(
+            archive["memberCount"] >= len(evidenced_paths),
+            f"{label}/{artifact_id}: archive member count contradicts evidence paths",
+        )
+    return rows
+
+
+def _validate_artifact_meta_receipt(
+    value: Any, artifact: dict[str, Any], label: str
+) -> None:
+    artifact_id = artifact["id"]
+    policy = artifact["plugin"]["archiveMeta"]
+    require(
+        isinstance(value, dict)
+        and set(value) == {"policy", "archivePath", "present", "checks"}
+        and value.get("policy") == policy,
+        f"{label}/{artifact_id}: metadata receipt is invalid",
+    )
+    if policy != "upstream":
+        require(
+            value.get("archivePath") is None
+            and value.get("present") is False
+            and value.get("checks") is None,
+            f"{label}/{artifact_id}: absent metadata receipt is incoherent",
+        )
+        return
+    checks = value.get("checks")
+    archive_path = value.get("archivePath")
+    require(
+        value.get("present") is True
+        and _safe_compat_archive_path(archive_path)
+        and pathlib.PurePosixPath(archive_path).name.casefold() == "meta.json"
+        and isinstance(checks, dict)
+        and set(checks) == {"guid", "name", "version", "targetAbi", "assemblies"},
+        f"{label}/{artifact_id}: upstream metadata receipt is incomplete",
+    )
+    for field in ("guid", "name", "version"):
+        check = checks.get(field)
+        expected = artifact["plugin"][field]
+        require(
+            isinstance(check, dict)
+            and set(check) == {"expected", "actual", "matched"}
+            and check.get("expected") == expected
+            and check.get("matched") is True
+            and str(check.get("actual", "")).casefold() == str(expected).casefold(),
+            f"{label}/{artifact_id}: metadata {field} proof is invalid",
+        )
+    target = checks.get("targetAbi")
+    expected_abi = artifact["plugin"]["targetAbi"]
+    require(
+        isinstance(target, dict)
+        and set(target) == {"expected", "actual", "matched", "present"}
+        and target.get("expected") == expected_abi
+        and target.get("matched") is True
+        and type(target.get("present")) is bool
+        and target["present"] == (target.get("actual") is not None)
+        and (
+            not target["present"]
+            or _normalized_compat_abi(target.get("actual"))
+            == _normalized_compat_abi(expected_abi)
+        ),
+        f"{label}/{artifact_id}: metadata target ABI proof is invalid",
+    )
+    assemblies = checks.get("assemblies")
+    require(
+        assemblies in (None, [])
+        or (
+            isinstance(assemblies, list)
+            and all(isinstance(item, str) and bool(item) for item in assemblies)
+            and len(assemblies) == len(set(assemblies))
+            and artifact["plugin"]["assembly"] in assemblies
+        ),
+        f"{label}/{artifact_id}: metadata assembly proof is invalid",
+    )
+
+
+def _validate_artifact_framework_receipt(
+    value: Any,
+    artifact: dict[str, Any],
+    assembly_path: str,
+    label: str,
+) -> None:
+    artifact_id = artifact["id"]
+    expected = artifact["plugin"]["framework"]
+    require(
+        isinstance(value, dict)
+        and set(value) == {"expected", "depsPath", "runtimeTarget", "matched"}
+        and value.get("expected") == expected,
+        f"{label}/{artifact_id}: framework receipt is invalid",
+    )
+    deps_path = value.get("depsPath")
+    if deps_path is None:
+        require(
+            value.get("runtimeTarget") is None and value.get("matched") is None,
+            f"{label}/{artifact_id}: absent framework receipt is incoherent",
+        )
+        return
+    expected_name = pathlib.PurePosixPath(assembly_path).stem + ".deps.json"
+    major = expected.removeprefix("net").split(".")[0]
+    require(
+        _safe_compat_archive_path(deps_path)
+        and pathlib.PurePosixPath(deps_path).name.casefold() == expected_name.casefold()
+        and isinstance(value.get("runtimeTarget"), str)
+        and f"Version=v{major}.0" in value["runtimeTarget"]
+        and value.get("matched") is True,
+        f"{label}/{artifact_id}: framework proof is invalid",
+    )
+
+
+def artifact_verification_summary(
+    report_path: pathlib.Path, report: dict[str, Any]
+) -> dict[str, Any]:
+    rows = report["artifacts"]
+    dispositions = Counter(row["disposition"] for row in rows)
+    return {
+        "report": report_path.name,
+        "reportSha256": file_hash(report_path),
+        "artifactCount": len(rows),
+        "archiveBytes": sum(row["archive"]["size"] for row in rows),
+        "dispositionCounts": {
+            disposition: dispositions.get(disposition, 0)
+            for disposition in COMPAT_DISPOSITIONS
+        },
+        "allPassed": report["allPassed"],
+    }
 
 
 _COMPAT_INERT_CONTAINERS = {
@@ -968,6 +1319,7 @@ def _matrix_contract(
     dict[str, dict[str, Any]],
     dict[str, str | None],
     dict[str, list[str] | None],
+    dict[str, list[str]],
 ]:
     root = load_object(matrices_path)
     rows = root.get("matrices")
@@ -980,6 +1332,7 @@ def _matrix_contract(
     webroot_disk: dict[str, dict[str, Any]] = {}
     order_pairs: dict[str, str | None] = {}
     runtime_orders: dict[str, list[str] | None] = {}
+    install_orders: dict[str, list[str]] = {}
     for row in rows:
         require(isinstance(row, dict), "compatibility matrix row is not an object")
         matrix_id = row.get("id")
@@ -1021,6 +1374,15 @@ def _matrix_contract(
                     f"compatibility matrix {matrix_id}/{artifact_id} disk requirement is invalid")
         order_pair = row.get("orderPair")
         runtime_order = row.get("expectedRuntimePluginOrder")
+        install_order = row.get("installOrder")
+        require(
+            isinstance(install_order, list)
+            and bool(install_order)
+            and all(isinstance(item, str) and bool(item) for item in install_order)
+            and len(install_order) == len(set(install_order))
+            and install_order.count("@refresh-kit") == 1,
+            f"compatibility matrix {matrix_id} install order is invalid",
+        )
         require(
             (order_pair is None and runtime_order is None)
             or (
@@ -1039,6 +1401,7 @@ def _matrix_contract(
         cache[matrix_id] = expectation
         order_pairs[matrix_id] = order_pair
         runtime_orders[matrix_id] = runtime_order
+        install_orders[matrix_id] = install_order
         if artifacts:
             limitations[matrix_id] = artifacts
         if disk_requirements:
@@ -1064,6 +1427,7 @@ def _matrix_contract(
         webroot_disk,
         order_pairs,
         runtime_orders,
+        install_orders,
     )
 
 
@@ -1081,8 +1445,9 @@ def validate_compatibility_tree(
         webroot_disk_requirements,
         order_pairs,
         runtime_orders,
+        install_orders,
     ) = _matrix_contract(matrices_path)
-    expected = {"summary.json"} | {
+    expected = {"summary.json", "all-locked-verification.json"} | {
         f"{matrix_id}/{name}" for matrix_id in ids for name in COMPAT_MATRIX_FILES
     }
     expected |= {
@@ -1107,6 +1472,34 @@ def validate_compatibility_tree(
         )
     }
     summary = load_object(compat / "summary.json")
+    lock_path = matrices_path.with_name("ecosystem.lock.json")
+    locked_artifacts = load_compatibility_artifact_lock(lock_path)
+    all_locked_path = compat / "all-locked-verification.json"
+    all_locked = load_object(all_locked_path)
+    locked_ids = [row["id"] for row in locked_artifacts]
+    all_locked_rows = validate_artifact_verification_report(
+        all_locked,
+        locked_artifacts,
+        locked_ids,
+        "all-locked-verification.json",
+    )
+    all_locked_by_id = {row["id"]: row for row in all_locked_rows}
+    testable_locked_ids = {
+        row["id"] for row in locked_artifacts if row["disposition"] == "testable"
+    }
+    matrix_artifact_ids = {
+        artifact_id
+        for install_order in install_orders.values()
+        for artifact_id in install_order
+        if artifact_id != "@refresh-kit"
+    }
+    require(
+        matrix_artifact_ids == testable_locked_ids,
+        "compatibility matrices do not cover exactly every testable locked artifact",
+    )
+    expected_all_locked_summary = artifact_verification_summary(
+        all_locked_path, all_locked
+    )
     require(summary.get("schemaVersion") == 1, "compatibility summary schema differs")
     summary_expected = {
         "outcome": "pass-with-limitation" if limited else "pass",
@@ -1122,6 +1515,7 @@ def validate_compatibility_tree(
         "missingPassWithLimitationMatrices": [],
         "unexpectedPassWithLimitationMatrices": [],
         "pairRuntimeOrderChecks": expected_pair_checks,
+        "allLockedVerification": expected_all_locked_summary,
     }
     for field, wanted in summary_expected.items():
         require(
@@ -1143,8 +1537,24 @@ def validate_compatibility_tree(
         require(network.get("schemaVersion") == 1
                 and network.get("valid") is True and network.get("allPassed") is True,
                 f"{matrix_id}: network evidence failed")
-        require(artifact.get("schemaVersion") == 1 and artifact.get("allPassed") is True,
-                f"{matrix_id}: artifact verification failed")
+        expected_artifact_ids = [
+            artifact_id
+            for artifact_id in install_orders[matrix_id]
+            if artifact_id != "@refresh-kit"
+        ]
+        artifact_rows = validate_artifact_verification_report(
+            artifact,
+            locked_artifacts,
+            expected_artifact_ids,
+            f"{matrix_id}/artifact-verification.json",
+        )
+        require(
+            all(
+                exact_json_value(row, all_locked_by_id[row["id"]])
+                for row in artifact_rows
+            ),
+            f"{matrix_id}: matrix artifact receipt differs from all-locked verification",
+        )
         runtime = runtimes[matrix_id]
         stage_name = "stage" if runtime == "jf10" else "stage-jf12"
         expected_stage = build / stage_name
@@ -1179,6 +1589,44 @@ def validate_compatibility_tree(
                 f"{matrix_id}: network isolation identity differs")
         require(result.get("cacheExpectation") == cache_expectations[matrix_id],
                 f"{matrix_id}: result cache expectation differs")
+        require(
+            "requestedInstallOrder" in result
+            and exact_json_value(
+                result["requestedInstallOrder"], install_orders[matrix_id]
+            ),
+            f"{matrix_id}: requested install order differs from the matrix",
+        )
+        plugin_rows = result.get("plugins")
+        require(
+            isinstance(plugin_rows, list)
+            and [
+                row.get("artifactId") if isinstance(row, dict) else None
+                for row in plugin_rows
+            ]
+            == expected_artifact_ids
+            and all(
+                isinstance(plugin_row, dict)
+                and "artifactVerification" in plugin_row
+                and exact_json_value(
+                    plugin_row["artifactVerification"], artifact_row
+                )
+                and isinstance(plugin_row.get("materialization"), dict)
+                and plugin_row["materialization"].get("materialized") is True
+                and plugin_row["materialization"].get("archiveSha256")
+                == artifact_row["archive"]["sha256"]
+                and plugin_row["materialization"].get("assemblySha256")
+                == artifact_row["plugin"]["assemblySha256"]
+                and "dllInventory" in plugin_row["materialization"]
+                and exact_json_value(
+                    plugin_row["materialization"]["dllInventory"],
+                    artifact_row["plugin"]["managedDlls"],
+                )
+                for plugin_row, artifact_row in zip(
+                    plugin_rows, artifact_rows, strict=True
+                )
+            ),
+            f"{matrix_id}: result plugins differ from the verified artifact projection",
+        )
         expected_runtime_order = runtime_orders[matrix_id]
         require(
             "orderPair" in result

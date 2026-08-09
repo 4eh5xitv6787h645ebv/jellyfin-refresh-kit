@@ -1192,8 +1192,15 @@ def cmd_runtime(args: argparse.Namespace) -> int:
     inventory_rows = plugin_rows(read_json(evidence / "plugins.json"))
     diagnostics_before = plugin_rows(ci(read_json(evidence / "diagnostics-before.json"), "Plugins", []))
     diagnostics_after = plugin_rows(ci(read_json(evidence / "diagnostics-after.json"), "Plugins", []))
+    verification_report = read_json(evidence / "artifact-verification.json")
+    requested_artifacts = [
+        artifacts[artifact_id]
+        for artifact_id in matrix["installOrder"]
+        if artifact_id != "@refresh-kit"
+    ]
+    artifact_lib.validate_fetch_report(verification_report, requested_artifacts)
     verification_rows = {
-        row["id"]: row for row in read_json(evidence / "artifact-verification.json")["artifacts"]
+        row["id"]: row for row in verification_report["artifacts"]
     }
     installs = parse_install_tsv(evidence / "install.tsv")
     requested_order = matrix["installOrder"]
@@ -1551,6 +1558,29 @@ def cmd_failure(args: argparse.Namespace) -> int:
 
 def cmd_aggregate(args: argparse.Namespace) -> int:
     lock, matrices = manifest_lib.load_and_validate(LOCK_PATH, MATRICES_PATH)
+    all_locked_path = args.results / "all-locked-verification.json"
+    try:
+        all_locked_report = read_json(all_locked_path)
+        artifact_lib.validate_fetch_report(all_locked_report, lock["artifacts"])
+    except (OSError, json.JSONDecodeError, artifact_lib.HarnessError) as error:
+        print(f"FATAL: all-locked verification is invalid: {error}", file=sys.stderr)
+        return 1
+    disposition_counts = Counter(
+        row["disposition"] for row in all_locked_report["artifacts"]
+    )
+    all_locked_summary = {
+        "report": all_locked_path.name,
+        "reportSha256": artifact_lib.sha256_path(all_locked_path),
+        "artifactCount": len(all_locked_report["artifacts"]),
+        "archiveBytes": sum(
+            row["archive"]["size"] for row in all_locked_report["artifacts"]
+        ),
+        "dispositionCounts": {
+            disposition: disposition_counts.get(disposition, 0)
+            for disposition in ("testable", "quarantined", "unsupported")
+        },
+        "allPassed": all_locked_report["allPassed"],
+    }
     results = []
     missing = []
     for matrix in matrices["matrices"]:
@@ -1636,6 +1666,7 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
         "safeDegradedMatrices": safe_degraded,
         "missingSafeDegradedMatrices": missing_safe_degraded,
         "pairRuntimeOrderChecks": pair_runtime_order_checks,
+        "allLockedVerification": all_locked_summary,
         "results": results,
         "outcome": "pass-with-limitation"
         if not missing

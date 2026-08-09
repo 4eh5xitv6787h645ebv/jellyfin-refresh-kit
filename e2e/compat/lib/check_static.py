@@ -27,6 +27,78 @@ def require(condition: bool, message: str) -> None:
         raise artifact_lib.HarnessError(message)
 
 
+def synthetic_verification_report(
+    artifacts: list[dict[str, object]], cache_root: str = "/synthetic-cache"
+) -> dict[str, object]:
+    rows = []
+    for artifact in artifacts:
+        archive = artifact["archive"]
+        plugin = artifact["plugin"]
+        assembly = str(plugin["assembly"])
+        assembly_sha = hashlib.sha256(str(artifact["id"]).encode()).hexdigest()
+        policy = plugin["archiveMeta"]
+        if policy == "upstream":
+            meta = {
+                "policy": policy,
+                "archivePath": "meta.json",
+                "present": True,
+                "checks": {
+                    field: {
+                        "expected": plugin[field],
+                        "actual": plugin[field],
+                        "matched": True,
+                    }
+                    for field in ("guid", "name", "version")
+                }
+                | {
+                    "targetAbi": {
+                        "expected": plugin["targetAbi"],
+                        "actual": plugin["targetAbi"],
+                        "matched": True,
+                        "present": True,
+                    },
+                    "assemblies": [],
+                },
+            }
+        else:
+            meta = {
+                "policy": policy,
+                "archivePath": None,
+                "present": False,
+                "checks": None,
+            }
+        rows.append(
+            {
+                "id": artifact["id"],
+                "disposition": artifact["disposition"],
+                "runtime": artifact["runtime"],
+                "archive": {
+                    "path": f"{cache_root}/{archive['sha256']}-{archive['name']}",
+                    "url": archive["url"],
+                    "sha256": archive["sha256"],
+                    "size": 1,
+                    "memberCount": 2 if policy == "upstream" else 1,
+                },
+                "plugin": {
+                    **plugin,
+                    "assemblyPath": assembly,
+                    "assemblySha256": assembly_sha,
+                    "managedDlls": {assembly: assembly_sha},
+                    "binaryTokenChecks": {"guid": True, "version": True},
+                    "meta": meta,
+                    "frameworkEvidence": {
+                        "expected": plugin["framework"],
+                        "depsPath": None,
+                        "runtimeTarget": None,
+                        "matched": None,
+                    },
+                },
+                "verified": True,
+            }
+        )
+    return {"schemaVersion": 1, "artifacts": rows, "allPassed": True}
+
+
 def main() -> int:
     try:
         lock, matrices = manifest_lib.load_and_validate(
@@ -238,11 +310,7 @@ def main() -> int:
         # values.  Prove the fetch-report validator accepts only the stable
         # public URL from the audited lock and rejects the old leak shape.
         sample_artifact = lock["artifacts"][0]
-        safe_report = {
-            "schemaVersion": 1,
-            "artifacts": [{"archive": {"url": sample_artifact["archive"]["url"]}}],
-            "allPassed": True,
-        }
+        safe_report = synthetic_verification_report([sample_artifact])
         artifact_lib.validate_fetch_report(safe_report, [sample_artifact])
         unsafe_report = json.loads(json.dumps(safe_report))
         unsafe_report["artifacts"][0]["archive"]["finalUrl"] = (
@@ -257,6 +325,13 @@ def main() -> int:
 
         common = (COMPAT_ROOT / "lib" / "common.sh").read_text(encoding="utf-8")
         runtime = (COMPAT_ROOT / "lib" / "runtime.sh").read_text(encoding="utf-8")
+        runner = (COMPAT_ROOT / "run.sh").read_text(encoding="utf-8")
+        require(
+            runner.index("cmd_clean", runner.index("cmd_all()"))
+            < runner.index("cmd_fetch all-locked", runner.index("cmd_all()"))
+            < runner.index("while IFS=", runner.index("cmd_all()")),
+            "the all-matrix gate must clean, inspect all locked archives, then run matrices",
+        )
         require(
             "EDITORS_CONFIG_SOURCE" in runtime
             and '"${CONTAINER}:${EDITORS_CONFIG_DESTINATION}"' in runtime,
@@ -1604,6 +1679,11 @@ def main() -> int:
 
         with tempfile.TemporaryDirectory(prefix="rk-compat-static-") as temporary:
             aggregate_root = Path(temporary)
+            all_locked_report = synthetic_verification_report(lock["artifacts"])
+            artifact_lib.write_json(
+                aggregate_root / "all-locked-verification.json",
+                all_locked_report,
+            )
             for matrix in matrices["matrices"]:
                 matrix_dir = aggregate_root / matrix["id"]
                 matrix_dir.mkdir()
@@ -1642,6 +1722,56 @@ def main() -> int:
                 aggregate_value.get("pairRuntimeOrderChecks")
                 == {"jf10-middleware": True, "jf10-response-transformers": True},
                 "aggregate did not prove runtime-order invariance for both install pairs",
+            )
+            require(
+                aggregate_value.get("allLockedVerification")
+                == {
+                    "report": "all-locked-verification.json",
+                    "reportSha256": artifact_lib.sha256_path(
+                        aggregate_root / "all-locked-verification.json"
+                    ),
+                    "artifactCount": 44,
+                    "archiveBytes": 44,
+                    "dispositionCounts": {
+                        "testable": 40,
+                        "quarantined": 3,
+                        "unsupported": 1,
+                    },
+                    "allPassed": True,
+                },
+                "aggregate did not bind the exact all-locked verification receipt",
+            )
+            nonruntime_indexes = [
+                index
+                for index, row in enumerate(all_locked_report["artifacts"])
+                if row["disposition"] != "testable"
+            ]
+            require(
+                len(nonruntime_indexes) == 4,
+                "synthetic all-locked report lacks the four nonruntime rows",
+            )
+            for label in ("missing", "reordered"):
+                changed_report = json.loads(json.dumps(all_locked_report))
+                changed_rows = changed_report["artifacts"]
+                if label == "missing":
+                    changed_rows.pop(nonruntime_indexes[0])
+                else:
+                    left, right = nonruntime_indexes[:2]
+                    changed_rows[left], changed_rows[right] = (
+                        changed_rows[right],
+                        changed_rows[left],
+                    )
+                artifact_lib.write_json(
+                    aggregate_root / "all-locked-verification.json",
+                    changed_report,
+                )
+                require(
+                    analyze_lib.cmd_aggregate(aggregate_args) == 1,
+                    f"aggregate accepted {label} nonruntime all-locked evidence",
+                )
+            artifact_lib.write_json(
+                aggregate_root / "all-locked-verification.json",
+                all_locked_report,
             )
             response_reverse = aggregate_root / "jf10-response-transformers-reverse" / "result.json"
             response_reverse_value = artifact_lib.load_json(response_reverse)

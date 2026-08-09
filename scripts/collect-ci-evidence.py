@@ -22,7 +22,10 @@ from evidence_validation import (
     EvidenceValidationError,
     INTEGRATION_LOGS,
     INTEGRATION_TEXT,
+    artifact_verification_summary,
+    load_compatibility_artifact_lock,
     reconstruct_compatibility_cache_evidence,
+    validate_artifact_verification_report,
     validate_compatibility_tree,
     validate_integration_tree,
 )
@@ -32,6 +35,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 LAB_ARTIFACTS = ROOT / "e2e" / "jellyfin" / "artifacts"
 COMPAT_ARTIFACTS = ROOT / "e2e" / "compat" / "artifacts"
 COMPAT_MATRICES = ROOT / "e2e" / "compat" / "matrices.json"
+COMPAT_LOCK = ROOT / "e2e" / "compat" / "ecosystem.lock.json"
 SAFE_JSON = (
     "jf10/server/result.json",
     "jf10/server/diagnostics.json",
@@ -686,6 +690,34 @@ def compatibility_services() -> dict[str, str]:
     return result
 
 
+def compatibility_install_orders() -> dict[str, list[str]]:
+    value = json.loads(COMPAT_MATRICES.read_text(encoding="utf-8"))
+    matrices = value.get("matrices") if isinstance(value, dict) else None
+    if not isinstance(matrices, list):
+        raise ValueError("compatibility matrices.json has no matrices array")
+    result: dict[str, list[str]] = {}
+    for row in matrices:
+        matrix_id = row.get("id") if isinstance(row, dict) else None
+        install_order = row.get("installOrder") if isinstance(row, dict) else None
+        if (
+            not isinstance(matrix_id, str)
+            or matrix_id in result
+            or not isinstance(install_order, list)
+            or not install_order
+            or any(
+                not isinstance(artifact_id, str) or not artifact_id
+                for artifact_id in install_order
+            )
+            or len(install_order) != len(set(install_order))
+            or install_order.count("@refresh-kit") != 1
+        ):
+            raise ValueError(
+                f"compatibility matrix {matrix_id!r} has an invalid install order"
+            )
+        result[matrix_id] = install_order
+    return result
+
+
 def compatibility_webroot_disk_requirements() -> dict[str, dict[str, Any]]:
     value = json.loads(COMPAT_MATRICES.read_text(encoding="utf-8"))
     matrices = value.get("matrices") if isinstance(value, dict) else None
@@ -898,6 +930,7 @@ def collect_compatibility(
     matrices = compatibility_matrices()
     matrix_ids = list(matrices)
     services = compatibility_services()
+    install_orders = compatibility_install_orders()
     disk_requirements = compatibility_webroot_disk_requirements()
     cache_expectations = compatibility_cache_expectations()
     order_pairs, runtime_orders, pair_members = compatibility_runtime_order_contract()
@@ -909,13 +942,18 @@ def collect_compatibility(
         strict_errors.append(
             f"compatibility runner exit status is {compatibility_exit!r}, expected 0"
         )
-    relative_paths = [pathlib.Path("summary.json")]
+    relative_paths = [
+        pathlib.Path("all-locked-verification.json"),
+        pathlib.Path("summary.json"),
+    ]
     relative_paths.extend(
         pathlib.Path(matrix_id) / name
         for matrix_id in matrix_ids
         for name in COMPAT_MATRIX_FILES
     )
     result_values: dict[str, dict[str, Any]] = {}
+    artifact_values: dict[str, dict[str, Any]] = {}
+    all_locked_value: dict[str, Any] | None = None
     summary_value: dict[str, Any] | None = None
     for relative in relative_paths:
         source = COMPAT_ARTIFACTS / relative
@@ -926,20 +964,42 @@ def collect_compatibility(
                 strict_errors.append(f"missing required compatibility evidence: {relative}")
             continue
         try:
-            value = json.loads(source.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            raw_json = source.read_bytes()
+            value = json.loads(raw_json.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
             evidence["missing"].append(f"{label} (invalid JSON)")
             if required:
                 strict_errors.append(f"invalid compatibility evidence JSON: {relative}")
             continue
         target = output / "compat" / relative
-        write_json(target, sanitize_json(value))
+        if relative.as_posix() == "all-locked-verification.json":
+            if not exact_json_value(sanitize_json(value), value):
+                evidence["missing"].append(f"{label} (unsafe exact JSON)")
+                if required:
+                    strict_errors.append(
+                        "all-locked verification contains content requiring redaction"
+                    )
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw_json)
+        else:
+            write_json(target, sanitize_json(value))
         relative_target = target.relative_to(output).as_posix()
         if relative_target not in evidence["collected"]:
             evidence["collected"].append(relative_target)
 
         if relative.name == "result.json" and isinstance(value, dict):
             result_values[relative.parent.name] = value
+        elif (
+            relative.name == "artifact-verification.json"
+            and isinstance(value, dict)
+        ):
+            artifact_values[relative.parent.name] = value
+        elif (
+            relative.as_posix() == "all-locked-verification.json"
+            and isinstance(value, dict)
+        ):
+            all_locked_value = value
         elif relative.as_posix() == "summary.json" and isinstance(value, dict):
             summary_value = value
 
@@ -1104,6 +1164,113 @@ def collect_compatibility(
                 )
         elif relative.name == "static.json" and value.get("allPassed") is not True:
             strict_errors.append(f"static compatibility evidence is not a pass: {relative}")
+
+    if required:
+        try:
+            locked_artifacts = load_compatibility_artifact_lock(COMPAT_LOCK)
+            locked_ids = [row["id"] for row in locked_artifacts]
+            if all_locked_value is None:
+                raise EvidenceValidationError(
+                    "all-locked-verification.json was not retained as a JSON object"
+                )
+            all_locked_rows = validate_artifact_verification_report(
+                all_locked_value,
+                locked_artifacts,
+                locked_ids,
+                "all-locked-verification.json",
+            )
+            all_locked_by_id = {row["id"]: row for row in all_locked_rows}
+            testable_ids = {
+                row["id"]
+                for row in locked_artifacts
+                if row["disposition"] == "testable"
+            }
+            covered_ids = {
+                artifact_id
+                for install_order in install_orders.values()
+                for artifact_id in install_order
+                if artifact_id != "@refresh-kit"
+            }
+            if covered_ids != testable_ids:
+                raise EvidenceValidationError(
+                    "compatibility matrices do not cover exactly every testable artifact"
+                )
+            retained_all_locked = output / "compat" / "all-locked-verification.json"
+            expected_summary = artifact_verification_summary(
+                retained_all_locked, all_locked_value
+            )
+            if (
+                not isinstance(summary_value, dict)
+                or "allLockedVerification" not in summary_value
+                or not exact_json_value(
+                    summary_value["allLockedVerification"], expected_summary
+                )
+            ):
+                raise EvidenceValidationError(
+                    "compatibility summary all-locked verification binding differs"
+                )
+            for matrix_id in matrix_ids:
+                expected_ids = [
+                    artifact_id
+                    for artifact_id in install_orders[matrix_id]
+                    if artifact_id != "@refresh-kit"
+                ]
+                report = artifact_values.get(matrix_id)
+                if not isinstance(report, dict):
+                    raise EvidenceValidationError(
+                        f"{matrix_id}: artifact verification report is missing"
+                    )
+                rows = validate_artifact_verification_report(
+                    report,
+                    locked_artifacts,
+                    expected_ids,
+                    f"{matrix_id}/artifact-verification.json",
+                )
+                projection = [all_locked_by_id[artifact_id] for artifact_id in expected_ids]
+                if not exact_json_value(rows, projection):
+                    raise EvidenceValidationError(
+                        f"{matrix_id}: artifact report differs from all-locked projection"
+                    )
+                result = result_values.get(matrix_id)
+                plugins = result.get("plugins") if isinstance(result, dict) else None
+                if (
+                    not isinstance(result, dict)
+                    or "requestedInstallOrder" not in result
+                    or not exact_json_value(
+                        result["requestedInstallOrder"], install_orders[matrix_id]
+                    )
+                    or not isinstance(plugins, list)
+                    or [
+                        row.get("artifactId") if isinstance(row, dict) else None
+                        for row in plugins
+                    ]
+                    != expected_ids
+                ):
+                    raise EvidenceValidationError(
+                        f"{matrix_id}: result artifact/install order differs"
+                    )
+                for plugin, row in zip(plugins, rows, strict=True):
+                    materialization = plugin.get("materialization")
+                    if (
+                        "artifactVerification" not in plugin
+                        or not exact_json_value(plugin["artifactVerification"], row)
+                        or not isinstance(materialization, dict)
+                        or materialization.get("materialized") is not True
+                        or materialization.get("archiveSha256")
+                        != row["archive"]["sha256"]
+                        or materialization.get("assemblySha256")
+                        != row["plugin"]["assemblySha256"]
+                        or "dllInventory" not in materialization
+                        or not exact_json_value(
+                            materialization["dllInventory"],
+                            row["plugin"]["managedDlls"],
+                        )
+                    ):
+                        raise EvidenceValidationError(
+                            f"{matrix_id}/{row['id']}: result artifact binding differs"
+                        )
+        except EvidenceValidationError as error:
+            strict_errors.append(str(error))
 
     retained_raw: dict[str, dict[str, bytes]] = {}
     for matrix_id in disk_requirements:

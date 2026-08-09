@@ -80,6 +80,18 @@ testable runtime artifacts**. It is derived from catalog commit
 catalog snapshot SHA-256 is
 `49f57cab3c9122c03bc92da3c17c8125cb15041501ad937e2c89206b4ca23029`.
 
+The full compatibility gate starts from an empty harness cache and downloads
+and reinspects all 44 archives before any runtime matrix. It retains
+`all-locked-verification.json` in exact lock order and binds that file's
+SHA-256, 44-row count, archive-byte total, and `40 testable / 3 quarantined / 1
+unsupported` dispositions into the aggregate summary. Release validation
+independently checks every receipt row's URL/digest, plugin identity, binary
+GUID/version tokens, safe ZIP-derived paths, metadata/framework evidence, and
+managed-DLL hashes. Matrix receipts must be exact ordered projections of that
+all-locked receipt and match the embedded result/materialization evidence. The
+archive bytes themselves are not retained; quarantine and unsupported rows are
+inspection evidence, never live-runtime passes.
+
 The machine-enforced classifications are:
 
 | Runtime | Testable | Quarantined | Unsupported | Not relevant | Manual only | Archived |

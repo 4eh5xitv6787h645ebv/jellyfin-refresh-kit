@@ -115,6 +115,10 @@ cmd_all() {
     check_container_opt_in
     compat_pin_build_snapshot
     cmd_clean
+    # The release gate starts from an empty cache and cryptographically
+    # reinspects every locked archive, including the deliberately non-installable
+    # quarantine/unsupported rows.  Matrices then rehash their exact subsets.
+    cmd_fetch all-locked
     while IFS=$'\t' read -r matrix_id _; do
         bash "${HERE}/lib/runtime.sh" "${matrix_id}"
     done < <(python3 "${HERE}/lib/manifest.py" list)

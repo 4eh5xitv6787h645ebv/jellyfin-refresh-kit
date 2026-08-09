@@ -76,6 +76,7 @@ REQUIRED_COLLECTED = {
     "logs/dual-jellyfin.log",
     "logs/proxy.log",
     "compat/summary.json",
+    "compat/all-locked-verification.json",
     "compat/jf10-direct-writers-readonly/webroot-before.html",
     "compat/jf10-direct-writers-readonly/webroot-after.html",
     "compat/jf10-direct-writers-writable/webroot-before.html",

@@ -592,7 +592,7 @@ The standalone plugin declares support for **Jellyfin 10.11.x and Jellyfin
 every future minor passed; current-candidate results and exact snapshot
 identities are recorded separately in [COMPATIBILITY.md](COMPATIBILITY.md).
 
-The current compatibility inventory classifies all 101 rows in the audited Awesome Jellyfin plugin section. It locks 44 immutable archives, including 40 testable runtime artifacts exercised across 14 matrices; three outer-response-buffer matrices use the statically enforced safe-degrade contract. The detailed environments, tested plugin builds, verdicts, edge cases, and reproducible evidence live in [COMPATIBILITY.md](COMPATIBILITY.md).
+The current compatibility inventory classifies all 101 rows in the audited Awesome Jellyfin plugin section. The compatibility gate freshly downloads and cryptographically inspects all 44 immutable archives, retains an exact lock-ordered receipt, and exercises the 40 testable runtime artifacts across 14 matrices; the three quarantined and one unsupported archives remain inspection-only. Three outer-response-buffer matrices use the statically enforced safe-degrade contract. The detailed environments, tested plugin builds, verdicts, edge cases, and reproducible evidence live in [COMPATIBILITY.md](COMPATIBILITY.md).
 
 Keeping the evidence in that file allows this README to describe the supported behaviour without turning into a test ledger.
 
