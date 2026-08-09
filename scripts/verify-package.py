@@ -11,6 +11,7 @@ import os
 import pathlib
 import re
 import stat
+import struct
 import subprocess
 import sys
 import urllib.parse
@@ -39,6 +40,216 @@ class VerificationError(RuntimeError):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise VerificationError(message)
+
+
+def unpack_from(fmt: str, data: bytes, offset: int, label: str) -> tuple[int, ...]:
+    """Read a little-endian binary structure with a useful truncation error."""
+    size = struct.calcsize(fmt)
+    require(0 <= offset <= len(data) - size, f"truncated {label}")
+    return struct.unpack_from(fmt, data, offset)
+
+
+def pe_rva_offset(
+    data: bytes,
+    rva: int,
+    size: int,
+    size_of_headers: int,
+    sections: tuple[tuple[int, int, int, int], ...],
+    label: str,
+) -> int:
+    """Map a PE RVA to a checked file offset without loading the image."""
+    if rva < size_of_headers:
+        require(rva <= len(data) - size, f"{label} extends beyond PE headers")
+        return rva
+    for virtual_address, virtual_size, raw_offset, raw_size in sections:
+        if virtual_address <= rva < virtual_address + max(virtual_size, raw_size):
+            relative = rva - virtual_address
+            require(relative <= raw_size - size, f"{label} extends beyond its PE section")
+            require(raw_offset + relative <= len(data) - size,
+                    f"{label} extends beyond the PE file")
+            return raw_offset + relative
+    raise VerificationError(f"{label} RVA 0x{rva:x} is not mapped by a PE section")
+
+
+def coded_index_size(
+    row_counts: tuple[int, ...],
+    tag_bits: int,
+    tables: tuple[int, ...],
+) -> int:
+    maximum = max((row_counts[table] for table in tables), default=0)
+    return 2 if maximum < (1 << (16 - tag_bits)) else 4
+
+
+def metadata_table_row_size(
+    table: int,
+    row_counts: tuple[int, ...],
+    string_size: int,
+    guid_size: int,
+    blob_size: int,
+) -> int:
+    """Return the ECMA-335 row width for metadata tables before AssemblyRef."""
+    simple = lambda target: 2 if row_counts[target] < 65536 else 4
+    coded = lambda bits, *targets: coded_index_size(row_counts, bits, targets)
+    sizes = {
+        0: 2 + string_size + (3 * guid_size),
+        1: coded(2, 0, 26, 35, 1) + (2 * string_size),
+        2: 4 + (2 * string_size) + coded(2, 2, 1, 27) + simple(4) + simple(6),
+        3: simple(4),
+        4: 2 + string_size + blob_size,
+        5: simple(6),
+        6: 8 + string_size + blob_size + simple(8),
+        7: simple(8),
+        8: 4 + string_size,
+        9: simple(2) + coded(2, 2, 1, 27),
+        10: coded(3, 2, 1, 26, 6, 27) + string_size + blob_size,
+        11: 2 + coded(2, 4, 8, 23) + blob_size,
+        12: coded(5, 6, 4, 1, 2, 8, 9, 10, 0, 14, 23, 20, 17,
+                  26, 27, 32, 35, 38, 39, 40, 42, 44, 43)
+            + coded(3, 6, 10) + blob_size,
+        13: coded(1, 4, 8) + blob_size,
+        14: 2 + coded(2, 2, 6, 32) + blob_size,
+        15: 6 + simple(2),
+        16: 4 + simple(4),
+        17: blob_size,
+        18: simple(2) + simple(20),
+        19: simple(20),
+        20: 2 + string_size + coded(2, 2, 1, 27),
+        21: simple(2) + simple(23),
+        22: simple(23),
+        23: 2 + string_size + blob_size,
+        24: 2 + simple(6) + coded(1, 20, 23),
+        25: simple(2) + (2 * coded(1, 6, 10)),
+        26: string_size,
+        27: blob_size,
+        28: 2 + coded(1, 4, 6) + string_size + simple(26),
+        29: 4 + simple(4),
+        30: 8,
+        31: 4,
+        32: 16 + blob_size + (2 * string_size),
+        33: 4,
+        34: 12,
+    }
+    require(table in sizes, f"unsupported metadata table {table} before AssemblyRef")
+    return sizes[table]
+
+
+def assembly_references(data: bytes) -> dict[str, tuple[str, int]]:
+    """Return AssemblyRef versions and version-field offsets from a managed PE."""
+    require(data[:2] == b"MZ", "DLL is not a PE image")
+    (pe_offset,) = unpack_from("<I", data, 0x3C, "DOS header")
+    require(data[pe_offset:pe_offset + 4] == b"PE\0\0", "DLL has no PE signature")
+    coff = pe_offset + 4
+    _, section_count, _, _, _, optional_size, _ = unpack_from(
+        "<HHIIIHH", data, coff, "PE COFF header"
+    )
+    optional = coff + 20
+    (magic,) = unpack_from("<H", data, optional, "PE optional header")
+    require(magic in (0x10B, 0x20B), f"unsupported PE optional-header magic 0x{magic:x}")
+    directory_offset = optional + (96 if magic == 0x10B else 112)
+    require(optional_size >= directory_offset - optional + (15 * 8),
+            "PE optional header has no CLR data directory")
+    (size_of_headers,) = unpack_from("<I", data, optional + 60, "PE SizeOfHeaders")
+    clr_rva, clr_size = unpack_from(
+        "<II", data, directory_offset + (14 * 8), "CLR data directory"
+    )
+    require(clr_rva != 0 and clr_size >= 16, "PE image has no CLR header")
+
+    section_rows: list[tuple[int, int, int, int]] = []
+    section_offset = optional + optional_size
+    for index in range(section_count):
+        row = section_offset + (index * 40)
+        virtual_size, virtual_address, raw_size, raw_offset = unpack_from(
+            "<IIII", data, row + 8, f"PE section {index}"
+        )
+        section_rows.append((virtual_address, virtual_size, raw_offset, raw_size))
+    sections = tuple(section_rows)
+    clr_offset = pe_rva_offset(
+        data, clr_rva, clr_size, size_of_headers, sections, "CLR header"
+    )
+    metadata_rva, metadata_size = unpack_from(
+        "<II", data, clr_offset + 8, "CLR metadata directory"
+    )
+    require(metadata_rva != 0 and metadata_size >= 20, "CLR image has no metadata root")
+    metadata = pe_rva_offset(
+        data, metadata_rva, metadata_size, size_of_headers, sections, "CLR metadata"
+    )
+    (signature,) = unpack_from("<I", data, metadata, "CLR metadata signature")
+    require(signature == 0x424A5342, "CLR metadata signature is not BSJB")
+    (version_length,) = unpack_from("<I", data, metadata + 12, "CLR metadata version")
+    stream_header = metadata + 16 + ((version_length + 3) & ~3)
+    _, stream_count = unpack_from("<HH", data, stream_header, "CLR stream header")
+    cursor = stream_header + 4
+    streams: dict[str, tuple[int, int]] = {}
+    for index in range(stream_count):
+        relative, stream_size = unpack_from(
+            "<II", data, cursor, f"CLR stream {index} header"
+        )
+        name_start = cursor + 8
+        name_end = data.find(b"\0", name_start, min(name_start + 32, len(data)))
+        require(name_end != -1, f"CLR stream {index} has no terminated name")
+        try:
+            name = data[name_start:name_end].decode("ascii")
+        except UnicodeDecodeError as error:
+            raise VerificationError(f"CLR stream {index} name is not ASCII") from error
+        absolute = metadata + relative
+        require(absolute <= len(data) - stream_size, f"CLR stream {name!r} is truncated")
+        streams[name] = (absolute, stream_size)
+        cursor = name_start + (((name_end - name_start) + 1 + 3) & ~3)
+
+    table_name = "#~" if "#~" in streams else "#-"
+    require(table_name in streams, "CLR metadata has no table stream")
+    require("#Strings" in streams, "CLR metadata has no string heap")
+    tables, table_size = streams[table_name]
+    strings, strings_size = streams["#Strings"]
+    require(table_size >= 24, "CLR metadata table stream is truncated")
+    (heap_sizes,) = unpack_from("<B", data, tables + 6, "CLR heap-size flags")
+    valid, _ = unpack_from("<QQ", data, tables + 8, "CLR table masks")
+    cursor = tables + 24
+    counts = [0] * 64
+    for table in range(64):
+        if valid & (1 << table):
+            (counts[table],) = unpack_from("<I", data, cursor, f"metadata table {table} count")
+            cursor += 4
+    if heap_sizes & 0x40:
+        cursor += 4
+        require(cursor <= tables + table_size, "CLR table extra-data marker is truncated")
+    row_counts = tuple(counts)
+    string_index_size = 4 if heap_sizes & 0x01 else 2
+    guid_index_size = 4 if heap_sizes & 0x02 else 2
+    blob_index_size = 4 if heap_sizes & 0x04 else 2
+    for table in range(35):
+        cursor += row_counts[table] * metadata_table_row_size(
+            table, row_counts, string_index_size, guid_index_size, blob_index_size
+        )
+    require(cursor <= tables + table_size, "AssemblyRef table begins beyond table stream")
+
+    row_size = 12 + (2 * blob_index_size) + (2 * string_index_size)
+    references: dict[str, tuple[str, int]] = {}
+    for row_index in range(row_counts[35]):
+        row = cursor + (row_index * row_size)
+        major, minor, build, revision = unpack_from(
+            "<HHHH", data, row, f"AssemblyRef row {row_index} version"
+        )
+        name_index_offset = row + 12 + blob_index_size
+        if string_index_size == 2:
+            (name_index,) = unpack_from(
+                "<H", data, name_index_offset, f"AssemblyRef row {row_index} name"
+            )
+        else:
+            (name_index,) = unpack_from(
+                "<I", data, name_index_offset, f"AssemblyRef row {row_index} name"
+            )
+        require(name_index < strings_size, f"AssemblyRef row {row_index} has invalid name index")
+        name_start = strings + name_index
+        name_end = data.find(b"\0", name_start, strings + strings_size)
+        require(name_end != -1, f"AssemblyRef row {row_index} has unterminated name")
+        try:
+            name = data[name_start:name_end].decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise VerificationError(f"AssemblyRef row {row_index} name is not UTF-8") from error
+        require(name not in references, f"duplicate AssemblyRef {name!r}")
+        references[name] = (f"{major}.{minor}.{build}.{revision}", row)
+    return references
 
 
 def file_hash(path: pathlib.Path, algorithm: str) -> str:
@@ -236,6 +447,18 @@ def verify_archive(
             f"{archive_path.name}: DLL lacks its declared version")
     require(b"Jellyfin.Plugin.RefreshKit" in dll,
             f"{archive_path.name}: DLL lacks the expected assembly identity")
+    references = assembly_references(dll)
+    for shared_name in (
+        "MediaBrowser.Common",
+        "MediaBrowser.Controller",
+        "MediaBrowser.Model",
+    ):
+        require(shared_name in references,
+                f"{archive_path.name}: DLL lacks required AssemblyRef {shared_name}")
+        shared_version = references[shared_name][0]
+        require(shared_version == abi,
+                f"{archive_path.name}: AssemblyRef {shared_name} version "
+                f"{shared_version} != targetAbi {abi}")
     tfm_marker = f".NETCoreApp,Version=v{framework.removeprefix('net')}".encode("ascii")
     require(tfm_marker in dll,
             f"{archive_path.name}: DLL lacks expected target framework marker {tfm_marker!r}")

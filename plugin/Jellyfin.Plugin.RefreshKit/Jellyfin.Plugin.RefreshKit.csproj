@@ -7,7 +7,8 @@
 
            net9.0   Jellyfin 10.11.x — jellyfin.runtimeconfig.json says
                     "tfm": "net9.0", Microsoft.AspNetCore.App 9.0.16.
-                    Verified against the jellyfin/jellyfin:10.11.11 image.
+                    Built against the 10.11.0 ABI floor; live validation uses
+                    separately documented digest-pinned host images.
            net10.0  Jellyfin 12.0.x  — jellyfin.runtimeconfig.json says
                     "tfm": "net10.0". Verified against the digest-pinned
                     jellyfin/jellyfin:12.0-rc4 image reporting Version
@@ -55,14 +56,17 @@
     <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildThisFileDirectory)bin/**;$(MSBuildThisFileDirectory)obj/**</DefaultItemExcludes>
   </PropertyGroup>
 
-  <!-- The Jellyfin server generation each framework compiles against.
+  <!-- The minimum Jellyfin ABI each framework compiles against. Building at
+       the declared floor is intentional: .NET can bind that reference to an
+       equal or newer shared host assembly, while a newer reference cannot load
+       on an older supported 10.11.x host.
        Both are on nuget.org, so neither target needs DLLs copied out of a
        container: the 12.0.0 packages were published alongside the release
        candidates (12.0.0-rc4 at the time of writing) and carry the same
        MediaBrowser.* surface the running server exposes. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
-    <PackageReference Include="Jellyfin.Controller" Version="[10.11.11]" />
-    <PackageReference Include="Jellyfin.Model" Version="[10.11.11]" />
+    <PackageReference Include="Jellyfin.Controller" Version="[10.11.0]" />
+    <PackageReference Include="Jellyfin.Model" Version="[10.11.0]" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">

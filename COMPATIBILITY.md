@@ -61,12 +61,15 @@ and live labs use exact inputs:
 
 | Declared line | Package references | Framework / ABI | Pinned live image |
 | --- | --- | --- | --- |
-| Jellyfin 10.11.x | Controller + Model `10.11.11` | `net9.0` / `10.11.0.0` | `jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db` |
+| Jellyfin 10.11.x | Controller + Model `10.11.0` | `net9.0` / `10.11.0.0` | `jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db` |
 | Jellyfin 12.x | Controller + Model `12.0.0-rc4` | `net10.0` / `12.0.0.0` | `jellyfin/jellyfin:12.0-rc4@sha256:db1df1d111c27ba1f10bb8fce6630892f66eb66b12c2b24e79011453ac18b3db` |
 
 A declared minor range does not imply that every future host minor has already
 run. The Jellyfin 12 RC4 result is evidence for that exact host/package pair,
 not a promise that a future ABI-breaking host will load the same binary.
+The net9 build uses the 10.11.0 floor so its shared MediaBrowser assembly
+references match the declared `10.11.0.0` ABI; deterministic package
+verification rejects any staged DLL/metadata disagreement before a live lab.
 
 ## Locked ecosystem coverage
 

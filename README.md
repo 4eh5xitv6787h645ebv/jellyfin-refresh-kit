@@ -44,7 +44,7 @@ Install one plugin and Refresh Kit watches the plugin environment for changes. O
 - Jellyfin **10.11.x** or **12.x**
 - Permission to install plugins and restart the Jellyfin server
 
-The standalone plugin is built for both, from one source tree: a `net9.0` build against Jellyfin `10.11.11` packages, and a `net10.0` build against Jellyfin `12.0.0-rc4` packages. One plugin-repository URL serves both — the server picks the build matching its own generation.
+The standalone plugin is built for both, from one source tree: a `net9.0` build against the Jellyfin `10.11.0` ABI floor, and a `net10.0` build against Jellyfin `12.0.0-rc4` packages. Building the net9 assembly at the declared floor lets later 10.11 hosts bind its shared-library references upward; package verification rejects a DLL whose MediaBrowser assembly references do not equal its `targetAbi`. One plugin-repository URL serves both — the server picks the build matching its own generation.
 
 ## Installation
 
@@ -585,7 +585,7 @@ If `jellyfin-refresh-kit.js` is one of the injected scripts, put it **before** s
 # Compatibility
 
 The standalone plugin declares support for **Jellyfin 10.11.x and Jellyfin
-12.x**. Its exact build inputs are Jellyfin Controller/Model `10.11.11` on
+12.x**. Its exact build inputs are Jellyfin Controller/Model `10.11.0` on
 `net9.0` (`targetAbi` `10.11.0.0`) and `12.0.0-rc4` on `net10.0`
 (`targetAbi` `12.0.0.0`); the live labs pin Jellyfin `10.11.11` and
 `12.0.0-rc4` images by digest. A harness or declared range is not evidence that

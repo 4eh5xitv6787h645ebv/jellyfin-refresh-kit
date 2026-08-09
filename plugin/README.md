@@ -76,7 +76,7 @@ runs on:
 
 | Server | Zip | Framework | Built against | `targetAbi` |
 |---|---|---|---|---|
-| Jellyfin 10.11.x | `jellyfin-refresh-kit_<version>.zip` | `net9.0` | `Jellyfin.Controller` 10.11.11 | `10.11.0.0` |
+| Jellyfin 10.11.x | `jellyfin-refresh-kit_<version>.zip` | `net9.0` | `Jellyfin.Controller` 10.11.0 | `10.11.0.0` |
 | Jellyfin 12.x | `jellyfin-refresh-kit_<version>_jf12.zip` | `net10.0` | `Jellyfin.Controller` 12.0.0-rc4 | `12.0.0.0` |
 
 Installing from the plugin repository, this is not a choice you have to make:
@@ -87,6 +87,11 @@ take the zip whose row matches the server.
 The two builds are the SAME SOURCE, compiled twice — the plugin uses only the
 part of the plugin surface that survived the 12 rewrite, so there is no
 `#if`-ed code and no second project to keep in step.
+
+The net9 build intentionally references the first declared 10.11 ABI. Later
+10.11 hosts can satisfy that lower shared-assembly version; the reverse is not
+true. The package verifier reads the staged DLL's CLI metadata and requires its
+MediaBrowser Common, Controller, and Model references to equal `targetAbi`.
 
 Historical root-Docker, non-root-Docker, and native non-root Linux installation
 probes remain available in Git history and release records. They are not

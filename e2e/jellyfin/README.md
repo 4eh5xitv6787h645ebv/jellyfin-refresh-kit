@@ -103,7 +103,7 @@ The fixture project under `fixtures/LifecycleProbe/` compiles two real packages 
 - `1.0.0.0` / release `v1` with its own assembly and embedded/loose HTML, JavaScript, and CSS;
 - `2.0.0.0` / release `v2` with a separately compiled assembly and different asset bytes.
 
-The builder uses exact Jellyfin 10.11.11 and 12.0-rc4 package references, a NuGet lock file, deterministic compiler settings, fixed package timestamps, and a private project-local repository. It rejects byte-identical assemblies or archives; nothing is relabeled to simulate an update.
+The builder uses exact Jellyfin 10.11.0 ABI-floor and 12.0-rc4 package references, a NuGet lock file, deterministic compiler settings, fixed package timestamps, and a private project-local repository. It rejects byte-identical assemblies or archives; nothing is relabeled to simulate an update.
 
 The fast `runner-negative` command replaces external operations with local test doubles and injects a nonzero browser-lifecycle exit. It verifies that the failure survives the individual target wrapper, the two-target `third-party all` aggregator, and the top-level `all` command even in Bash conditional contexts where implicit `errexit` behavior is suppressed.
 
