@@ -407,6 +407,57 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Equal(1, Volatile.Read(ref conditionalRequests));
         }
 
+        [Fact]
+        public async Task ClearSiteDataIntroducedBySource304_IsDeliveredOnceAndEvictsTheBase()
+        {
+            var invocations = 0;
+            var fullResponses = 0;
+            var conditionalResponses = 0;
+            using var application = CreateApplication(async context =>
+            {
+                const string SourceETag = "\"clear-site-data-source\"";
+                var invocation = Interlocked.Increment(ref invocations);
+                context.Response.ContentType = "text/html; charset=utf-8";
+                context.Response.Headers["Cache-Control"] = "no-cache";
+                context.Response.Headers["ETag"] = SourceETag;
+                if (context.Request.Headers["If-None-Match"].ToString().Contains(
+                    SourceETag,
+                    StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref conditionalResponses);
+                    context.Response.StatusCode = StatusCodes.Status304NotModified;
+                    context.Response.Headers["Clear-Site-Data"] = "\"cache\"";
+                    return;
+                }
+
+                Interlocked.Increment(ref fullResponses);
+                var body = Encoding.UTF8.GetBytes(
+                    "<html><body><main data-invocation=\"" + invocation + "\"></main></body></html>");
+                context.Response.ContentLength = body.Length;
+                await context.Response.Body.WriteAsync(body).ConfigureAwait(false);
+            });
+
+            var first = await application.SendAsync();
+            var introduced = await application.SendAsync();
+            var afterEviction = await application.SendAsync();
+
+            Assert.Equal(StatusCodes.Status200OK, introduced.StatusCode);
+            Assert.Equal(first.Body, introduced.Body);
+            Assert.Equal("\"cache\"", introduced.Header("Clear-Site-Data"));
+            Assert.Contains(
+                "no-store",
+                introduced.Header("Cache-Control"),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(string.Empty, afterEviction.Header("Clear-Site-Data"));
+            Assert.Contains(
+                "data-invocation=\"3\"",
+                afterEviction.BodyText,
+                StringComparison.Ordinal);
+            Assert.Equal(3, Volatile.Read(ref invocations));
+            Assert.Equal(2, Volatile.Read(ref fullResponses));
+            Assert.Equal(1, Volatile.Read(ref conditionalResponses));
+        }
+
         [Theory]
         [InlineData("no-store")]
         [InlineData("private")]
@@ -581,6 +632,51 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Equal(first.Body, revalidated.Body);
             Assert.Equal(1, Volatile.Read(ref fullResponses));
             Assert.Equal(1, Volatile.Read(ref conditionalResponses));
+        }
+
+        [Fact]
+        public async Task AltSvcIntroducedBySource304_IsDeliveredOnceAndNotReplayed()
+        {
+            var fullResponses = 0;
+            var conditionalResponses = 0;
+            using var application = CreateApplication(async context =>
+            {
+                const string SourceETag = "\"introduced-alt-svc-source\"";
+                context.Response.ContentType = "text/html; charset=utf-8";
+                context.Response.Headers["Cache-Control"] = "no-cache";
+                context.Response.Headers["ETag"] = SourceETag;
+                if (context.Request.Headers["If-None-Match"].ToString().Contains(
+                    SourceETag,
+                    StringComparison.Ordinal))
+                {
+                    var conditional = Interlocked.Increment(ref conditionalResponses);
+                    context.Response.StatusCode = StatusCodes.Status304NotModified;
+                    if (conditional == 1)
+                    {
+                        context.Response.Headers["Alt-Svc"] = "h3=\":8443\"; ma=1";
+                    }
+
+                    return;
+                }
+
+                Interlocked.Increment(ref fullResponses);
+                var body = Encoding.UTF8.GetBytes(
+                    "<html><body><main>introduced alternative service</main></body></html>");
+                context.Response.ContentLength = body.Length;
+                await context.Response.Body.WriteAsync(body).ConfigureAwait(false);
+            });
+
+            var first = await application.SendAsync();
+            var introduced = await application.SendAsync();
+            var omitted = await application.SendAsync();
+
+            Assert.Equal(string.Empty, first.Header("Alt-Svc"));
+            Assert.Equal("h3=\":8443\"; ma=1", introduced.Header("Alt-Svc"));
+            Assert.Equal(string.Empty, omitted.Header("Alt-Svc"));
+            Assert.Equal(first.Body, introduced.Body);
+            Assert.Equal(first.Body, omitted.Body);
+            Assert.Equal(1, Volatile.Read(ref fullResponses));
+            Assert.Equal(2, Volatile.Read(ref conditionalResponses));
         }
 
         [Fact]
@@ -908,6 +1004,87 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Equal(source, response.Body);
             Assert.StartsWith(contentType, response.Header("Content-Type"), StringComparison.Ordinal);
             Assert.DoesNotContain("Jellyfin Refresh Kit", response.BodyText, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData("text/html; charset=utf-8; CHARSET=UTF8")]
+        [InlineData("text/html; charset=UTF-8; charset=iso-8859-1")]
+        public async Task DuplicateCharsetParameters_AreServedByteExactAndNeverCached(
+            string contentType)
+        {
+            var fullResponses = 0;
+            var conditionalResponses = 0;
+            var source = Encoding.UTF8.GetBytes(
+                "<html><body><main>duplicate charset</main></body></html>");
+            using var application = CreateApplication(async context =>
+            {
+                const string SourceETag = "\"duplicate-charset-source\"";
+                context.Response.ContentType = contentType;
+                context.Response.Headers["Cache-Control"] = "no-cache";
+                context.Response.Headers["ETag"] = SourceETag;
+                if (context.Request.Headers["If-None-Match"].ToString().Contains(
+                    SourceETag,
+                    StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref conditionalResponses);
+                    context.Response.StatusCode = StatusCodes.Status304NotModified;
+                    return;
+                }
+
+                Interlocked.Increment(ref fullResponses);
+                context.Response.ContentLength = source.Length;
+                await context.Response.Body.WriteAsync(source).ConfigureAwait(false);
+            });
+
+            var first = await application.SendAsync();
+            var second = await application.SendAsync();
+
+            Assert.Equal(source, first.Body);
+            Assert.Equal(source, second.Body);
+            Assert.DoesNotContain("Jellyfin Refresh Kit", first.BodyText, StringComparison.Ordinal);
+            Assert.DoesNotContain("Jellyfin Refresh Kit", second.BodyText, StringComparison.Ordinal);
+            Assert.Equal(2, Volatile.Read(ref fullResponses));
+            Assert.Equal(0, Volatile.Read(ref conditionalResponses));
+        }
+
+        [Fact]
+        public async Task ExplicitUtf8HtmlWithMalformedBytes_IsServedByteExactAndNeverCached()
+        {
+            var fullResponses = 0;
+            var conditionalResponses = 0;
+            var source = Encoding.UTF8.GetBytes("<html><body><main>malformed ")
+                .Concat(new byte[] { 0xc3, 0x28 })
+                .Concat(Encoding.UTF8.GetBytes("</main></body></html>"))
+                .ToArray();
+            using var application = CreateApplication(async context =>
+            {
+                const string SourceETag = "\"malformed-utf8-source\"";
+                context.Response.ContentType = "text/html; charset=utf-8";
+                context.Response.Headers["Cache-Control"] = "no-cache";
+                context.Response.Headers["ETag"] = SourceETag;
+                if (context.Request.Headers["If-None-Match"].ToString().Contains(
+                    SourceETag,
+                    StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref conditionalResponses);
+                    context.Response.StatusCode = StatusCodes.Status304NotModified;
+                    return;
+                }
+
+                Interlocked.Increment(ref fullResponses);
+                context.Response.ContentLength = source.Length;
+                await context.Response.Body.WriteAsync(source).ConfigureAwait(false);
+            });
+
+            var first = await application.SendAsync();
+            var second = await application.SendAsync();
+
+            Assert.Equal(source, first.Body);
+            Assert.Equal(source, second.Body);
+            Assert.DoesNotContain("Jellyfin Refresh Kit", first.BodyText, StringComparison.Ordinal);
+            Assert.DoesNotContain("Jellyfin Refresh Kit", second.BodyText, StringComparison.Ordinal);
+            Assert.Equal(2, Volatile.Read(ref fullResponses));
+            Assert.Equal(0, Volatile.Read(ref conditionalResponses));
         }
 
         [Fact]
