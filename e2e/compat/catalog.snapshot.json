@@ -7,7 +7,7 @@
     "commitDate": "2026-08-05T08:34:16Z",
     "commitMessage": "chore: added stale tag to jellyfin-sso (#614)",
     "commitUrl": "https://github.com/awesome-jellyfin/awesome-jellyfin/commit/a60d3d24fe0e16e59518f95ea4743d8996fa81c9",
-    "auditedAtUtc": "2026-08-08T23:46:19Z",
+    "auditedAtUtc": "2026-08-09T03:40:40Z",
     "networkMode": "read-only",
     "scopeIncluded": "Every top-level row in README.md from ## 🧩 Plugins through (but excluding) ## 👾 Companion Apps & Tools.",
     "scopeExcluded": "THEMES.md themes, CLIENTS.md clients, README Companion Apps & Tools, snippets, guides, related projects, and communities are not Jellyfin server-plugin candidates."
@@ -318,10 +318,10 @@
         "archived": false,
         "private": false,
         "visibility": "PUBLIC",
-        "pushedAt": "2026-08-08T23:43:42Z",
-        "headOid": "f010b0b755a97f3e9ccac8a50c578ba4e9a31b9a",
-        "latestReleaseTag": "v1.0.373.0",
-        "latestReleasePublishedAt": "2026-08-08T23:20:27Z"
+        "pushedAt": "2026-08-09T00:52:07Z",
+        "headOid": "39130872da9a0d240b726147f30d08b7aa00f285",
+        "latestReleaseTag": "v1.0.374.0",
+        "latestReleasePublishedAt": "2026-08-09T00:52:07Z"
       }
     },
     {

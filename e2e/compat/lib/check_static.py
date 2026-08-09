@@ -97,7 +97,7 @@ def main() -> int:
             locked_artifacts["jellyfin-enhanced-jf10"]["plugin"]["version"] == "12.2.0.0"
             and locked_artifacts["jellyfin-enhanced-jf12"]["plugin"]["version"]
             == "12.2.0.0"
-            and locked_artifacts["ratings-jf10"]["plugin"]["version"] == "1.0.373.0",
+            and locked_artifacts["ratings-jf10"]["plugin"]["version"] == "1.0.374.0",
             "the three superseded Jellyfin Enhanced/Ratings artifacts were not refreshed",
         )
         require(
@@ -764,7 +764,7 @@ def main() -> int:
             ],
         }
         source_attribution, _, source_errors = analyze_lib.attribute_shell_assets(
-            [{"tag": "script", "url": "/Ratings/ratings.js?v=1.0.373.0"}],
+            [{"tag": "script", "url": "/Ratings/ratings.js?v=1.0.374.0"}],
             {"ratings-jf10": source_requirement},
             generation,
         )
@@ -779,8 +779,8 @@ def main() -> int:
         )
         for bad_source_url in (
             "/Ratings/ratings.js?v=",
-            f"/Ratings/ratings.js?v=1.0.373.0&rkv={generation}",
-            "https://cdn.example/Ratings/ratings.js?v=1.0.373.0",
+            f"/Ratings/ratings.js?v=1.0.374.0&rkv={generation}",
+            "https://cdn.example/Ratings/ratings.js?v=1.0.374.0",
         ):
             bad_attribution, _, _ = analyze_lib.attribute_shell_assets(
                 [{"tag": "script", "url": bad_source_url}],

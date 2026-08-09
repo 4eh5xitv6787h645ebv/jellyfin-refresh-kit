@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "audit": {
     "source": "catalog.snapshot.json",
-    "sha256": "9152f4016c90aad9986883c47e9217ce86bf348c7df89df5bc8c3ac04b7b0265",
+    "sha256": "49f57cab3c9122c03bc92da3c17c8125cb15041501ad937e2c89206b4ca23029",
     "catalogRepository": "https://github.com/awesome-jellyfin/awesome-jellyfin",
     "catalogCommit": "a60d3d24fe0e16e59518f95ea4743d8996fa81c9",
     "catalogCommitDate": "2026-08-05T08:34:16Z",
-    "auditedAtUtc": "2026-08-08T23:46:19Z",
+    "auditedAtUtc": "2026-08-09T03:40:40Z",
     "networkMode": "read-only",
     "protectedRepository": "https://github.com/n00bcodr/Jellyfin-Enhanced",
     "protectedRepositoryAccess": "strictly-read-only"
@@ -444,16 +444,16 @@
       "disposition": "testable",
       "runtime": "jf10",
       "repository": "https://github.com/K3ntas/jellyfin-plugin-ratings",
-      "sourceRevision": "f010b0b755a97f3e9ccac8a50c578ba4e9a31b9a",
+      "sourceRevision": "39130872da9a0d240b726147f30d08b7aa00f285",
       "archive": {
-        "name": "jellyfin-plugin-ratings_1.0.373.0.zip",
-        "url": "https://github.com/K3ntas/jellyfin-plugin-ratings/releases/download/v1.0.373.0/jellyfin-plugin-ratings_1.0.373.0.zip",
-        "sha256": "a888358b74cc8ed09e0b3fd379a441bb70a01ba02b81741c522c54246ac24d1b"
+        "name": "jellyfin-plugin-ratings_1.0.374.0.zip",
+        "url": "https://github.com/K3ntas/jellyfin-plugin-ratings/releases/download/v1.0.374.0/jellyfin-plugin-ratings_1.0.374.0.zip",
+        "sha256": "cc6bf049cafd08df79484f68381b93356acd1dc8f0c6fc869c13b05ad3074e42"
       },
       "plugin": {
         "guid": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
         "name": "Ratings",
-        "version": "1.0.373.0",
+        "version": "1.0.374.0",
         "targetAbi": "10.11.0.0",
         "framework": "net9.0",
         "assembly": "Jellyfin.Plugin.Ratings.dll",
@@ -1199,7 +1199,7 @@
       "relevant": true,
       "coverageStatus": "covered-current-release",
       "reconciliationDecision": "UPDATE_AND_RETEST",
-      "interactionSurface": "Already covered response-middleware/index injection plugin, but current upstream release is newer than the lock.",
+      "interactionSurface": "Response-middleware/index injection plugin with current locked artifacts for Jellyfin 10.11 and 12.0; its order-sensitive shell effects remain assigned to the audited matrices.",
       "artifacts": [
         "jellyfin-enhanced-jf10",
         "jellyfin-enhanced-jf12"
@@ -1430,7 +1430,7 @@
       "relevant": true,
       "coverageStatus": "covered-current-release",
       "reconciliationDecision": "UPDATE_AND_RETEST",
-      "interactionSurface": "Already covered client-injection plugin, but current upstream release is newer than the lock.",
+      "interactionSurface": "Client-injection middleware serving versioned Ratings CSS and JavaScript with a current locked Jellyfin 10.11 artifact; reverse-order coverage remains required.",
       "artifacts": [
         "ratings-jf10"
       ],

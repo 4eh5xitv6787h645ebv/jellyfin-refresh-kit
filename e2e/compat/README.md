@@ -14,7 +14,7 @@ No Jellyfin container is started by `static`, `list`, `coverage`, or `fetch`. Ru
 - `n00bcodr/Jellyfin-Enhanced` is strictly read-only. The harness only downloads the two locked 12.2 release assets and inspects them; it contains no GitHub write workflow and never pushes anywhere.
 - A quarantined or unsupported artifact cannot reach the materializer, even if its ID is passed directly. Such packages are downloadable for digest inspection only.
 
-The authoritative snapshot is `catalog.snapshot.json` at SHA-256 `9152f4016c90aad9986883c47e9217ce86bf348c7df89df5bc8c3ac04b7b0265`. It records all 101 plugin-section rows from Awesome Jellyfin commit `a60d3d24fe0e16e59518f95ea4743d8996fa81c9` (2026-08-05), including repository activity evidence. Static validation requires `ecosystem.lock.json` to classify those rows in exact index/category/name/repository order, exactly once, and requires every testable row to map to a current immutable artifact and matrix.
+The authoritative snapshot is `catalog.snapshot.json` at SHA-256 `49f57cab3c9122c03bc92da3c17c8125cb15041501ad937e2c89206b4ca23029`. It records all 101 plugin-section rows from Awesome Jellyfin commit `a60d3d24fe0e16e59518f95ea4743d8996fa81c9` (2026-08-05), including repository activity evidence. Static validation requires `ecosystem.lock.json` to classify those rows in exact index/category/name/repository order, exactly once, and requires every testable row to map to a current immutable artifact and matrix.
 
 ## Commands
 
@@ -41,7 +41,7 @@ RK_COMPAT_ALLOW_CONTAINERS=1 ./run.sh all
 
 ## Cache, cleanup, and resource expectations
 
-The content-addressed archive cache is `e2e/compat/.cache/artifacts`. A complete `fetch all-locked` contains 44 archives totalling 217,735,445 bytes (about 208 MiB; about 212 MiB allocated on the development host). Cache hits are rehashed and reinspected rather than trusted. `down` removes only the selected Compose project's containers, network, and volumes and keeps the host cache/evidence; `clean` also removes and recreates this harness's `.cache`, `.state`, and `artifacts` directories. Neither command removes Docker images or anything outside `e2e/compat` and the validated `rk-compat-*` project.
+The content-addressed archive cache is `e2e/compat/.cache/artifacts`. A complete `fetch all-locked` contains 44 archives totalling 217,738,784 bytes (about 208 MiB; about 212 MiB allocated on the development host). Cache hits are rehashed and reinspected rather than trusted. `down` removes only the selected Compose project's containers, network, and volumes and keeps the host cache/evidence; `clean` also removes and recreates this harness's `.cache`, `.state`, and `artifacts` directories. Neither command removes Docker images or anything outside `e2e/compat` and the validated `rk-compat-*` project.
 
 The 44-archive container-free fetch/inspection and the 19 new package materializations are separate from runtime evidence: they prove immutable downloads, safe ZIP structure, binary identity tokens, framework evidence where packaged, and install sidecars without starting Jellyfin. Runtime duration for the expanded 14-matrix campaign must be measured by its first coordinated container run.
 

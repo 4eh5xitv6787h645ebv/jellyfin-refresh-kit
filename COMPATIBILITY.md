@@ -78,7 +78,7 @@ plugin-section rows** and locks **44 immutable archives**, including **40
 testable runtime artifacts**. It is derived from catalog commit
 `a60d3d24fe0e16e59518f95ea4743d8996fa81c9` (2026-08-05); the authoritative
 catalog snapshot SHA-256 is
-`9152f4016c90aad9986883c47e9217ce86bf348c7df89df5bc8c3ac04b7b0265`.
+`49f57cab3c9122c03bc92da3c17c8125cb15041501ad937e2c89206b4ca23029`.
 
 The machine-enforced classifications are:
 
