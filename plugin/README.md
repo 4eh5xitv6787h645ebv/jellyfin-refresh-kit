@@ -349,6 +349,24 @@ observe playback routes, fullscreen or picture-in-picture media, live media
 sessions, active editing, the configured idle window, or a full shared rolling
 reload budget.
 
+Runtime 2.4.7 and newer serialize automatic-reload reservations across
+same-origin tabs and update their authoritative bounded numeric-v1 ledger in
+one IndexedDB `readwrite` transaction. Once the transaction's read is granted,
+an admitting callback synchronously reruns every gate before appending a slot.
+Navigation waits for transaction completion, another full gate pass, and the
+document's current effective-budget check. Equal-millisecond reloads retain
+their multiplicity. A gate that closes before append spends nothing; one that
+closes after commit leaves the slot conservatively spent without navigating.
+
+Read-back-verified `localStorage` and `sessionStorage` values are compatibility
+mirrors: valid histories are max-multiset-merged for migration, but mirrors may
+be stale or written out of order and never replace or reduce IDB authority. On
+first initialization, both legacy stores must be readable and valid (missing is
+a valid empty history); once a valid IDB record exists, unavailable mirrors are
+ignored. Unavailable/corrupt IDB, commit failure, or a bounded wall/monotonic
+timeout fails closed with the update still pending. Each document applies its
+own effective limit; the transaction shares reservations, not settings.
+
 Dialogs and password fields are based on current interactive state, not merely
 on matching DOM nodes:
 
@@ -387,7 +405,7 @@ Dashboard → Plugins → **Jellyfin Refresh Kit**.
 | Ignore settings changes from these plugins | empty | One per line: plugin name, install folder, GUID or assembly name. |
 | Poll interval (seconds) | 60 | Clamped 15–3600 by the client runtime. |
 | Required idle time (seconds) | 5 | Clamped 0–300. |
-| Max reloads per minute | 3 | Clamped 1–100. |
+| Max reloads per minute | 3 | Clamped 1–100 and applied to verified same-origin reservation history. Unavailable coordination defers automatic reload. |
 | Developer mode | off | Serves the client runtime `no-store` and uses a distinct `dev=1` script URL. The marker itself remains `no-store` across setting races, so an immutable production response cannot poison the dev URL. |
 
 ## Endpoints
@@ -760,3 +778,8 @@ artifacts/CI result before claiming a particular revision passed a heavy suite.
   state are outside the light-DOM probes; a blocker there cannot be promised.
 * **Background browser scheduling can delay detection.** A browser may throttle
   or freeze hidden tabs until it allows their JavaScript to run again.
+* **Cross-tab budget serialization requires runtime 2.4.7 or newer in every
+  participating tab.** Older copies write the legacy numeric-v1 storage history
+  but do not update the authoritative ledger inside the IndexedDB transaction.
+  Unavailable/corrupt IDB safely defers automatic reload; unreadable/corrupt
+  legacy stores do the same only while the first IDB record needs migration.

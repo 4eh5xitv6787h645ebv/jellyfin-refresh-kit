@@ -25,6 +25,12 @@ const storageKeys = {
   tab: 'jellyfin-refresh-kit-tab-v1',
 };
 
+const budgetMutex = {
+  db: 'jellyfin-refresh-kit-budget-mutex-v1',
+  store: 'mutex',
+  key: 'reload-budget',
+};
+
 test('a fresh process epoch authorizes one legitimate historical generation rollback', async (t) => {
   let versionRequests = 0;
   let versionResponse = { CacheKey: 'G0', Epoch: 'process-g0-fresh' };
@@ -182,6 +188,150 @@ function fastEpochRuntime(source = runtime) {
   return accelerated;
 }
 
+function fastBudgetRuntime(source = runtime, timeoutMs = null) {
+  let accelerated = fastEpochRuntime(source)
+    .replace('var MIN_SETTLE_MS = 1000;', 'var MIN_SETTLE_MS = 0;')
+    .replace('var RETRY_MS = 1000;', 'var RETRY_MS = 25;')
+    .replace('location.reload();', 'window.__reloadAttempts += 1;');
+  if (timeoutMs !== null) {
+    accelerated = accelerated.replace(
+      'var BUDGET_MUTEX_TIMEOUT_MS = 3000;',
+      `var BUDGET_MUTEX_TIMEOUT_MS = ${timeoutMs};`,
+    );
+  }
+  assert.match(accelerated, /__reloadAttempts \+= 1/, 'test runtime intercepted reload');
+  return accelerated;
+}
+
+async function holdBudgetMutex(page) {
+  await page.evaluate(({ dbName, storeName, key }) => {
+    window.__releaseBudgetMutex = false;
+    window.__budgetMutexHolderReady = false;
+    window.__budgetMutexHolderComplete = false;
+    const open = indexedDB.open(dbName, 1);
+    open.onupgradeneeded = () => {
+      if (!open.result.objectStoreNames.contains(storeName)) {
+        open.result.createObjectStore(storeName);
+      }
+    };
+    open.onerror = () => { window.__budgetMutexHolderError = open.error?.name || 'open-error'; };
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(storeName, 'readwrite');
+      const store = tx.objectStore(storeName);
+      const pump = () => {
+        // Queue a batch before returning to the event loop. Only its tail has
+        // a JS handler, so the holder stays active without a one-task feedback
+        // loop starving the contender pages in headless Chromium.
+        let request;
+        for (let index = 0; index < 256; index += 1) request = store.get(key);
+        request.onsuccess = () => {
+          if (!window.__releaseBudgetMutex) pump();
+        };
+        request.onerror = () => { window.__budgetMutexHolderError = request.error?.name || 'get-error'; };
+      };
+      tx.oncomplete = () => {
+        window.__budgetMutexHolderComplete = true;
+        db.close();
+      };
+      tx.onabort = () => {
+        window.__budgetMutexHolderError = tx.error?.name || 'abort';
+        db.close();
+      };
+      pump();
+      window.__budgetMutexHolderReady = true;
+    };
+  }, {
+    dbName: budgetMutex.db,
+    storeName: budgetMutex.store,
+    key: budgetMutex.key,
+  });
+  await page.waitForFunction(() => (
+    window.__budgetMutexHolderReady === true || window.__budgetMutexHolderError
+  ), { polling: 25 });
+  assert.equal(await page.evaluate(() => window.__budgetMutexHolderError || null), null);
+}
+
+async function releaseBudgetMutex(page) {
+  await page.evaluate(() => { window.__releaseBudgetMutex = true; });
+  await page.waitForFunction(() => (
+    window.__budgetMutexHolderComplete === true || window.__budgetMutexHolderError
+  ), { polling: 25 });
+  assert.equal(await page.evaluate(() => window.__budgetMutexHolderError || null), null);
+}
+
+async function setBudgetLedger(page, history) {
+  await page.evaluate(({ dbName, storeName, key, value }) => new Promise((resolve, reject) => {
+    const open = indexedDB.open(dbName, 1);
+    open.onupgradeneeded = () => {
+      if (!open.result.objectStoreNames.contains(storeName)) {
+        open.result.createObjectStore(storeName);
+      }
+    };
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(storeName, 'readwrite');
+      const store = tx.objectStore(storeName);
+      if (value === null) store.delete(key);
+      else store.put(value, key);
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+  }), {
+    dbName: budgetMutex.db,
+    storeName: budgetMutex.store,
+    key: budgetMutex.key,
+    value: history,
+  });
+}
+
+async function readBudgetLedger(page) {
+  return page.evaluate(({ dbName, storeName, key }) => new Promise((resolve, reject) => {
+    const open = indexedDB.open(dbName, 1);
+    open.onupgradeneeded = () => {
+      if (!open.result.objectStoreNames.contains(storeName)) {
+        open.result.createObjectStore(storeName);
+      }
+    };
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(storeName, 'readonly');
+      const request = tx.objectStore(storeName).get(key);
+      request.onsuccess = () => resolve(request.result === undefined ? null : request.result);
+      request.onerror = () => reject(request.error);
+      tx.oncomplete = () => db.close();
+      tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+  }), { dbName: budgetMutex.db, storeName: budgetMutex.store, key: budgetMutex.key });
+}
+
+async function configureBudgetReloadPage(page, origin, options = {}) {
+  const {
+    name = 'BudgetPage',
+    budget = 1,
+    now = 1_800_000_000_000,
+  } = options;
+  await page.goto(`${origin}/${encodeURIComponent(name)}#/home`);
+  await page.evaluate(({ instanceName, reloadBudget, fixedNow }) => {
+    window.__budgetNow = fixedNow;
+    Date.now = () => window.__budgetNow;
+    window.__reloadAttempts = 0;
+    window.JellyfinRefreshKitConfig = {
+      name: instanceName,
+      mode: 'auto',
+      bootVersion: 'A',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      reloadBudget,
+      hiddenReload: true,
+      hiddenSettleSeconds: 0,
+      getVersion: () => Promise.resolve('B'),
+    };
+  }, { instanceName: name, reloadBudget: budget, fixedNow: now });
+}
+
 async function configureMockEpochPage(page, origin, options) {
   const {
     name,
@@ -267,7 +417,7 @@ async function waitForEpochFetches(page, count) {
 }
 
 function runtimeAtVersion(version) {
-  const marker = "var KIT_VERSION = '2.4.6';";
+  const marker = "var KIT_VERSION = '2.4.7';";
   assert.equal(runtime.split(marker).length, 2, 'runtime must contain one current KIT_VERSION marker');
   return runtime.replace(marker, `var KIT_VERSION = '${version}';`);
 }
@@ -949,7 +1099,7 @@ test('an unresolved tombstone survives a failed-reload watchdog and newest-manag
   )));
 });
 
-test('epoch-gap storage is strict, saturating, and claimed before any reload budget', async (t) => {
+test('epoch-gap storage stays strict and saturating after a committed budget slot', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
   const full = Array.from({ length: 128 }, (_, index) => [`Gap${index}`, `G${index}`]);
@@ -964,7 +1114,10 @@ test('epoch-gap storage is strict, saturating, and claimed before any reload bud
   for (const scenario of cases) {
     const page = await browser.newPage();
     await page.goto(`${origin}/${scenario.name}#/home`);
+    await setBudgetLedger(page, []);
     await page.evaluate(({ keys, item, filled }) => {
+      sessionStorage.removeItem(keys.budget);
+      localStorage.removeItem(keys.budget);
       if (item.behavior === 'corrupt') sessionStorage.setItem(keys.gaps, '{not-json');
       if (item.behavior === 'full') sessionStorage.setItem(keys.gaps, JSON.stringify(filled));
       const nativeGet = Storage.prototype.getItem;
@@ -1032,20 +1185,34 @@ test('epoch-gap storage is strict, saturating, and claimed before any reload bud
     await page.evaluate((instanceName) => (
       window.JellyfinRefreshKit.get(instanceName).checkNow()
     ), scenario.name);
-    await new Promise((resolve) => setTimeout(resolve, 75));
+    const reachedPreflight = ['noop', 'throw', 'full'].includes(scenario.behavior);
+    await page.waitForFunction(({ instanceName, expectPreflight }) => {
+      const state = window.JellyfinRefreshKit.get(instanceName).state();
+      return expectPreflight
+        ? state.lastBlockReason === 'epoch_history'
+        : state.updatePending === false;
+    }, {}, { instanceName: scenario.name, expectPreflight: reachedPreflight });
     const outcome = await page.evaluate(({ keys, instanceName }) => ({
       reloads: window.__reloadAttempts,
       state: window.JellyfinRefreshKit.get(instanceName).state(),
-      sessionBudget: sessionStorage.getItem(keys.budget),
-      localBudget: localStorage.getItem(keys.budget),
+      sessionBudget: JSON.parse(sessionStorage.getItem(keys.budget)),
+      localBudget: JSON.parse(localStorage.getItem(keys.budget)),
     }), { keys: storageKeys, instanceName: scenario.name });
     assert.equal(outcome.reloads, 0);
-    const reachedPreflight = ['noop', 'throw', 'full'].includes(scenario.behavior);
     assert.equal(outcome.state.updatePending, reachedPreflight);
     if (reachedPreflight) assert.equal(outcome.state.lastBlockReason, 'epoch_history');
     assert.equal(outcome.state.authorizedEpoch, null);
-    assert.equal(outcome.sessionBudget, null);
-    assert.equal(outcome.localBudget, null);
+    const ledger = await readBudgetLedger(page);
+    if (reachedPreflight) {
+      assert.equal(outcome.sessionBudget.length, 1,
+        'a post-commit epoch refusal conservatively leaves its reservation spent');
+      assert.deepEqual(outcome.localBudget, outcome.sessionBudget);
+      assert.deepEqual(ledger, outcome.sessionBudget);
+    } else {
+      assert.equal(outcome.sessionBudget, null);
+      assert.equal(outcome.localBudget, null);
+      assert.deepEqual(ledger, []);
+    }
     if (scenario.behavior === 'full') {
       assert.deepEqual(await page.evaluate((keys) => (
         JSON.parse(sessionStorage.getItem(keys.gaps))
@@ -1055,7 +1222,7 @@ test('epoch-gap storage is strict, saturating, and claimed before any reload bud
   }
 });
 
-test('two gap preflight claims fail atomically at one remaining slot without spending budget', async (t) => {
+test('two gap claims fail atomically at one remaining slot after spending one budget slot', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
   const page = await browser.newPage();
@@ -1064,7 +1231,10 @@ test('two gap preflight claims fail atomically at one remaining slot without spe
     `G${index}`,
   ]);
   await page.goto(`${origin}/atomic-gap-capacity#/home`);
+  await setBudgetLedger(page, []);
   await page.evaluate(({ keys, gaps }) => {
+    sessionStorage.removeItem(keys.budget);
+    localStorage.removeItem(keys.budget);
     sessionStorage.setItem(keys.gaps, JSON.stringify(gaps));
     window.__reloadAttempts = 0;
     window.__responses = {
@@ -1121,16 +1291,18 @@ test('two gap preflight claims fail atomically at one remaining slot without spe
     pending: window.JellyfinRefreshKit.get('AtomicGapTrigger').state().updatePending,
     gaps: JSON.parse(sessionStorage.getItem(keys.gaps)),
     left: sessionStorage.getItem(keys.left),
-    sessionBudget: sessionStorage.getItem(keys.budget),
-    localBudget: localStorage.getItem(keys.budget),
+    sessionBudget: JSON.parse(sessionStorage.getItem(keys.budget)),
+    localBudget: JSON.parse(localStorage.getItem(keys.budget)),
   }), storageKeys);
   assert.equal(outcome.reloads, 0);
   assert.equal(outcome.pending, true);
   assert.deepEqual(outcome.gaps, existing,
     'neither of the two new gaps is partially written when only one slot remains');
   assert.equal(outcome.left, null, 'LEFT preflight is not reached');
-  assert.equal(outcome.sessionBudget, null);
-  assert.equal(outcome.localBudget, null);
+  assert.equal(outcome.sessionBudget.length, 1,
+    'the authoritative reservation remains spent when the post-commit gap claim fails');
+  assert.deepEqual(outcome.localBudget, outcome.sessionBudget);
+  assert.deepEqual(await readBudgetLedger(page), outcome.sessionBudget);
 });
 
 test('exact epoch evidence accumulates across a finite round robin while volatile epochs never confirm', async (t) => {
@@ -1345,8 +1517,8 @@ test('newest-wins handoffs preserve candidate evidence and claimed epoch authori
     window.__retainedEpochHandle = window.JellyfinRefreshKit.get('EpochHandoff');
   });
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.7'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.7');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.8'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.8');
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.get('EpochHandoff').state().updatePending === true
   ));
@@ -1357,10 +1529,10 @@ test('newest-wins handoffs preserve candidate evidence and claimed epoch authori
   assert.equal(state.authorizedEpoch, 'handoff-epoch');
   assert.deepEqual(state.candidateEpochEvidence, [{ epoch: 'handoff-epoch', count: 2 }]);
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.8'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.8');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.9'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.9');
   state = await page.evaluate(() => window.__retainedEpochHandle.state());
-  assert.equal(state.kitVersion, '2.4.8');
+  assert.equal(state.kitVersion, '2.4.9');
   assert.equal(state.restoredByHandoff, true);
   assert.equal(state.updatePending, true);
   assert.equal(state.authorizedEpoch, 'handoff-epoch');
@@ -1410,8 +1582,8 @@ test('handoff replaces one held in-flight confirmation without waiting for pollS
     window.JellyfinRefreshKit.get('EpochHeldHandoff').state().candidateEpochEvidence
   )), [{ epoch: 'held-handoff-epoch', count: 1 }]);
 
-  await injectConfiguredRuntime(page, fastEpochRuntime(runtimeAtVersion('2.4.7')), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.7');
+  await injectConfiguredRuntime(page, fastEpochRuntime(runtimeAtVersion('2.4.8')), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.8');
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.get('EpochHeldHandoff').state().updatePending === true
   ));
@@ -1969,7 +2141,10 @@ test('strict LEFT history must verify the transition before any reload attempt',
   for (const scenario of cases) {
     const page = await browser.newPage();
     await page.goto(`${origin}/${scenario.name}#/home`);
+    await setBudgetLedger(page, []);
     await page.evaluate(({ keys, item, filled }) => {
+      sessionStorage.removeItem(keys.budget);
+      localStorage.removeItem(keys.budget);
       if (item.behavior === 'corrupt') sessionStorage.setItem(keys.left, '{not-json');
       if (item.behavior === 'full') sessionStorage.setItem(keys.left, JSON.stringify(filled));
       const nativeGet = Storage.prototype.getItem;
@@ -2014,35 +2189,804 @@ test('strict LEFT history must verify the transition before any reload attempt',
       .replace('location.reload();', 'window.__reloadAttempts += 1;');
     await injectRuntime(page, source);
     await waitForEpochFetches(page, 2);
-    await new Promise((resolve) => setTimeout(resolve, 75));
-    const outcome = await page.evaluate((name) => ({
+    const reachedPreflight = scenario.behavior === 'noop' || scenario.behavior === 'throw'
+      || scenario.behavior === 'full';
+    await page.waitForFunction(({ instanceName, expectPreflight }) => {
+      const state = window.JellyfinRefreshKit.get(instanceName).state();
+      return expectPreflight
+        ? state.lastBlockReason === 'safety_history'
+        : state.updatePending === false;
+    }, {}, { instanceName: scenario.name, expectPreflight: reachedPreflight });
+    const outcome = await page.evaluate(({ name, keys }) => ({
       state: window.JellyfinRefreshKit.get(name).state(),
       reloads: window.__reloadAttempts,
-    }), scenario.name);
+      sessionBudget: JSON.parse(sessionStorage.getItem(keys.budget)),
+      localBudget: JSON.parse(localStorage.getItem(keys.budget)),
+    }), { name: scenario.name, keys: storageKeys });
     assert.equal(outcome.reloads, 0, `${scenario.name} must not call reload`);
-    if (scenario.behavior === 'noop' || scenario.behavior === 'throw' ||
-        scenario.behavior === 'full') {
+    if (reachedPreflight) {
       assert.equal(outcome.state.updatePending, true, `${scenario.name} keeps the pending intent`);
       assert.equal(outcome.state.lastBlockReason, 'safety_history');
     } else {
       assert.equal(outcome.state.updatePending, false,
         `${scenario.name} refuses an update while history is unreadable`);
     }
+    const ledger = await readBudgetLedger(page);
+    if (reachedPreflight) {
+      assert.equal(outcome.sessionBudget.length, 1,
+        `${scenario.name} leaves its committed reservation spent`);
+      assert.deepEqual(outcome.localBudget, outcome.sessionBudget);
+      assert.deepEqual(ledger, outcome.sessionBudget);
+    } else {
+      assert.equal(outcome.sessionBudget, null);
+      assert.equal(outcome.localBudget, null);
+      assert.deepEqual(ledger, []);
+    }
     if (scenario.behavior === 'full') {
       const persisted = await page.evaluate((keys) => ({
         left: JSON.parse(sessionStorage.getItem(keys.left)),
-        sessionBudget: sessionStorage.getItem(keys.budget),
-        localBudget: localStorage.getItem(keys.budget),
       }), storageKeys);
       assert.deepEqual(persisted.left, full,
         'full LEFT history never FIFO-evicts older evidence');
-      assert.equal(persisted.sessionBudget, null,
-        'LEFT refusal happens before consuming a session reload slot');
-      assert.equal(persisted.localBudget, null,
-        'LEFT refusal happens before consuming a shared reload slot');
     }
     await page.close();
   }
+});
+
+test('equal-millisecond multiplicity, mirror max-union, and mixed-budget history are preserved', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const source = fastBudgetRuntime();
+  const fixedNow = 1_800_000_000_000;
+  const outcomes = [];
+
+  for (let index = 0; index < 4; index += 1) {
+    const page = await browser.newPage();
+    await configureBudgetReloadPage(page, origin, {
+      name: `EqualMillisecond${index + 1}`,
+      budget: 3,
+      now: fixedNow,
+    });
+    await injectRuntime(page, source);
+    if (index < 3) {
+      await page.waitForFunction(() => window.__reloadAttempts === 1);
+    } else {
+      await page.waitForFunction(() => (
+        window.JellyfinRefreshKit.state().shared.lastBlockReason === 'reload_budget'
+      ));
+    }
+    const outcome = await page.evaluate((keys) => ({
+      reloads: window.__reloadAttempts,
+      local: JSON.parse(localStorage.getItem(keys.budget)),
+    }), storageKeys);
+    outcome.ledger = await readBudgetLedger(page);
+    outcomes.push(outcome);
+    await page.close();
+  }
+
+  assert.deepEqual(outcomes.map((entry) => entry.reloads), [1, 1, 1, 0]);
+  assert.deepEqual(outcomes[3].ledger, [fixedNow, fixedNow, fixedNow],
+    'three legitimate reservations made in one millisecond remain three spent slots');
+
+  const maxUnion = await browser.newPage();
+  await configureBudgetReloadPage(maxUnion, origin, {
+    name: 'BudgetMaxUnion', budget: 3, now: fixedNow + 1,
+  });
+  await setBudgetLedger(maxUnion, [fixedNow + 1]);
+  await maxUnion.evaluate(({ keys, stamp }) => {
+    localStorage.setItem(keys.budget, JSON.stringify([stamp, stamp]));
+    sessionStorage.setItem(keys.budget, JSON.stringify([stamp]));
+  }, { keys: storageKeys, stamp: fixedNow + 1 });
+  await injectRuntime(maxUnion, source);
+  await maxUnion.waitForFunction(() => window.__reloadAttempts === 1);
+  assert.deepEqual(await readBudgetLedger(maxUnion), [
+    fixedNow + 1, fixedNow + 1, fixedNow + 1,
+  ], 'mirrors can add migration multiplicity but are max-unioned rather than summed');
+  await maxUnion.close();
+
+  const mixedHistory = [fixedNow + 10, fixedNow + 11, fixedNow + 12];
+  const lowBudget = await browser.newPage();
+  await configureBudgetReloadPage(lowBudget, origin, {
+    name: 'BudgetLowCeiling', budget: 1, now: fixedNow + 13,
+  });
+  await setBudgetLedger(lowBudget, mixedHistory);
+  await lowBudget.evaluate((keys) => {
+    localStorage.removeItem(keys.budget);
+    sessionStorage.removeItem(keys.budget);
+  }, storageKeys);
+  await injectRuntime(lowBudget, source);
+  await lowBudget.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.lastBlockReason === 'reload_budget'
+  ));
+  assert.deepEqual(await readBudgetLedger(lowBudget), mixedHistory,
+    'a budget-1 document never truncates full authority to its own ceiling');
+  await lowBudget.close();
+
+  const highBudget = await browser.newPage();
+  await configureBudgetReloadPage(highBudget, origin, {
+    name: 'BudgetHighCeiling', budget: 4, now: fixedNow + 13,
+  });
+  await injectRuntime(highBudget, source);
+  await highBudget.waitForFunction(() => window.__reloadAttempts === 1);
+  assert.deepEqual(await readBudgetLedger(highBudget), mixedHistory.concat([fixedNow + 13]),
+    'a later higher-budget document sees every slot retained by the lower-budget reader');
+});
+
+test('overlapping tabs serialize behind the actual readwrite request and admit only one', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const holder = await browser.newPage();
+  await holder.goto(`${origin}/budget-holder`);
+  await holdBudgetMutex(holder);
+
+  const pages = [await browser.newPage(), await browser.newPage()];
+  for (let index = 0; index < pages.length; index += 1) {
+    await configureBudgetReloadPage(pages[index], origin, {
+      name: `SerializedBudget${index + 1}`,
+      budget: 1,
+      now: 1_800_000_100_000 + index,
+    });
+    await pages[index].evaluate((keys) => {
+      // Deliberately pin each renderer to its own stale pre-reservation view.
+      // This reproduces the single-core Chromium localStorage incoherence that
+      // made a serialized localStorage RMW authorize both tabs.
+      const nativeGet = Storage.prototype.getItem;
+      const staleLocalBudget = nativeGet.call(localStorage, keys.budget);
+      Storage.prototype.getItem = function staleBudgetRead(key) {
+        if (this === localStorage && key === keys.budget) return staleLocalBudget;
+        return nativeGet.call(this, key);
+      };
+      const nativeFactory = window.indexedDB;
+      const nativeOpen = nativeFactory.open.bind(nativeFactory);
+      window.__budgetOpenCalls = 0;
+      window.__budgetTransactionCalls = 0;
+      Object.defineProperty(window, 'indexedDB', {
+        configurable: true,
+        value: {
+          open(...args) {
+            window.__budgetOpenCalls += 1;
+            const request = nativeOpen(...args);
+            request.addEventListener('success', () => {
+              const db = request.result;
+              const nativeTransaction = db.transaction.bind(db);
+              Object.defineProperty(db, 'transaction', {
+                configurable: true,
+                value(scopes, mode, ...rest) {
+                  if (scopes === 'mutex' && mode === 'readwrite') {
+                    window.__budgetTransactionCalls += 1;
+                  }
+                  return nativeTransaction(scopes, mode, ...rest);
+                },
+              });
+            }, { once: true });
+            return request;
+          },
+        },
+      });
+    }, storageKeys);
+  }
+
+  const source = fastBudgetRuntime(runtime, 15_000);
+  for (const page of pages) {
+    await injectRuntime(page, source);
+    await page.waitForFunction(() => window.__budgetTransactionCalls === 1, { polling: 25 });
+  }
+  const acquisition = await Promise.all(pages.map((page) => page.evaluate(() => ({
+    pending: window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending,
+    reason: window.JellyfinRefreshKit.state().shared.lastBlockReason,
+  }))));
+  assert.deepEqual(acquisition, [
+    { pending: true, reason: null },
+    { pending: true, reason: null },
+  ]);
+
+  await Promise.all(pages.map((page) => page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new PageTransitionEvent('pageshow'));
+    return window.JellyfinRefreshKit.checkNow();
+  })));
+  const queued = await Promise.all(pages.map((page) => page.evaluate((keys) => ({
+    reloads: window.__reloadAttempts,
+    opens: window.__budgetOpenCalls,
+    transactions: window.__budgetTransactionCalls,
+    pending: window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending,
+    local: localStorage.getItem(keys.budget),
+  }), storageKeys)));
+  assert.deepEqual(queued.map((entry) => entry.reloads), [0, 0]);
+  assert.deepEqual(queued.map((entry) => entry.opens), [1, 1],
+    'wake/check bursts join each tab\'s one in-flight reservation');
+  assert.deepEqual(queued.map((entry) => entry.transactions), [1, 1],
+    'both overlapping readwrite transactions are queued before the holder releases');
+  assert.deepEqual(queued.map((entry) => entry.pending), [true, true]);
+  assert.equal(queued[0].local, null,
+    'opening the database and constructing a transaction do not enter the critical section');
+
+  await releaseBudgetMutex(holder);
+  await Promise.all(pages.map((page) => page.waitForFunction(() => (
+    window.__reloadAttempts === 1
+      || window.JellyfinRefreshKit.state().shared.lastBlockReason === 'reload_budget'
+  ), { polling: 25 })));
+  const results = await Promise.all(pages.map((page) => page.evaluate(() => ({
+    reloads: window.__reloadAttempts,
+    reason: window.JellyfinRefreshKit.state().shared.lastBlockReason,
+  }))));
+  assert.equal(results.reduce((sum, entry) => sum + entry.reloads, 0), 1);
+  assert.equal(results.filter((entry) => entry.reason === 'reload_budget').length, 1);
+  assert.equal((await readBudgetLedger(pages[0])).length, 1,
+    'stale renderer-local mirrors cannot overwrite or lose the authoritative reservation');
+});
+
+test('the granted mutex callback reruns gates before durable claims', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const holder = await browser.newPage();
+  await holder.goto(`${origin}/final-gate-holder`);
+  await holdBudgetMutex(holder);
+
+  const page = await browser.newPage();
+  await configureBudgetReloadPage(page, origin, {
+    name: 'BudgetFinalGate', budget: 1, now: 1_800_000_200_000,
+  });
+  await page.evaluate((storeName) => {
+    window.__closeGateOnBudgetCommit = false;
+    const nativeTransaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function budgetCommitGate(...args) {
+      const tx = nativeTransaction.apply(this, args);
+      if (args[0] === storeName && args[1] === 'readwrite') {
+        // Registered before the runtime assigns tx.oncomplete, so this models
+        // a gate changing after durable commit but before its final callback.
+        tx.addEventListener('complete', () => {
+          if (!window.__closeGateOnBudgetCommit) return;
+          window.__closeGateOnBudgetCommit = false;
+          const dialog = document.createElement('dialog');
+          dialog.id = 'budget-post-commit-gate';
+          dialog.setAttribute('open', '');
+          document.body.appendChild(dialog);
+        });
+      }
+      return tx;
+    };
+  }, budgetMutex.store);
+  await injectRuntime(page, fastBudgetRuntime(runtime, 15_000));
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === true
+  ));
+  await page.evaluate(() => {
+    const dialog = document.createElement('dialog');
+    dialog.id = 'budget-final-gate';
+    dialog.setAttribute('open', '');
+    document.body.appendChild(dialog);
+  });
+  await releaseBudgetMutex(holder);
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.lastBlockReason === 'dialog'
+      && window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === false
+  ));
+  const blocked = await page.evaluate((keys) => ({
+    reloads: window.__reloadAttempts,
+    localBudget: JSON.parse(localStorage.getItem(keys.budget)),
+    sessionBudget: JSON.parse(sessionStorage.getItem(keys.budget)),
+    left: sessionStorage.getItem(keys.left),
+  }), storageKeys);
+  assert.deepEqual(blocked, {
+    reloads: 0,
+    localBudget: null,
+    sessionBudget: null,
+    left: null,
+  }, 'a gate which closes while queued aborts before IDB, mirror, epoch, LEFT, or reload claims');
+  assert.equal(await readBudgetLedger(page), null);
+
+  await page.evaluate(() => {
+    document.querySelector('#budget-final-gate').remove();
+    window.__closeGateOnBudgetCommit = true;
+    document.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await page.waitForFunction(() => (
+    document.querySelector('#budget-post-commit-gate')
+      && window.JellyfinRefreshKit.state().shared.lastBlockReason === 'dialog'
+      && window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === false
+  ));
+  assert.deepEqual(await page.evaluate((keys) => ({
+    reloads: window.__reloadAttempts,
+    localBudget: JSON.parse(localStorage.getItem(keys.budget)),
+    sessionBudget: JSON.parse(sessionStorage.getItem(keys.budget)),
+    left: sessionStorage.getItem(keys.left),
+  }), storageKeys), {
+    reloads: 0,
+    localBudget: [1_800_000_200_000],
+    sessionBudget: [1_800_000_200_000],
+    left: null,
+  }, 'a gate which closes after commit leaves the IDB slot spent but blocks durable navigation claims');
+  assert.deepEqual(await readBudgetLedger(page), [1_800_000_200_000]);
+
+  await page.evaluate(() => {
+    window.__budgetNow += 60_001;
+    document.querySelector('#budget-post-commit-gate').remove();
+    document.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await page.waitForFunction(() => window.__reloadAttempts === 1);
+});
+
+test('a full first-run history is migrated even when a user gate closes while queued', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const holder = await browser.newPage();
+  await holder.goto(`${origin}/denied-migration-holder`);
+  await setBudgetLedger(holder, null);
+  await holdBudgetMutex(holder);
+
+  const page = await browser.newPage();
+  const now = 1_800_000_250_000;
+  await configureBudgetReloadPage(page, origin, {
+    name: 'BudgetDeniedMigration', budget: 1, now,
+  });
+  await page.evaluate(({ keys, stamp }) => {
+    const full = JSON.stringify([stamp]);
+    localStorage.setItem(keys.budget, full);
+    sessionStorage.setItem(keys.budget, full);
+  }, { keys: storageKeys, stamp: now });
+  await injectRuntime(page, fastBudgetRuntime(runtime, 15_000));
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === true
+  ));
+  await page.evaluate(() => {
+    const dialog = document.createElement('dialog');
+    dialog.id = 'denied-migration-gate';
+    dialog.setAttribute('open', '');
+    document.body.appendChild(dialog);
+  });
+  await releaseBudgetMutex(holder);
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.lastBlockReason === 'reload_budget'
+      && window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === false
+  ));
+  assert.deepEqual(await readBudgetLedger(page), [now],
+    'budget denial repairs missing IDB authority even though navigation gates are now closed');
+  assert.deepEqual(await page.evaluate((keys) => ({
+    reloads: window.__reloadAttempts,
+    dialogOpen: document.querySelector('#denied-migration-gate')?.open === true,
+    left: sessionStorage.getItem(keys.left),
+  }), storageKeys), { reloads: 0, dialogOpen: true, left: null });
+});
+
+test('a queued user gate repairs under-budget mirror evidence without appending a slot', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const scenarios = [
+    { name: 'MissingAuthorityRepair', canonical: null, localCopies: 1, expectedCopies: 1 },
+    { name: 'StaleAuthorityRepair', canonical: 1, localCopies: 2, expectedCopies: 2 },
+  ];
+
+  for (let index = 0; index < scenarios.length; index += 1) {
+    const scenario = scenarios[index];
+    const stamp = 1_800_000_275_000 + index;
+    const holder = await browser.newPage();
+    await holder.goto(`${origin}/under-budget-repair-holder-${index}`);
+    await setBudgetLedger(holder, scenario.canonical === null
+      ? null : Array(scenario.canonical).fill(stamp));
+    await holdBudgetMutex(holder);
+
+    const page = await browser.newPage();
+    await configureBudgetReloadPage(page, origin, {
+      name: scenario.name, budget: 3, now: stamp,
+    });
+    await page.evaluate(({ keys, value, copies }) => {
+      localStorage.setItem(keys.budget, JSON.stringify(Array(copies).fill(value)));
+      sessionStorage.setItem(keys.budget, JSON.stringify([value]));
+    }, { keys: storageKeys, value: stamp, copies: scenario.localCopies });
+    await injectRuntime(page, fastBudgetRuntime(runtime, 15_000));
+    await page.waitForFunction(() => (
+      window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === true
+    ));
+    await page.evaluate(() => {
+      const dialog = document.createElement('dialog');
+      dialog.id = 'under-budget-repair-gate';
+      dialog.setAttribute('open', '');
+      document.body.appendChild(dialog);
+    });
+    await releaseBudgetMutex(holder);
+    await page.waitForFunction(() => (
+      window.JellyfinRefreshKit.state().shared.lastBlockReason === 'dialog'
+        && window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === false
+    ));
+
+    const expected = Array(scenario.expectedCopies).fill(stamp);
+    assert.deepEqual(await readBudgetLedger(page), expected,
+      `${scenario.name} makes merged legacy evidence authoritative without a new timestamp`);
+    assert.deepEqual(await page.evaluate((keys) => ({
+      reloads: window.__reloadAttempts,
+      local: JSON.parse(localStorage.getItem(keys.budget)),
+      session: JSON.parse(sessionStorage.getItem(keys.budget)),
+      left: sessionStorage.getItem(keys.left),
+    }), storageKeys), {
+      reloads: 0,
+      local: expected,
+      session: expected,
+      left: null,
+    });
+    await page.close();
+    await holder.close();
+  }
+});
+
+test('first IDB migration requires readable legacy history, then mirrors are best effort', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const scenarios = [
+    { name: 'FirstLocalUnreadable', behavior: 'local-read', canonical: null, reloads: 0 },
+    { name: 'FirstSessionUnreadable', behavior: 'session-fail', canonical: null, reloads: 0 },
+    { name: 'CanonicalLocalUnreadable', behavior: 'local-read', canonical: [], reloads: 1 },
+    { name: 'CanonicalLocalSilentWrite', behavior: 'local-noop', canonical: [], reloads: 1 },
+    { name: 'CanonicalLocalOversized', behavior: 'local-oversized', canonical: [], reloads: 1 },
+    { name: 'CanonicalSessionUnavailable', behavior: 'session-fail', canonical: [], reloads: 1 },
+  ];
+
+  for (const scenario of scenarios) {
+    const page = await browser.newPage();
+    await configureBudgetReloadPage(page, origin, {
+      name: scenario.name, budget: 1, now: 1_800_000_300_000,
+    });
+    await setBudgetLedger(page, scenario.canonical);
+    await page.evaluate(({ keys, behavior }) => {
+      localStorage.removeItem(keys.budget);
+      sessionStorage.removeItem(keys.budget);
+      if (behavior === 'local-oversized') {
+        localStorage.setItem(keys.budget, JSON.stringify(Array(101).fill(Date.now())));
+      }
+      const nativeGet = Storage.prototype.getItem;
+      const nativeSet = Storage.prototype.setItem;
+      Storage.prototype.getItem = function budgetGet(key) {
+        if (key === keys.budget && behavior === 'local-read' && this === localStorage) {
+          throw new DOMException('blocked local read', 'SecurityError');
+        }
+        if (key === keys.budget && behavior === 'session-fail' && this === sessionStorage) {
+          throw new DOMException('blocked session read', 'SecurityError');
+        }
+        return nativeGet.call(this, key);
+      };
+      Storage.prototype.setItem = function budgetSet(key, value) {
+        if (key === keys.budget && behavior === 'local-noop' && this === localStorage) return undefined;
+        if (key === keys.budget && behavior === 'session-fail' && this === sessionStorage) {
+          throw new DOMException('blocked session write', 'QuotaExceededError');
+        }
+        return nativeSet.call(this, key, value);
+      };
+    }, { keys: storageKeys, behavior: scenario.behavior });
+    await injectRuntime(page, fastBudgetRuntime());
+    if (scenario.reloads === 1) {
+      await page.waitForFunction(() => window.__reloadAttempts === 1);
+    } else {
+      await page.waitForFunction(() => (
+        window.JellyfinRefreshKit.state().shared.lastBlockReason === 'reload_budget'
+      ));
+    }
+    const outcome = await page.evaluate((keys) => ({
+      reloads: window.__reloadAttempts,
+      pending: window.JellyfinRefreshKit.state().updatePending,
+      local: (() => {
+        try { return localStorage.getItem(keys.budget); } catch (_) { return '<unreadable>'; }
+      })(),
+    }), storageKeys);
+    assert.equal(outcome.reloads, scenario.reloads, scenario.name);
+    assert.equal(outcome.pending, scenario.reloads === 0, `${scenario.name} preserves pending intent on refusal`);
+    assert.deepEqual(await readBudgetLedger(page), scenario.reloads === 1
+      ? [1_800_000_300_000] : null,
+    `${scenario.name} authority is the IDB record`);
+    await page.close();
+  }
+});
+
+test('IndexedDB absence, schema/open failure, timeout, late success, and abort all fail closed', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const scenarios = [
+    'absent', 'open-throw', 'timeout', 'late-success', 'abort', 'missing-store', 'higher-version',
+    'stored-undefined',
+  ];
+
+  for (const behavior of scenarios) {
+    const page = await browser.newPage();
+    await configureBudgetReloadPage(page, origin, {
+      name: `BudgetIdb${behavior}`, budget: 1, now: 1_800_000_400_000,
+    });
+    await page.evaluate(({ keys, mode, dbName, storeName, ledgerKey }) => new Promise((resolve, reject) => {
+      localStorage.removeItem(keys.budget);
+      sessionStorage.removeItem(keys.budget);
+      const deletion = indexedDB.deleteDatabase(dbName);
+      deletion.onerror = () => reject(deletion.error);
+      deletion.onblocked = () => reject(new Error('mutex database deletion blocked'));
+      deletion.onsuccess = () => {
+        if (mode === 'missing-store' || mode === 'higher-version' || mode === 'stored-undefined') {
+          const seeded = indexedDB.open(dbName, mode === 'higher-version' ? 2 : 1);
+          seeded.onerror = () => reject(seeded.error);
+          seeded.onupgradeneeded = () => {
+            seeded.result.createObjectStore(mode === 'missing-store' ? 'wrong-store' : storeName);
+          };
+          seeded.onsuccess = () => {
+            if (mode !== 'stored-undefined') {
+              seeded.result.close();
+              resolve();
+              return;
+            }
+            const tx = seeded.result.transaction(storeName, 'readwrite');
+            tx.objectStore(storeName).put(undefined, ledgerKey);
+            tx.oncomplete = () => { seeded.result.close(); resolve(); };
+            tx.onabort = () => { seeded.result.close(); reject(tx.error); };
+          };
+          return;
+        }
+        if (mode === 'absent') {
+          Object.defineProperty(window, 'indexedDB', { configurable: true, value: undefined });
+        } else if (mode === 'open-throw') {
+          Object.defineProperty(window, 'indexedDB', {
+            configurable: true,
+            value: {
+              open() { throw new DOMException('IndexedDB disabled', 'SecurityError'); },
+            },
+          });
+        } else if (mode === 'timeout') {
+          Object.defineProperty(window, 'indexedDB', {
+            configurable: true,
+            value: { open() { return {}; } },
+          });
+        } else if (mode === 'late-success') {
+          window.__lateBudgetCloseCalls = 0;
+          window.__lateBudgetTransactionCalls = 0;
+          Object.defineProperty(window, 'indexedDB', {
+            configurable: true,
+            value: {
+              open() {
+                const request = {};
+                const db = {
+                  close() { window.__lateBudgetCloseCalls += 1; },
+                  transaction() { window.__lateBudgetTransactionCalls += 1; },
+                };
+                setTimeout(() => {
+                  request.result = db;
+                  if (typeof request.onsuccess === 'function') request.onsuccess();
+                }, 100);
+                return request;
+              },
+            },
+          });
+        } else {
+          // Abort the real dummy request before its success task can grant the
+          // critical section.
+          const nativeGet = IDBObjectStore.prototype.get;
+          IDBObjectStore.prototype.get = function abortingGet(...args) {
+            const request = nativeGet.apply(this, args);
+            if (this.name === storeName && this.transaction.mode === 'readwrite') {
+              const tx = this.transaction;
+              queueMicrotask(() => {
+                try { tx.abort(); } catch (_) { /* transaction already inactive */ }
+              });
+            }
+            return request;
+          };
+        }
+        resolve();
+      };
+    }), {
+      keys: storageKeys,
+      mode: behavior,
+      dbName: budgetMutex.db,
+      storeName: budgetMutex.store,
+      ledgerKey: budgetMutex.key,
+    });
+    await injectRuntime(page, fastBudgetRuntime(runtime, 50));
+    await page.waitForFunction(() => (
+      window.JellyfinRefreshKit.state().shared.lastBlockReason === 'reload_budget'
+        && window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === false
+    ));
+    if (behavior === 'late-success') {
+      await page.waitForFunction(() => window.__lateBudgetCloseCalls === 1);
+      assert.equal(await page.evaluate(() => window.__lateBudgetTransactionCalls), 0,
+        'a success callback arriving after timeout closes without constructing a transaction');
+    }
+    const result = await page.evaluate((keys) => ({
+      reloads: window.__reloadAttempts,
+      pending: window.JellyfinRefreshKit.state().updatePending,
+      local: localStorage.getItem(keys.budget),
+    }), storageKeys);
+    assert.deepEqual(result, { reloads: 0, pending: true, local: null }, behavior);
+    if (behavior === 'stored-undefined') {
+      assert.equal(await page.evaluate(({ dbName, storeName, key }) => new Promise((resolve, reject) => {
+        const open = indexedDB.open(dbName, 1);
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const tx = db.transaction(storeName, 'readonly');
+          const count = tx.objectStore(storeName).count(key);
+          count.onsuccess = () => resolve(count.result);
+          count.onerror = () => reject(count.error);
+          tx.oncomplete = () => db.close();
+        };
+      }), { dbName: budgetMutex.db, storeName: budgetMutex.store, key: budgetMutex.key }), 1,
+      'a present undefined value is corrupt authority, not first-run migration');
+    }
+    await page.close();
+  }
+});
+
+test('wall and monotonic deadlines reject overdue or backward callbacks before navigation', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const scenarios = [
+    { behavior: 'overdue-get', committed: false },
+    { behavior: 'overdue-put', committed: false },
+    { behavior: 'overdue-complete', committed: true },
+    { behavior: 'backward-get', committed: false },
+  ];
+
+  for (const scenario of scenarios) {
+    const page = await browser.newPage();
+    await configureBudgetReloadPage(page, origin, {
+      name: `BudgetDeadline${scenario.behavior}`,
+      budget: 3,
+      now: 1_800_000_450_000,
+    });
+    await setBudgetLedger(page, []);
+    await page.evaluate(({ mode, storeName }) => {
+      const burnPastDeadline = () => {
+        const started = performance.now();
+        while (performance.now() - started < 75) { /* block timeout task ordering */ }
+      };
+      if (mode === 'overdue-get' || mode === 'backward-get') {
+        const nativeGet = IDBObjectStore.prototype.get;
+        IDBObjectStore.prototype.get = function delayedGet(...args) {
+          const request = nativeGet.apply(this, args);
+          if (this.name === storeName && this.transaction.mode === 'readwrite') {
+            request.addEventListener('success', () => {
+              if (mode === 'backward-get') window.__budgetNow -= 1;
+              else burnPastDeadline();
+            }, { once: true });
+          }
+          return request;
+        };
+      } else if (mode === 'overdue-put') {
+        const nativePut = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function delayedPut(...args) {
+          const request = nativePut.apply(this, args);
+          if (this.name === storeName && this.transaction.mode === 'readwrite') {
+            request.addEventListener('success', burnPastDeadline, { once: true });
+          }
+          return request;
+        };
+      } else {
+        const nativeTransaction = IDBDatabase.prototype.transaction;
+        IDBDatabase.prototype.transaction = function delayedComplete(...args) {
+          const tx = nativeTransaction.apply(this, args);
+          if (args[0] === storeName && args[1] === 'readwrite') {
+            tx.addEventListener('complete', burnPastDeadline, { once: true });
+          }
+          return tx;
+        };
+      }
+    }, { mode: scenario.behavior, storeName: budgetMutex.store });
+
+    await injectRuntime(page, fastBudgetRuntime(runtime, 50));
+    await page.waitForFunction(() => (
+      window.JellyfinRefreshKit.state().shared.lastBlockReason === 'reload_budget'
+        && window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === false
+    ));
+    assert.deepEqual(await page.evaluate(() => ({
+      reloads: window.__reloadAttempts,
+      pending: window.JellyfinRefreshKit.state().updatePending,
+    })), { reloads: 0, pending: true }, scenario.behavior);
+    assert.deepEqual(await readBudgetLedger(page), scenario.committed
+      ? [1_800_000_450_000] : [],
+    `${scenario.behavior} preserves only a transaction which had already committed`);
+    await page.close();
+  }
+});
+
+test('pagehide and freeze invalidate queued tokens and their matching wake retries safely', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const cases = [
+    { pauseTarget: 'window', pause: 'pagehide', resumeTarget: 'window', resume: 'pageshow' },
+    { pauseTarget: 'document', pause: 'freeze', resumeTarget: 'document', resume: 'resume' },
+  ];
+
+  for (let index = 0; index < cases.length; index += 1) {
+    const lifecycle = cases[index];
+    const holder = await browser.newPage();
+    await holder.goto(`${origin}/lifecycle-holder-${index}`);
+    await setBudgetLedger(holder, null);
+    await holdBudgetMutex(holder);
+    const page = await browser.newPage();
+    await configureBudgetReloadPage(page, origin, {
+      name: `BudgetLifecycle${index}`, budget: 1, now: 1_800_000_500_000 + index,
+    });
+    await page.evaluate((keys) => { localStorage.removeItem(keys.budget); }, storageKeys);
+    await injectRuntime(page, fastBudgetRuntime(runtime, 15_000));
+    await page.waitForFunction(() => (
+      window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === true
+    ));
+    await page.evaluate(({ targetName, eventName }) => {
+      const target = targetName === 'window' ? window : document;
+      target.dispatchEvent(new Event(eventName));
+    }, { targetName: lifecycle.pauseTarget, eventName: lifecycle.pause });
+    await page.waitForFunction(() => (
+      window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === false
+    ));
+    await releaseBudgetMutex(holder);
+
+    // Queue a probe transaction after the holder: its completion proves every
+    // earlier contender has either completed or been removed from the queue.
+    await page.evaluate(({ dbName, storeName, key }) => new Promise((resolve, reject) => {
+      const open = indexedDB.open(dbName, 1);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction(storeName, 'readwrite');
+        tx.objectStore(storeName).get(key);
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onabort = () => reject(tx.error);
+      };
+    }), { dbName: budgetMutex.db, storeName: budgetMutex.store, key: budgetMutex.key });
+    assert.deepEqual(await page.evaluate((keys) => ({
+      reloads: window.__reloadAttempts,
+      local: localStorage.getItem(keys.budget),
+    }), storageKeys), { reloads: 0, local: null }, `${lifecycle.pause} cancels without claiming`);
+
+    await page.evaluate(({ targetName, eventName }) => {
+      const target = targetName === 'window' ? window : document;
+      target.dispatchEvent(new Event(eventName));
+    }, { targetName: lifecycle.resumeTarget, eventName: lifecycle.resume });
+    await page.waitForFunction(() => window.__reloadAttempts === 1);
+    await page.close();
+    await holder.close();
+  }
+});
+
+test('newest-wins handoff invalidates the retired queued token before retrying once', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const holder = await browser.newPage();
+  await holder.goto(`${origin}/handoff-budget-holder`);
+  await holdBudgetMutex(holder);
+  const page = await browser.newPage();
+  await configureBudgetReloadPage(page, origin, {
+    name: 'BudgetHandoff', budget: 1, now: 1_800_000_600_000,
+  });
+  await injectRuntime(page, fastBudgetRuntime(runtime, 15_000));
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === true
+  ));
+
+  await page.evaluate(() => {
+    window.JellyfinRefreshKitConfig = {
+      name: 'BudgetHandoff',
+      mode: 'auto',
+      bootVersion: 'A',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      reloadBudget: 1,
+      hiddenReload: true,
+      hiddenSettleSeconds: 0,
+      getVersion: () => Promise.resolve('B'),
+    };
+  });
+  await injectRuntime(page, fastBudgetRuntime(runtimeAtVersion('2.4.8'), 15_000));
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.kitVersion === '2.4.8'
+      && window.JellyfinRefreshKit.state().instanceCount === 1
+      && window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === true
+  ));
+  await releaseBudgetMutex(holder);
+  await page.waitForFunction(() => window.__reloadAttempts === 1);
+  assert.deepEqual(await page.evaluate((keys) => ({
+    version: window.JellyfinRefreshKit.kitVersion,
+    instances: window.JellyfinRefreshKit.state().instanceCount,
+    reloads: window.__reloadAttempts,
+    budget: JSON.parse(localStorage.getItem(keys.budget)),
+  }), storageKeys), {
+    version: '2.4.8',
+    instances: 1,
+    reloads: 1,
+    budget: [1_800_000_600_000],
+  });
 });
 
 test('a reload stamp made future-relative by a backward clock adjustment remains spent', async (t) => {
@@ -2144,7 +3088,7 @@ test('a backward clock step cannot bank the post-playback idle relaxation', asyn
   });
 });
 
-test('budget refusal retracts only LEFT records newly preclaimed by that attempt', async (t) => {
+test('budget refusal does not touch existing LEFT evidence', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
   const page = await browser.newPage();
@@ -2179,7 +3123,10 @@ test('budget refusal retracts only LEFT records newly preclaimed by that attempt
     .replace('location.reload();', 'window.__reloadAttempts += 1;');
   await injectRuntime(page, source);
   await waitForEpochFetches(page, 2);
-  await new Promise((resolve) => setTimeout(resolve, 75));
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.get('BudgetLeftTransaction').state().lastBlockReason
+      === 'reload_budget'
+  ));
   const result = await page.evaluate((keys) => ({
     reloads: window.__reloadAttempts,
     left: JSON.parse(sessionStorage.getItem(keys.left)),
@@ -2189,7 +3136,9 @@ test('budget refusal retracts only LEFT records newly preclaimed by that attempt
   assert.equal(result.state.updatePending, true);
   assert.equal(result.state.lastBlockReason, 'reload_budget');
   assert.deepEqual(result.left, ['OlderInstance|G0'],
-    'the new baseline marker is retracted without touching older LEFT evidence');
+    'budget denial happens before any new LEFT claim and preserves older evidence');
+  assert.equal((await readBudgetLedger(page)).length, 1,
+    'first-run denial migrates the full legacy history into IDB authority');
 });
 
 test('committed reload preclaims every baseline and freezes a held late confirmation', async (t) => {
@@ -3133,8 +4082,8 @@ test('retained instance handles follow chained newest-wins handoffs', async (t) 
 
   await injectConfiguredRuntime(page, runtime, attributes);
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit?.kitVersion === '2.4.6'
-      && window.JellyfinRefreshKit.get('RetainedHandoffTest')?.state().kitVersion === '2.4.6'
+    window.JellyfinRefreshKit?.kitVersion === '2.4.7'
+      && window.JellyfinRefreshKit.get('RetainedHandoffTest')?.state().kitVersion === '2.4.7'
   ));
 
   const afterHandoffs = await page.evaluate(() => {
@@ -3166,23 +4115,23 @@ test('retained instance handles follow chained newest-wins handoffs', async (t) 
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.6',
+      stateKitVersion: '2.4.7',
     },
     middle: {
       name: 'RetainedHandoffTest',
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.6',
+      stateKitVersion: '2.4.7',
     },
     current: {
       name: 'RetainedHandoffTest',
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.6',
+      stateKitVersion: '2.4.7',
     },
-    lineage: ['2.4.3', '2.4.4', '2.4.6'],
+    lineage: ['2.4.3', '2.4.4', '2.4.7'],
     handoffs: 2,
   });
   assert.equal(requestCount, 2, 'only the replacement may retry the interrupted baseline fetch');
@@ -3266,15 +4215,15 @@ test('a 2.4.6+ createElement wrapper retained before handoff delegates to the ne
 
   await injectConfiguredRuntime(page, runtime, attributes);
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit?.kitVersion === '2.4.6'
+    window.JellyfinRefreshKit?.kitVersion === '2.4.7'
       && window.JellyfinRefreshKit.state().interceptorInstalled === true
   ));
   await page.evaluate(() => { window.__retainedCreateElement = document.createElement; });
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.7'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.7');
   await injectConfiguredRuntime(page, runtimeAtVersion('2.4.8'), attributes);
   await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.8');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.9'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.9');
 
   const urls = await page.evaluate(() => {
     const retainedScript = window.__retainedCreateElement.call(document, 'script');
@@ -3319,7 +4268,7 @@ test('the exact released 2.4.2 retained wrapper stays inert after a 2.4.6 handof
   });
 
   await injectConfiguredRuntime(page, runtime, attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.6');
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.7');
 
   const observed = await page.evaluate(() => {
     const retained = window.__historicalCreateElement.call(document, 'script');
@@ -3338,7 +4287,7 @@ test('the exact released 2.4.2 retained wrapper stays inert after a 2.4.6 handof
     retained: '/captured-assets/from-retained-2.4.2.js',
     preHandoff: '/captured-assets/from-pre-handoff.js?v=CAPTURED',
     current: '/captured-assets/from-current.js?v=CAPTURED',
-    lineage: ['2.4.2', '2.4.6'],
+    lineage: ['2.4.2', '2.4.7'],
   });
 });
 

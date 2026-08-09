@@ -94,8 +94,9 @@
  *     off), onUpdateAvailable, entryTimeoutMs, idleSeconds, pollSeconds.
  *
  *   • SHARED PAGE-LEVEL MACHINERY: the safety gates, idle tracking, and the
- *     reload budget (storage key 'jellyfin-refresh-kit-budget-v1', unchanged
- *     from 1.x — a page reload is a page-level resource) are one engine. ANY
+ *     reload budget (authoritative IDB record since 2.4.7; the 1.x
+ *     'jellyfin-refresh-kit-budget-v1' key remains a migration mirror — a page
+ *     reload is a page-level resource) are one engine. ANY
  *     auto-mode instance that detects an update requests the shared safe
  *     reload. The idle requirement used for that reload is the STRICTEST
  *     (i.e. the MAXIMUM) idleSeconds among the instances currently wanting to
@@ -349,10 +350,12 @@
  *     latch and RE-ARMS the survival watchdog; it must never call
  *     location.reload() again for a navigation already in flight.
  *     NOT in the record, deliberately: the reload budget and the per-tab flip /
- *     left-version / recovery history. Those already live in localStorage and
- *     sessionStorage under page-wide keys, keyed by instance NAME — and a
- *     handoff preserves every name, including "#N" collision suffixes — so
- *     they survive a handoff exactly as they survive the reloads they police.
+ *     left-version / recovery history. The budget authority already lives in
+ *     page-wide IndexedDB (with legacy Storage mirrors), while the per-tab
+ *     records live in sessionStorage under page-wide keys keyed by instance
+ *     NAME — and a handoff preserves every name, including "#N" collision
+ *     suffixes — so they survive a handoff exactly as they survive the reloads
+ *     they police.
  *     The singular-global claim is page-level for the same reason and is not
  *     transferred either.
  *     A newer manager re-NORMALIZES every transferred config under its own
@@ -824,8 +827,15 @@
      *           Retained createElement wrappers created by 2.4.6+ also forward
      *           freshly-created elements through the newest manager; the exact
      *           released 2.4.2 wrapper remains inert when called directly.
+     *   2.4.7 — CROSS-TAB RELOAD BUDGET reservations are serialized by a
+     *           short IndexedDB readwrite transaction before the final safety
+     *           decision. The transaction's bounded numeric-v1 record is the
+     *           canonical ledger; local/sessionStorage are migration mirrors.
+     *           Equal-millisecond reservations retain their multiplicity, and
+     *           lifecycle/handoff cancellation fails closed without leaving a
+     *           queued lock attempt behind.
      */
-    var KIT_VERSION = '2.4.6';
+    var KIT_VERSION = '2.4.7';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -844,8 +854,17 @@
     /** @type {string} Console prefix for every message this kit emits. */
     var LOG = '[RefreshKit]';
 
-    /** @type {string} Shared storage key for the cross-tab reload budget. */
+    /** @type {string} Legacy/mirror Storage key for the cross-tab reload budget. */
     var BUDGET_KEY = 'jellyfin-refresh-kit-budget-v1';
+
+    /** @type {string} Stable IndexedDB database used as mutex and canonical ledger. */
+    var BUDGET_MUTEX_DB = 'jellyfin-refresh-kit-budget-mutex-v1';
+
+    /** @type {string} Stable ledger store whose overlapping readwrite transactions serialize. */
+    var BUDGET_MUTEX_STORE = 'mutex';
+
+    /** @type {string} Key holding the authoritative bounded numeric-v1 history. */
+    var BUDGET_MUTEX_KEY = 'reload-budget';
 
     /**
      * Per-TAB (sessionStorage) record of version transitions this tab has
@@ -966,6 +985,15 @@
 
     /** @type {number} Rolling window for the reload budget, in ms. */
     var BUDGET_WINDOW_MS = 60000;
+
+    /** @type {number} Hard record cap for the numeric v1 budget format. */
+    var MAX_BUDGET_RECORDS = 100;
+
+    /** @type {number} Reject implausibly large/corrupt budget payloads before parsing. */
+    var MAX_BUDGET_STORAGE_CHARS = 4096;
+
+    /** @type {number} Maximum wait to acquire/open the cross-tab budget mutex. */
+    var BUDGET_MUTEX_TIMEOUT_MS = 3000;
 
     /**
      * Minimum settle time after the last user interaction, even when the caller
@@ -2120,6 +2148,16 @@
     var reloadCommitted = false;
     /** @type {boolean} A failed reload is awaiting a fresh endpoint observation. */
     var reloadRevalidationPending = false;
+    /**
+     * The one queued/acquired IndexedDB budget-mutex attempt owned by this
+     * manager. Identity, rather than a boolean, prevents a late callback from
+     * an invalidated attempt (timeout, lifecycle pause or handoff) from acting
+     * on behalf of a newer attempt.
+     * @type {Object|null}
+     */
+    var budgetReservationAttempt = null;
+    /** @type {number} Monotonic diagnostic identity for mutex attempts. */
+    var nextBudgetReservationAttemptId = 1;
     /** @type {number|null} setTimeout handle for the reload-survival watchdog. */
     var reloadWatchdogTimer = null;
     /**
@@ -3106,15 +3144,26 @@
         try {
             var raw = storage.getItem(BUDGET_KEY);
             if (raw === null || raw === undefined) return [];
+            if (typeof raw !== 'string' || raw.length > MAX_BUDGET_STORAGE_CHARS) return null;
             var parsed = JSON.parse(raw);
-            if (!Array.isArray(parsed)) return null;
-            for (var i = 0; i < parsed.length; i++) {
-                if (typeof parsed[i] !== 'number' || !isFinite(parsed[i])) return null;
-            }
-            return parsed;
+            return validateBudgetHistory(parsed);
         } catch (_) {
             return null;
         }
+    }
+
+    /**
+     * Validate/copy the numeric v1 history representation used by both IDB and
+     * legacy Storage mirrors.
+     * @param {*} value
+     * @returns {number[]|null}
+     */
+    function validateBudgetHistory(value) {
+        if (!Array.isArray(value) || value.length > MAX_BUDGET_RECORDS) return null;
+        for (var i = 0; i < value.length; i++) {
+            if (typeof value[i] !== 'number' || !isFinite(value[i])) return null;
+        }
+        return value.slice();
     }
 
     /**
@@ -3171,8 +3220,8 @@
      * identity with the opener lets us
      * distinguish that first child document from an ordinary reload, on which
      * the child's newly-issued identity must remain stable with all its history.
-     * localStorage's budget is intentionally untouched because it is the shared
-     * cross-tab half of the reload ceiling.
+     * localStorage's legacy budget mirror is intentionally untouched because it
+     * may be needed to seed the authoritative IDB ledger during migration.
      */
     function initializeTabStorage() {
         var ss = safeStorage('sessionStorage');
@@ -3235,39 +3284,22 @@
     safe(initializeTabStorage);
 
     /**
-     * Reserve one reload against the rolling budget.
-     *
-     * FAILS CLOSED: if no storage can be read, or no write can be verified, the
-     * reload does NOT happen. A refresh kit that cannot count its own reloads is
-     * exactly the thing that reload-loops a user's browser.
-     *
-     * sessionStorage and localStorage are both used and merged: sessionStorage
-     * is per-tab (survives reloads, catches a single tab looping), localStorage
-     * is shared (catches every tab reloading at once). Stamps are de-duplicated
-     * so mirroring the same reservation into both cannot consume the budget twice.
-     *
-     * @returns {boolean} True when a reload may proceed.
+     * Max-multiset union of canonical/migration histories, expired and bounded
+     * to the newest 100 records. The bound is independent of THIS page's
+     * effective budget: another same-origin tab may legitimately use 100 even
+     * when this one uses 1, so a low-budget reader must never truncate shared
+     * authority to its own ceiling.
+     * @param {number[][]} histories
+     * @param {number} now
+     * @returns {number[]}
      */
-    function reserveReload() {
-        var budget = effectiveReloadBudget();
-        var adapters = [];
-        var ss = safeStorage('sessionStorage');
-        var ls = safeStorage('localStorage');
-        if (ss) adapters.push(ss);
-        if (ls) adapters.push(ls);
-
-        var readable = [];
-        for (var a = 0; a < adapters.length; a++) {
-            var history = readBudget(adapters[a]);
-            if (history !== null) readable.push({ storage: adapters[a], history: history });
-        }
-        if (readable.length === 0) return false;
-
-        var now = Date.now();
-        var seen = Object.create(null);
+    function mergeBudgetHistories(histories, now) {
+        var multiplicities = Object.create(null);
+        var stampValues = Object.create(null);
         var combined = [];
-        for (var r = 0; r < readable.length; r++) {
-            var list = readable[r].history;
+        for (var r = 0; r < histories.length; r++) {
+            var list = histories[r];
+            var sourceCounts = Object.create(null);
             for (var i = 0; i < list.length; i++) {
                 var stamp = list[i];
                 // Expire only stamps that are definitely older than the
@@ -3276,21 +3308,508 @@
                 // a spent slot. Dropping it would grant exactly the free reload
                 // this fail-closed budget exists to prevent.
                 if (stamp < now - BUDGET_WINDOW_MS) continue;
-                if (!seen[stamp]) { seen[stamp] = true; combined.push(stamp); }
+                var stampKey = String(stamp);
+                sourceCounts[stampKey] = (sourceCounts[stampKey] || 0) + 1;
+                stampValues[stampKey] = stamp;
+            }
+            for (var key in sourceCounts) {
+                if (!Object.prototype.hasOwnProperty.call(sourceCounts, key)) continue;
+                if (!multiplicities[key] || sourceCounts[key] > multiplicities[key]) {
+                    multiplicities[key] = sourceCounts[key];
+                }
+            }
+        }
+        for (var stampKey2 in multiplicities) {
+            if (!Object.prototype.hasOwnProperty.call(multiplicities, stampKey2)) continue;
+            for (var count = 0; count < multiplicities[stampKey2]; count++) {
+                combined.push(stampValues[stampKey2]);
             }
         }
         combined.sort(function (x, y) { return x - y; });
-        combined = combined.slice(-budget);
+        return combined.slice(-MAX_BUDGET_RECORDS);
+    }
 
-        if (combined.length >= budget) return false;
-
-        var next = combined.concat([now]);
-        var serialized = JSON.stringify(next);
-        var persisted = false;
-        for (var w = 0; w < readable.length; w++) {
-            if (writeBudget(readable[w].storage, serialized, next)) persisted = true;
+    /** @param {number[]} left @param {number[]} right @returns {boolean} */
+    function sameBudgetHistory(left, right) {
+        if (left.length !== right.length) return false;
+        for (var i = 0; i < left.length; i++) {
+            if (left[i] !== right[i]) return false;
         }
-        return persisted;
+        return true;
+    }
+
+    /** Best-effort legacy/migration mirrors; IndexedDB remains sole authority. */
+    function mirrorBudgetHistory(history) {
+        var serialized = JSON.stringify(history);
+        var ls = safeStorage('localStorage');
+        var ss = safeStorage('sessionStorage');
+        if (ls) writeBudget(ls, serialized, history);
+        if (ss) writeBudget(ss, serialized, history);
+    }
+
+    /** @returns {number|null} Monotonic clock reading, or null when unavailable. */
+    function budgetMonotonicNow() {
+        return safe(function () {
+            if (!window.performance || typeof window.performance.now !== 'function') return null;
+            var value = window.performance.now();
+            return typeof value === 'number' && isFinite(value) ? value : null;
+        }, null);
+    }
+
+    /**
+     * Both clocks must move forward sanely and remain strictly inside the
+     * acquisition bound. The explicit check closes the race where an overdue
+     * IDB callback is dequeued just before its already-due timeout task.
+     * @param {Object} attempt
+     * @returns {boolean}
+     */
+    function budgetReservationWithinDeadline(attempt) {
+        var wallNow = safe(function () { return Date.now(); }, null);
+        var monotonicNow = budgetMonotonicNow();
+        if (typeof wallNow !== 'number' || !isFinite(wallNow) || monotonicNow === null) return false;
+        var wallElapsed = wallNow - attempt.startedWall;
+        var monotonicElapsed = monotonicNow - attempt.startedMonotonic;
+        if (!isFinite(wallElapsed) || !isFinite(monotonicElapsed) ||
+            wallElapsed < 0 || monotonicElapsed < 0 ||
+            wallElapsed >= BUDGET_MUTEX_TIMEOUT_MS ||
+            monotonicElapsed >= BUDGET_MUTEX_TIMEOUT_MS) return false;
+        attempt.lastDeadlineWall = wallNow;
+        attempt.lastDeadlineMonotonic = monotonicNow;
+        return true;
+    }
+
+    /** @param {Object} attempt @returns {boolean} */
+    function isCurrentBudgetReservation(attempt) {
+        return !!attempt && budgetReservationAttempt === attempt && attempt.cancelled !== true;
+    }
+
+    /** Close an attempt's connection; close() waits for an active transaction. */
+    function closeBudgetReservationConnection(attempt) {
+        if (!attempt || !attempt.db) return;
+        var db = attempt.db;
+        attempt.db = null;
+        safe(function () { db.close(); });
+    }
+
+    /**
+     * Invalidate one token before aborting anything it managed to open. Every
+     * late IDB callback checks token identity, so it can only close/abort its
+     * own stale resources and can never impersonate the next attempt.
+     * @param {Object} attempt
+     * @param {boolean} abortTransaction
+     */
+    function invalidateBudgetReservation(attempt, abortTransaction) {
+        if (!attempt || attempt.cancelled === true) return;
+        attempt.cancelled = true;
+        if (budgetReservationAttempt === attempt) budgetReservationAttempt = null;
+        if (attempt.timeoutTimer !== null) {
+            clearTimeout(attempt.timeoutTimer);
+            attempt.timeoutTimer = null;
+        }
+        if (abortTransaction) {
+            safe(function () {
+                if (attempt.tx) attempt.tx.abort();
+            });
+            safe(function () {
+                if (attempt.upgradeTransaction) attempt.upgradeTransaction.abort();
+            });
+        }
+        closeBudgetReservationConnection(attempt);
+    }
+
+    /** Cancel the manager's queued/acquired reservation without arming a retry. */
+    function cancelBudgetReservation() {
+        if (budgetReservationAttempt) invalidateBudgetReservation(budgetReservationAttempt, true);
+    }
+
+    /** Shared fail-closed result for budget exhaustion and coordination failure. */
+    function deferReloadForBudget() {
+        if (handedOff || reloadCommitted || reloadRevalidationPending || pendingInstances().length === 0) return;
+        if (!warnedBudgetRefusal) {
+            warnedBudgetRefusal = true;
+            safe(function () {
+                console.warn(LOG, 'reload budget exhausted (' + effectiveReloadBudget() + ' per ' +
+                    (BUDGET_WINDOW_MS / 1000) + 's) or unverifiable — deferring the reload for ' +
+                    (BUDGET_WINDOW_MS / 1000) + 's. The pending update is kept; this is the ' +
+                    'loop-protection fail-closed path, not an abandonment. (Warned once per episode.)');
+            });
+        }
+        lastBlockReason = 'reload_budget';
+        scheduleRetry(BUDGET_WINDOW_MS);
+    }
+
+    /** Fail one still-current acquisition and preserve the pending update. */
+    function failBudgetReservation(attempt) {
+        if (!isCurrentBudgetReservation(attempt)) return;
+        invalidateBudgetReservation(attempt, true);
+        deferReloadForBudget();
+    }
+
+    /**
+     * Reserve one cross-tab reload in the authoritative IndexedDB ledger.
+     *
+     * The readwrite transaction is BOTH the mutex and the durable state change:
+     * its get handler validates the canonical numeric-v1 array, max-merges any
+     * valid legacy mirrors for migration, reruns the complete live safety
+     * decision and synchronously issues put(). No Promise/task hop occurs
+     * inside either request handler. Denied migration repair, or mirror
+     * evidence discovered while a user gate is closed, adds no slot and may be
+     * persisted without authorizing navigation. A put success is not
+     * authorization — only tx.oncomplete proves an appended slot committed.
+     * That completion callback reruns the same decision before any
+     * epoch/LEFT/transition/navigation claim. A gate which closes before an
+     * append spends nothing; one which closes after it leaves one
+     * conservatively spent slot and no navigation.
+     */
+    function beginBudgetReservation() {
+        if (budgetReservationAttempt || handedOff || reloadCommitted || reloadRevalidationPending) return;
+
+        var idb = safe(function () { return window.indexedDB; }, null);
+        if (!idb || typeof idb.open !== 'function') {
+            deferReloadForBudget();
+            return;
+        }
+
+        var startedWall = safe(function () { return Date.now(); }, null);
+        var startedMonotonic = budgetMonotonicNow();
+        if (typeof startedWall !== 'number' || !isFinite(startedWall) || startedMonotonic === null) {
+            deferReloadForBudget();
+            return;
+        }
+
+        var attempt = {
+            id: nextBudgetReservationAttemptId++,
+            cancelled: false,
+            granted: false,
+            acquired: false,
+            committed: false,
+            denied: false,
+            repairOnly: false,
+            repairRetryWasArmed: false,
+            preflightPassed: false,
+            putSucceeded: false,
+            startedWall: startedWall,
+            startedMonotonic: startedMonotonic,
+            lastDeadlineWall: startedWall,
+            lastDeadlineMonotonic: startedMonotonic,
+            committedHistory: null,
+            committedCount: 0,
+            timeoutTimer: null,
+            openRequest: null,
+            upgradeTransaction: null,
+            db: null,
+            tx: null,
+            readRequest: null,
+            countRequest: null,
+            readDone: false,
+            countDone: false,
+            readsProcessed: false,
+            readResult: undefined,
+            countResult: null,
+            putRequest: null
+        };
+        budgetReservationAttempt = attempt;
+        attempt.timeoutTimer = setTimeout(function () {
+            failBudgetReservation(attempt);
+        }, BUDGET_MUTEX_TIMEOUT_MS);
+
+        var request;
+        try {
+            request = idb.open(BUDGET_MUTEX_DB, 1);
+            attempt.openRequest = request;
+        } catch (_) {
+            failBudgetReservation(attempt);
+            return;
+        }
+
+        request.onblocked = function () { failBudgetReservation(attempt); };
+        request.onerror = function () { failBudgetReservation(attempt); };
+        request.onupgradeneeded = function (event) {
+            var db = safe(function () { return request.result; }, null);
+            attempt.db = db;
+            attempt.upgradeTransaction = safe(function () {
+                return request.transaction || (event && event.target && event.target.transaction);
+            }, null);
+            if (!isCurrentBudgetReservation(attempt)) {
+                safe(function () {
+                    if (attempt.upgradeTransaction) attempt.upgradeTransaction.abort();
+                });
+                safe(function () { if (db) db.close(); });
+                return;
+            }
+            try {
+                if (!db.objectStoreNames.contains(BUDGET_MUTEX_STORE)) {
+                    db.createObjectStore(BUDGET_MUTEX_STORE);
+                }
+            } catch (_) {
+                failBudgetReservation(attempt);
+            }
+        };
+        request.onsuccess = function () {
+            var db = safe(function () { return request.result; }, null);
+            if (!isCurrentBudgetReservation(attempt)) {
+                safe(function () { if (db) db.close(); });
+                return;
+            }
+            attempt.upgradeTransaction = null;
+            attempt.db = db;
+            if (!db) {
+                failBudgetReservation(attempt);
+                return;
+            }
+            db.onversionchange = function () {
+                if (isCurrentBudgetReservation(attempt)) failBudgetReservation(attempt);
+                else closeBudgetReservationConnection(attempt);
+            };
+
+            var tx;
+            var store;
+            var readRequest;
+            var countRequest;
+            try {
+                tx = db.transaction(BUDGET_MUTEX_STORE, 'readwrite');
+                attempt.tx = tx;
+                store = tx.objectStore(BUDGET_MUTEX_STORE);
+                readRequest = store.get(BUDGET_MUTEX_KEY);
+                attempt.readRequest = readRequest;
+                // get() alone cannot distinguish an absent key from a stored
+                // undefined value. count() makes first-run migration explicit
+                // and treats the latter as corrupt authority.
+                countRequest = store.count(BUDGET_MUTEX_KEY);
+                attempt.countRequest = countRequest;
+            } catch (_) {
+                failBudgetReservation(attempt);
+                return;
+            }
+
+            tx.onabort = function () {
+                if (isCurrentBudgetReservation(attempt)) failBudgetReservation(attempt);
+                else closeBudgetReservationConnection(attempt);
+            };
+            tx.onerror = function () {
+                if (isCurrentBudgetReservation(attempt)) failBudgetReservation(attempt);
+            };
+            tx.oncomplete = function () {
+                if (!isCurrentBudgetReservation(attempt)) {
+                    closeBudgetReservationConnection(attempt);
+                    return;
+                }
+                if (!attempt.preflightPassed || !attempt.putSucceeded ||
+                    !budgetReservationWithinDeadline(attempt)) {
+                    failBudgetReservation(attempt);
+                    return;
+                }
+
+                // The slot/migration history is authoritative only now.
+                attempt.committed = true;
+                attempt.granted = attempt.denied !== true && attempt.repairOnly !== true;
+                if (attempt.timeoutTimer !== null) {
+                    clearTimeout(attempt.timeoutTimer);
+                    attempt.timeoutTimer = null;
+                }
+                closeBudgetReservationConnection(attempt);
+
+                // Mirrors can complete out of order across renderer processes;
+                // they are compatibility/migration hints only and never decide
+                // admission once the IDB record exists.
+                mirrorBudgetHistory(attempt.committedHistory);
+
+                if (attempt.repairOnly) {
+                    // tryReload() already recorded the live gate and armed its
+                    // ordinary retry (when that gate uses one). This commit
+                    // only made older migration evidence authoritative; it
+                    // neither spends a slot nor changes the reason/cadence.
+                    var repairRetryWasConsumed = attempt.repairRetryWasArmed && retryTimer === null;
+                    invalidateBudgetReservation(attempt, false);
+                    if (repairRetryWasConsumed && !handedOff && !reloadCommitted &&
+                        !reloadRevalidationPending && pendingInstances().length > 0) {
+                        scheduleRetry();
+                    }
+                    return;
+                }
+                if (attempt.denied) {
+                    invalidateBudgetReservation(attempt, false);
+                    deferReloadForBudget();
+                    return;
+                }
+                if (!budgetReservationWithinDeadline(attempt)) {
+                    invalidateBudgetReservation(attempt, false);
+                    deferReloadForBudget();
+                    return;
+                }
+
+                var criticalFailed = false;
+                try {
+                    // Direct/synchronous post-commit tail: no Promise hop can
+                    // let stale intent bypass the final safety rerun.
+                    tryReload(attempt);
+                } catch (err) {
+                    criticalFailed = true;
+                    safe(function () { console.debug(LOG, 'reload-budget post-commit decision failed:', err); });
+                } finally {
+                    if (isCurrentBudgetReservation(attempt)) {
+                        invalidateBudgetReservation(attempt, false);
+                    }
+                }
+                if (criticalFailed) deferReloadForBudget();
+            };
+            function processBudgetReads() {
+                if (!attempt.readDone || !attempt.countDone || attempt.readsProcessed) return;
+                attempt.readsProcessed = true;
+                if (!isCurrentBudgetReservation(attempt)) {
+                    safe(function () { tx.abort(); });
+                    closeBudgetReservationConnection(attempt);
+                    return;
+                }
+                if (!budgetReservationWithinDeadline(attempt)) {
+                    failBudgetReservation(attempt);
+                    return;
+                }
+                attempt.acquired = true;
+
+                var rawCanonical = attempt.readResult;
+                var canonicalCount = attempt.countResult;
+                if ((canonicalCount !== 0 && canonicalCount !== 1) ||
+                    (canonicalCount === 0 && rawCanonical !== undefined)) {
+                    failBudgetReservation(attempt);
+                    return;
+                }
+                var canonicalMissing = canonicalCount === 0;
+                var canonical = canonicalMissing ? [] : validateBudgetHistory(rawCanonical);
+                if (canonical === null) {
+                    failBudgetReservation(attempt);
+                    return;
+                }
+
+                var histories = [canonical];
+                var ls = safeStorage('localStorage');
+                var ss = safeStorage('sessionStorage');
+                var localHistory = ls ? readBudget(ls) : null;
+                var sessionHistory = ss ? readBudget(ss) : null;
+
+                // FIRST 2.4.7 INITIALIZATION is a migration boundary. Until an
+                // IDB record exists, either legacy store may contain spent slots
+                // this process cannot otherwise know about, so unreadable or
+                // corrupt migration input must fail closed. Once any valid IDB
+                // array exists (including []), mirrors are optional/stale hints.
+                if (canonicalMissing && (localHistory === null || sessionHistory === null)) {
+                    failBudgetReservation(attempt);
+                    return;
+                }
+                if (localHistory !== null) histories.push(localHistory);
+                if (sessionHistory !== null) histories.push(sessionHistory);
+
+                var canonicalLive = mergeBudgetHistories([canonical], attempt.lastDeadlineWall);
+                var combined = mergeBudgetHistories(histories, attempt.lastDeadlineWall);
+                var migrationRepairNeeded = !sameBudgetHistory(canonicalLive, combined);
+                var budget = effectiveReloadBudget();
+                attempt.denied = combined.length >= budget;
+
+                if (!attempt.denied) {
+                    // The transaction is granted now, but the page may have
+                    // spent time queued behind another renderer. Re-run the
+                    // exact live pending/configuration/user-safety decision
+                    // synchronously before APPENDING a slot. A normal gate
+                    // failure keeps its ordinary retry semantics and consumes
+                    // no slot; only newly discovered migration evidence may be
+                    // written as a repair. No event/task can interleave this
+                    // pass and the put below.
+                    try {
+                        if (tryReload(attempt) !== true) {
+                            var gateRetryWasArmed = retryTimer !== null;
+                            if (!isCurrentBudgetReservation(attempt)) return;
+                            if (!budgetReservationWithinDeadline(attempt)) {
+                                failBudgetReservation(attempt);
+                                return;
+                            }
+                            if (!migrationRepairNeeded) {
+                                invalidateBudgetReservation(attempt, true);
+                                return;
+                            }
+                            // The live gate refused admission, but valid legacy
+                            // evidence expanded the canonical view. Commit that
+                            // repair WITHOUT the new timestamp; tx.oncomplete
+                            // preserves tryReload's gate reason/retry and never
+                            // enters the navigation tail.
+                            attempt.repairOnly = true;
+                            attempt.repairRetryWasArmed = gateRetryWasArmed;
+                            attempt.committedHistory = combined;
+                            attempt.committedCount = combined.length;
+                            attempt.preflightPassed = true;
+                        } else {
+                            attempt.committedHistory = combined.concat([attempt.lastDeadlineWall]);
+                            attempt.committedCount = attempt.committedHistory.length;
+                            attempt.preflightPassed = true;
+                        }
+                    } catch (err) {
+                        safe(function () { console.debug(LOG, 'reload-budget pre-put decision failed:', err); });
+                        failBudgetReservation(attempt);
+                        return;
+                    }
+                } else {
+                    // A denial adds no slot. Persisting a missing/stale merged
+                    // ledger is migration repair, not authorization; a dialog
+                    // or other user gate must not prevent that authority from
+                    // becoming durable for the next contender.
+                    attempt.committedHistory = combined;
+                    attempt.committedCount = combined.length;
+                    attempt.preflightPassed = true;
+                }
+
+                try {
+                    // Persist migration history even when this page's budget is
+                    // already full, so a stale/empty rollout cannot leave IDB
+                    // empty and let a later higher-budget tab over-admit.
+                    attempt.putRequest = store.put(attempt.committedHistory, BUDGET_MUTEX_KEY);
+                } catch (_) {
+                    failBudgetReservation(attempt);
+                    return;
+                }
+                attempt.putRequest.onerror = function () { failBudgetReservation(attempt); };
+                attempt.putRequest.onsuccess = function () {
+                    if (!isCurrentBudgetReservation(attempt)) {
+                        safe(function () { tx.abort(); });
+                        closeBudgetReservationConnection(attempt);
+                        return;
+                    }
+                    if (!budgetReservationWithinDeadline(attempt)) {
+                        failBudgetReservation(attempt);
+                        return;
+                    }
+                    attempt.putSucceeded = true;
+                };
+            }
+            readRequest.onerror = function () { failBudgetReservation(attempt); };
+            readRequest.onsuccess = function () {
+                if (!isCurrentBudgetReservation(attempt)) {
+                    safe(function () { tx.abort(); });
+                    closeBudgetReservationConnection(attempt);
+                    return;
+                }
+                if (!budgetReservationWithinDeadline(attempt)) {
+                    failBudgetReservation(attempt);
+                    return;
+                }
+                attempt.readResult = safe(function () { return readRequest.result; }, null);
+                attempt.readDone = true;
+                processBudgetReads();
+            };
+            countRequest.onerror = function () { failBudgetReservation(attempt); };
+            countRequest.onsuccess = function () {
+                if (!isCurrentBudgetReservation(attempt)) {
+                    safe(function () { tx.abort(); });
+                    closeBudgetReservationConnection(attempt);
+                    return;
+                }
+                if (!budgetReservationWithinDeadline(attempt)) {
+                    failBudgetReservation(attempt);
+                    return;
+                }
+                attempt.countResult = safe(function () { return countRequest.result; }, null);
+                attempt.countDone = true;
+                processBudgetReads();
+            };
+        };
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -4092,6 +4611,7 @@
      */
     function releaseEngineIfIdle() {
         if (pendingInstances().length > 0) return;
+        cancelBudgetReservation();
         clearRetry();
         blockedRetries = 0;
         lastBlockReason = null;
@@ -4222,7 +4742,31 @@
      * after it, each instance's assets re-resolve at their own (new or
      * unchanged) versions.
      */
-    function tryReload() {
+    function tryReload(budgetAttempt) {
+        var underBudgetMutex = !!budgetAttempt;
+        var preCommitBudgetCheck = underBudgetMutex && budgetAttempt.committed !== true;
+        if (underBudgetMutex) {
+            // The granted get callback enters once for the synchronous pre-put
+            // safety pass; only the successful transaction-complete callback
+            // may enter the navigation tail. Token identity rejects callbacks
+            // from a timed-out, lifecycle-cancelled or handed-off attempt,
+            // while the explicit clocks reject an overdue callback that beat
+            // its timeout task.
+            if (!isCurrentBudgetReservation(budgetAttempt)) return false;
+            if (preCommitBudgetCheck) {
+                if (budgetAttempt.acquired !== true) return false;
+            } else if (budgetAttempt.committed !== true || budgetAttempt.granted !== true) {
+                return false;
+            }
+            if (!budgetReservationWithinDeadline(budgetAttempt)) {
+                deferReloadForBudget();
+                return false;
+            }
+        } else if (budgetReservationAttempt) {
+            // One page may queue only one cross-tab reservation. Wake bursts,
+            // retries and sibling instances all join that in-flight decision.
+            return;
+        }
         // Handed off: the reload engine of this copy is retired. The manager
         // that took over holds the transferred latch, budget view and pending
         // set, and is the only engine allowed to navigate this document —
@@ -4330,6 +4874,35 @@
         lastBlockReason = null;
         clearRetry();
 
+        // The granted transaction's get handler stops here after its second,
+        // synchronous pre-put pass. The caller issues put in this same task,
+        // so a closed gate cannot consume a reservation. Authorization still
+        // waits for transaction completion and a third full pass below.
+        if (preCommitBudgetCheck) {
+            if (!budgetReservationWithinDeadline(budgetAttempt)) {
+                deferReloadForBudget();
+                return false;
+            }
+            return true;
+        }
+
+        // The first ordinary pass deliberately stops here. Acquisition/commit
+        // is asynchronous, and every observation above can change meanwhile.
+        if (!underBudgetMutex) {
+            beginBudgetReservation();
+            return;
+        }
+
+        // A stricter instance may have registered while the reservation was in
+        // flight. The already-committed slot remains spent, but it cannot
+        // authorize this navigation when its full rolling count now exceeds
+        // the live page-level ceiling.
+        if (budgetAttempt.committedCount > effectiveReloadBudget() ||
+            !budgetReservationWithinDeadline(budgetAttempt)) {
+            deferReloadForBudget();
+            return;
+        }
+
         // Before this page leaves, every non-null process epoch most recently
         // observed at each running baseline must be durably present. Earlier
         // onVersion writes are opportunistic; this is the transaction boundary
@@ -4364,8 +4937,8 @@
         // LEFT is the durable proof that this tab departed each running
         // generation. A shared page reload departs EVERY registered instance,
         // not only those whose update triggered it, so atomically pre-claim all
-        // known baselines before spending a reload-budget slot. This also lets
-        // endpoint responses be frozen safely throughout the unload window.
+        // known baselines after the IDB slot commits but before navigation. This
+        // also lets endpoint responses be frozen safely throughout unload.
         var leftClaim = claimLeftBaselines(registry);
         if (!leftClaim.ok) {
             if (!warnedSafetyHistoryRefusal) {
@@ -4382,36 +4955,6 @@
             return;
         }
 
-        if (!reserveReload()) {
-            // The navigation was not authorized, so retract only the LEFT
-            // records this attempt added. A failed removal remains safely
-            // conservative; it can cause refusal, never an unrecorded cycle.
-            for (var lr = 0; lr < leftClaim.added.length; lr++) {
-                releaseLeftRecord(leftClaim.added[lr]);
-            }
-            // DEFERRED, NOT DISCARDED. The refusal is a property of a 60-second
-            // rolling window (or of storage we could not verify), not of the
-            // update — the tab that lost the race is still running stale code
-            // and still wants the reload. Clearing updatePending here is what
-            // used to strand it forever: onVersion's watermark then made every
-            // later poll, and checkNow(), a no-op for that same version.
-            //
-            // So: keep the intent, warn once per blocked episode, and re-test
-            // when the window has rolled. This mirrors the reference this was
-            // ported from (client-refresh.js: scheduleRetry(RELOAD_BUDGET_WINDOW_MS)).
-            if (!warnedBudgetRefusal) {
-                warnedBudgetRefusal = true;
-                safe(function () {
-                    console.warn(LOG, 'reload budget exhausted (' + effectiveReloadBudget() + ' per ' +
-                        (BUDGET_WINDOW_MS / 1000) + 's) or unverifiable — deferring the reload for ' +
-                        (BUDGET_WINDOW_MS / 1000) + 's. The pending update is kept; this is the ' +
-                        'loop-protection fail-closed path, not an abandonment. (Warned once per episode.)');
-                });
-            }
-            lastBlockReason = 'reload_budget';
-            scheduleRetry(BUDGET_WINDOW_MS);
-            return;
-        }
         warnedBudgetRefusal = false;
         for (var c = 0; c < leftClaim.added.length; c++) {
             reloadRecordsWritten.push([LEFT_KEY, leftClaim.added[c]]);
@@ -6325,12 +6868,11 @@
         /**
          * The live internals a handoff carries to the instance that replaces
          * this one (see createInstance's `restore`). Everything here is state
-         * that exists ONLY in this closure — the reload budget and the per-tab
-         * flip/left/epoch/gap/recovery records are already in session/localStorage
-         * under page-wide keys (BUDGET_KEY, FLIP_KEY, LEFT_KEY, EPOCH_KEY,
-         * EPOCH_GAP_KEY, RECOVERY_KEY) and are
-         * keyed by INSTANCE NAME, which the handoff preserves, so that history
-         * survives on its own and must not be copied through here.
+         * that exists ONLY in this closure — the reload budget authority is
+         * already in page-wide IndexedDB, and the per-tab flip/left/epoch/gap/
+         * recovery records live in session/localStorage under page-wide keys.
+         * They survive on their own (instance-keyed histories keep the NAME
+         * preserved by handoff) and must not be copied through here.
          * @returns {Object}
          */
         function transferState() {
@@ -7028,12 +7570,13 @@
      *      manager (versionUrlForPage).
      *   3. RETURNS everything the new manager needs to continue: every instance
      *      with its live state, and the shared page state that exists only in
-     *      memory. Note what is NOT here: the reload budget and the per-tab
-     *      flip/left/recovery records already live in session/localStorage
-     *      under page-wide keys, so they survive a handoff (and a reload) by
-     *      themselves; and the singular-global claim is recorded either as a
-     *      non-enumerable marker ON the config object or in a WeakSet held on
-     *      `window`, both of which are page-level and equally unaffected.
+     *      memory. Note what is NOT here: the reload budget authority already
+     *      lives in page-wide IndexedDB, and the per-tab flip/left/recovery
+     *      records live in session/localStorage under page-wide keys, so they
+     *      survive a handoff (and a reload) by themselves; and the singular-
+     *      global claim is recorded either as a non-enumerable marker ON the
+     *      config object or in a WeakSet held on `window`, both of which are
+     *      page-level and equally unaffected.
      *   4. Points this copy at the new manager, permanently.
      *
      * NEVER THROWS, and returns null when it declines. A null return is the
@@ -7123,6 +7666,10 @@
         // ── Point of no return: this copy stops owning the page here. ────────
         handedOff = true;
         interceptorInert = true;
+        // A queued IDB callback belongs to this closure, not to the arriving
+        // manager. Invalidate it before the new manager retries transferred
+        // pending intent under its own token.
+        cancelBudgetReservation();
 
         var i;
         for (i = 0; i < registry.length; i++) {
@@ -7558,6 +8105,7 @@
                         : null,
                     reloadCommitted: reloadCommitted,
                     reloadRevalidationPending: reloadRevalidationPending,
+                    reloadBudgetReservationPending: budgetReservationAttempt !== null,
                     reloadsSurvived: reloadsSurvived,
                     blockedRetries: blockedRetries,
                     // MANAGER LINEAGE. 0 handoffs is the ordinary page (one kit
@@ -7588,8 +8136,15 @@
                     maskedTransitionMsLeft: maskedTransitionRemainingMs(),
                     lastSeenRoute: lastSeenHash,
                     effectiveReloadBudget: effectiveReloadBudget(),
+                    budgetAuthority: 'indexedDB',
+                    budgetDatabase: BUDGET_MUTEX_DB,
+                    budgetStore: BUDGET_MUTEX_STORE,
+                    budgetRecordKey: BUDGET_MUTEX_KEY,
+                    // Retained name for compatibility; this is a legacy/mirror
+                    // Storage key in 2.4.7+, not the admission authority.
                     budgetKey: BUDGET_KEY,
-                    budgetWindowMs: BUDGET_WINDOW_MS
+                    budgetWindowMs: BUDGET_WINDOW_MS,
+                    budgetMutexTimeoutMs: BUDGET_MUTEX_TIMEOUT_MS
                 };
                 return out;
             }, { kitVersion: KIT_VERSION });
@@ -7655,6 +8210,11 @@
         addPageListener(document, 'visibilitychange', wakeListener, false);
         addPageListener(window, 'focus', wakeListener, false);
         addPageListener(window, 'pageshow', wakeListener, false);
+        // A queued cross-tab reservation must not survive page ownership or a
+        // frozen event loop. The pending update itself remains intact; pageshow
+        // or resume lets the live manager take a fresh, tokenized attempt.
+        addPageListener(window, 'pagehide', cancelBudgetReservation, false);
+        addPageListener(document, 'freeze', cancelBudgetReservation, false);
         // PAGE LIFECYCLE 'resume' (2.4.0): the browser FROZE this background
         // tab — Chrome on Android and desktop battery-saver both do — and has
         // now un-frozen it while it is STILL HIDDEN. Every timer the tab held
@@ -7667,6 +8227,7 @@
             safe(function () {
                 if (handedOff) return;
                 if (document.visibilityState === 'hidden') onHidden();
+                else if (pendingInstances().length > 0) safe(tryReload);
             });
         }, false);
     });

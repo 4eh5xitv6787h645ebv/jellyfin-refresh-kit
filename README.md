@@ -211,9 +211,36 @@ light-DOM safety probes observe an interaction that should not be interrupted.
 Refresh Kit also uses:
 
 - repeated observation before arming an update
-- a rolling reload budget shared by the page
+- a rolling reload budget whose reservations are coordinated across same-origin tabs
 - state that refuses an already-left generation unless an optional fresh process epoch safely authorizes one revisit
 - hidden-tab handling so an eligible reload can happen while the tab is out of the user's way
+
+Refresh Kit 2.4.7 and newer use one overlapping IndexedDB `readwrite`
+transaction both to serialize each automatic-reload reservation and to update
+the authoritative bounded numeric-v1 ledger. Once its read is granted, an
+admitting transaction synchronously reruns every safety gate before appending a
+slot; navigation is authorized only after transaction completion, another full
+gate pass, and a check against the document's current effective budget. This
+preserves distinct reloads made in the same millisecond and prevents cooperating
+tabs from losing one another's concurrent reservations. A gate that closes
+before the append spends nothing; a gate that closes after commit leaves the
+slot conservatively spent without navigating.
+
+`localStorage` and `sessionStorage` hold read-back-verified compatibility
+mirrors. Valid mirror history is max-multiset-merged for migration, but the
+mirrors may be stale or written out of order and never replace or reduce the
+IndexedDB authority. When the IDB record does not yet exist, both legacy stores
+must be readable and valid (an absent key is a valid empty history); afterward,
+unavailable mirrors cannot turn valid IDB authority into a failure. If
+IndexedDB is unavailable, corrupt, cannot commit, or exceeds the bounded wall
+or monotonic deadline, automatic reload fails closed and the update remains
+pending.
+
+The shared object is reservation history, not cross-tab configuration. Each
+document applies the minimum `reloadBudget` among the instances registered on
+that document. Runtime copies older than 2.4.7 do not participate in the mutex,
+so the cross-tab serialization guarantee applies only while the participating
+same-origin tabs run 2.4.7 or newer.
 
 The optional process epoch is a JSON-only sidecar. An exact fresh
 generation/epoch pair must be observed twice and claimed in a strict,
@@ -250,7 +277,7 @@ Open **Dashboard → Plugins → Jellyfin Refresh Kit**.
 | Ignore settings changes from these plugins | Empty | One entry per line. Accepts plugin name, install folder, GUID, or assembly name. |
 | Poll interval | 60 sec | How often visible tabs check the generation. Client range: 15–3600 seconds. |
 | Required idle time | 5 sec | Minimum user inactivity before an automatic reload. Client range: 0–300 seconds. |
-| Max reloads per minute | 3 | Rolling safety budget for automatic reloads. Client range: 1–100. |
+| Max reloads per minute | 3 | Rolling automatic-reload ceiling applied to shared same-origin reservation history. Client range: 1–100. Unavailable coordination defers the reload. |
 | Developer mode | Off | Serves the embedded browser runtime with `no-store` instead of immutable caching. |
 
 ### Excluding noisy configuration files
@@ -356,6 +383,7 @@ Refresh Kit closes the common stale-plugin path, but it cannot control every way
 - **Generation is server-wide.** A monitored change to any plugin can make eligible open Jellyfin tabs reload once.
 - **Broken intermediary caching still wins.** A proxy or CDN configured to ignore origin cache directives can serve stale content regardless of the origin's behaviour.
 - **Background tabs are subject to browser timer throttling/freezing.** Detection can be delayed until the browser allows the tab to run again.
+- **Cross-tab budget coordination starts with runtime 2.4.7.** Older tabs still write the legacy numeric-v1 storage history but do not update the authoritative IndexedDB ledger inside its transaction, so they cannot be included in the concurrent-reservation guarantee until they load 2.4.7 or newer. Unavailable or corrupt IndexedDB safely defers automatic reload; unreadable/corrupt legacy stores do the same only while the first authoritative record still needs migration.
 
 ---
 
@@ -462,13 +490,13 @@ Important options:
 | `entryScripts` | None | Ordered entry URLs for bootstrap mode. |
 | `entryTimeoutMs` | 3000 | Maximum initial version wait before bootstrap entries fall back to unversioned loading. |
 | `mode` | `auto` | `auto` reloads, `notify` reports updates without reloading, `off` leaves URL versioning active without update polling behaviour. |
-| `reloadBudget` | 3 | Maximum reloads per rolling 60-second window. |
+| `reloadBudget` | 3 | Maximum reloads per rolling 60-second window, applied by this document to the authoritative same-origin IndexedDB ledger. Range 1–100; unavailable or corrupt coordination defers automatic reload. |
 | `hiddenReload` | `true` | Allows an otherwise-safe pending reload while the tab is hidden. |
 | `hiddenSettleSeconds` | 25 | Required hidden period before a hidden-tab reload is considered. |
 | `getVersion` | — | Config-object callback that can replace `versionUrl`; its raw string result must be at most 200 characters, then its trimmed identity must be non-empty and not begin with `<`. |
 | `onUpdateAvailable` | — | Callback invoked when an update is detected. |
 
-When several kit instances share one page, reload safety resolves conservatively: stricter idle/hidden requirements and smaller reload budgets win where shared behaviour must be chosen.
+When several kit instances share one page, reload safety resolves conservatively: stricter idle/hidden requirements and smaller reload budgets win where shared behaviour must be chosen. Across tabs, reservations are shared but configuration is not negotiated; each attempting document applies its own page-level effective budget.
 
 ## JavaScript API
 
