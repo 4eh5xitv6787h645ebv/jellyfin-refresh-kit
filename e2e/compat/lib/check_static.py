@@ -107,6 +107,41 @@ def main() -> int:
             and locked_artifacts["moonbase-legacy"]["plugin"]["framework"] == "net8.0",
             "Moonbase must remain an explicit legacy quarantine, never a current runtime pass",
         )
+        generated_sidecar = artifact_lib.generated_meta(
+            locked_artifacts["discontinue-watching-jf10"]
+        )
+        require(
+            generated_sidecar.get("assemblies") == [],
+            "generated install sidecars must preserve Jellyfin's load-all DLL semantics",
+        )
+        gelato_archive = locked_artifacts["gelato-jf10"]
+        gelato_upstream_meta = {
+            "guid": gelato_archive["plugin"]["guid"],
+            "name": gelato_archive["plugin"]["name"],
+            "version": gelato_archive["plugin"]["version"],
+        }
+        gelato_sidecar = artifact_lib.completed_upstream_meta(
+            gelato_upstream_meta, gelato_archive
+        )
+        empty_sidecar = artifact_lib.completed_upstream_meta(
+            {**gelato_upstream_meta, "assemblies": []}, gelato_archive
+        )
+        explicit_sidecar = artifact_lib.completed_upstream_meta(
+            {**gelato_upstream_meta, "assemblies": ["Gelato.dll"]},
+            gelato_archive,
+        )
+        require(
+            gelato_archive["plugin"]["archiveMeta"] == "upstream"
+            and gelato_archive["interactionMode"]
+            == "javascript-injector-registration",
+            "Gelato must retain its audited upstream-manifest runtime contract",
+        )
+        require(
+            "assemblies" not in gelato_sidecar
+            and empty_sidecar.get("assemblies") == []
+            and explicit_sidecar.get("assemblies") == ["Gelato.dll"],
+            "upstream assembly selection must preserve both load-all and explicit-whitelist semantics",
+        )
         require(
             len(lock["catalogCoverage"]) == 101
             and sum(
@@ -265,6 +300,9 @@ def main() -> int:
             'evaluate_webroot_disk(',
             '"contentProbes"',
             '"matrixConfigurations"',
+            '"dllInventory"',
+            '"assemblySelection"',
+            '"load-all-packaged"',
         ):
             require(fragment in analyzer, f"safe-degrade analyzer assertion is missing: {fragment}")
 

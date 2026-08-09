@@ -1140,14 +1140,67 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         materialization = read_json(Path(install["reportPath"])) if install else {}
         if materialization.get("materialized") is not True:
             plugin_errors.append("materialization/meta verification is missing")
+        dll_inventory = materialization.get("dllInventory")
+        assembly_selection = materialization.get("assemblySelection")
+        dll_inventory_valid = (
+            isinstance(dll_inventory, dict)
+            and bool(dll_inventory)
+            and all(
+                isinstance(path, str)
+                and bool(path)
+                and not Path(path).is_absolute()
+                and ".." not in Path(path).parts
+                and re.fullmatch(r"[0-9a-f]{64}", str(digest)) is not None
+                for path, digest in dll_inventory.items()
+            )
+        )
+        if not dll_inventory_valid:
+            plugin_errors.append("materialized DLL inventory is missing")
+        elif not any(
+            Path(path).name == plugin["assembly"]
+            for path in dll_inventory
+        ):
+            plugin_errors.append("materialized DLL inventory omits the verified main assembly")
+        archive_dll_inventory = (
+            verification.get("plugin", {}).get("managedDlls")
+            if isinstance(verification, dict)
+            else None
+        )
+        if not dll_inventory_valid or dll_inventory != archive_dll_inventory:
+            plugin_errors.append("materialized DLL inventory differs from the locked archive")
+        if not isinstance(assembly_selection, dict):
+            plugin_errors.append("materialized assembly-selection evidence is missing")
+        else:
+            selection_policy = assembly_selection.get("policy")
+            declared = assembly_selection.get("declared")
+            effective = assembly_selection.get("effective")
+            if selection_policy == "load-all-packaged":
+                expected_effective = sorted(dll_inventory) if dll_inventory_valid else []
+                if declared not in (None, []) or effective != expected_effective:
+                    plugin_errors.append("load-all assembly-selection evidence is incoherent")
+            elif selection_policy == "explicit-whitelist":
+                if not isinstance(declared, list) or not declared or effective != declared:
+                    plugin_errors.append("explicit assembly-selection evidence is incoherent")
+            else:
+                plugin_errors.append("materialized assembly-selection policy is invalid")
         runtime_meta_path = evidence / "runtime-meta" / f"{artifact_id}.json"
         runtime_meta = read_json(runtime_meta_path) if runtime_meta_path.is_file() else {}
+        runtime_declared_assemblies = ci(runtime_meta, "assemblies")
+        runtime_assembly_selection_matches = False
+        if isinstance(assembly_selection, dict):
+            if assembly_selection.get("policy") == "load-all-packaged":
+                runtime_assembly_selection_matches = runtime_declared_assemblies in (None, [])
+            elif assembly_selection.get("policy") == "explicit-whitelist":
+                runtime_assembly_selection_matches = (
+                    runtime_declared_assemblies == assembly_selection.get("declared")
+                )
         runtime_meta_checks = {
             "guid": normalize_guid(ci(runtime_meta, "guid")) == normalize_guid(plugin["guid"]),
             "name": ci(runtime_meta, "name") == plugin["name"],
             "version": str(ci(runtime_meta, "version", "")) == plugin["version"],
             "targetAbi": artifact_lib.normalized_abi(ci(runtime_meta, "targetAbi"))
             == plugin["targetAbi"],
+            "assemblies": runtime_assembly_selection_matches,
         }
         for key, passed in runtime_meta_checks.items():
             if not passed:

@@ -54,7 +54,7 @@ Reserve 5 GiB of disk and 3 GiB of RAM for a cold full run. Only one service is 
 For every selected plugin, the result records and checks:
 
 - the source revision, release URL, archive digest, archive layout, main DLL digest, embedded GUID/version tokens, target framework evidence when a `.deps.json` exists, and upstream `meta.json` when supplied;
-- a deterministic install sidecar containing GUID, name, version, target ABI, status, and main assembly (missing fields are completed from the lock without modifying the cached upstream archive);
+- a deterministic install sidecar containing GUID, name, version, target ABI, and status; explicit upstream assembly whitelists are preserved, while missing or empty whitelists retain Jellyfin's normal load-all-packaged-DLL behavior (missing fields are completed from the lock without modifying the cached upstream archive);
 - exact GUID/name/version/status in Jellyfin's authenticated plugin inventory and `IsLoaded=true` in Refresh Kit diagnostics;
 - Refresh Kit's own stage metadata, endpoint load, single shell tag, boot generation, and immutable generation-addressed runtime. Ordinary matrices require an `rk-` ETag and conditional `304`; the five audited outer-response-buffer matrices instead require the explicit safe-degradation contract described below;
 - a real generation transition after adding a loose `.js` asset to one loaded third-party plugin, including that plugin's changed asset identity in diagnostics;

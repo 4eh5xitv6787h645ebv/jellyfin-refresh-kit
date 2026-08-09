@@ -785,7 +785,8 @@
         "archiveMeta": "upstream"
       },
       "shellUrlNeedles": [],
-      "interactionMode": "javascript-injector-registration"
+      "interactionMode": "javascript-injector-registration",
+      "artifactEvidenceNote": "The official archive contains Gelato.dll plus its MonoTorrent, Mono.Nat, and ReusableTasks dependency DLLs while upstream meta.json omits assemblies. Materialization preserves that missing whitelist so Jellyfin follows its normal repository-install behavior and loads every packaged DLL."
     },
     {
       "id": "letterboxd-sync-jf10",
@@ -1062,7 +1063,7 @@
       },
       "shellUrlNeedles": [],
       "interactionMode": "javascript-injector-registration",
-      "artifactEvidenceNote": "Upstream meta.json carries an empty assemblies array; materialization completes it with the independently verified Jellyfin.Plugin.Oscars.dll identity."
+      "artifactEvidenceNote": "Upstream meta.json carries an empty assemblies array; materialization preserves Jellyfin's default load-all behavior. The archive contains only the independently verified Jellyfin.Plugin.Oscars.dll assembly."
     },
     {
       "id": "mdblist-ratings-jf10",

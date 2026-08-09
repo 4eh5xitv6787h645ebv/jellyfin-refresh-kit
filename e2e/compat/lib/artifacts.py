@@ -659,6 +659,12 @@ def inspect_archive(path: Path, artifact: dict[str, Any]) -> dict[str, Any]:
             if not matched:
                 raise HarnessError(f"{artifact['id']}: deps framework conflicts with lock")
 
+        managed_dlls = {
+            relative: hashlib.sha256(archive.read(member)).hexdigest()
+            for relative, member in members.items()
+            if PurePosixPath(relative).suffix.casefold() == ".dll"
+        }
+
         return {
             "id": artifact["id"],
             "disposition": artifact["disposition"],
@@ -674,6 +680,7 @@ def inspect_archive(path: Path, artifact: dict[str, Any]) -> dict[str, Any]:
                 **artifact["plugin"],
                 "assemblyPath": assembly_path,
                 "assemblySha256": hashlib.sha256(assembly_bytes).hexdigest(),
+                "managedDlls": managed_dlls,
                 "binaryTokenChecks": token_checks,
                 "meta": meta_result,
                 "frameworkEvidence": framework_result,
@@ -685,7 +692,12 @@ def inspect_archive(path: Path, artifact: dict[str, Any]) -> dict[str, Any]:
 def generated_meta(artifact: dict[str, Any]) -> dict[str, Any]:
     plugin = artifact["plugin"]
     return {
-        "assemblies": [plugin["assembly"]],
+        # Jellyfin treats a missing or empty assembly whitelist as an instruction
+        # to load every DLL in the plugin directory.  This is also what a normal
+        # repository installation does when an archive has no local meta.json.
+        # Keep that host behavior: limiting the sidecar to the main DLL would
+        # strand packaged private dependencies such as Gelato's MonoTorrent DLLs.
+        "assemblies": [],
         "autoUpdate": False,
         "category": "General",
         "description": "Compatibility-harness sidecar generated from ecosystem.lock.json.",
@@ -695,6 +707,16 @@ def generated_meta(artifact: dict[str, Any]) -> dict[str, Any]:
         "targetAbi": plugin["targetAbi"],
         "version": plugin["version"],
     }
+
+
+def completed_upstream_meta(meta: dict[str, Any], artifact: dict[str, Any]) -> dict[str, Any]:
+    """Complete safe scalar metadata without changing host assembly selection."""
+    completed = dict(meta)
+    completed.setdefault("targetAbi", artifact["plugin"]["targetAbi"])
+    # Do not manufacture a main-DLL-only whitelist.  Jellyfin preserves an
+    # upstream missing/empty Assemblies value and consequently loads all DLLs
+    # from that package; explicit nonempty upstream whitelists remain intact.
+    return completed
 
 
 def materialize(path: Path, artifact: dict[str, Any], destination: Path) -> dict[str, Any]:
@@ -728,9 +750,7 @@ def materialize(path: Path, artifact: dict[str, Any], destination: Path) -> dict
         upstream_meta = load_json(meta_path)
         if not isinstance(upstream_meta, dict):
             raise HarnessError(f"{artifact['id']}: materialized upstream meta is not an object")
-        upstream_meta.setdefault("targetAbi", artifact["plugin"]["targetAbi"])
-        if not ci_value(upstream_meta, "assemblies"):
-            upstream_meta["assemblies"] = [artifact["plugin"]["assembly"]]
+        upstream_meta = completed_upstream_meta(upstream_meta, artifact)
         with meta_path.open("w", encoding="utf-8", newline="\n") as handle:
             json.dump(upstream_meta, handle, indent=2, sort_keys=True)
             handle.write("\n")
@@ -739,6 +759,16 @@ def materialize(path: Path, artifact: dict[str, Any], destination: Path) -> dict
 
     installed_meta = load_json(meta_path)
     meta_checks = validate_meta(installed_meta, artifact)
+    dll_inventory = {
+        dll.relative_to(destination).as_posix(): sha256_path(dll)
+        for dll in sorted(destination.rglob("*.dll"))
+    }
+    if dll_inventory != verification["plugin"]["managedDlls"]:
+        raise HarnessError(
+            f"{artifact['id']}: materialized DLL inventory differs from the locked archive"
+        )
+    declared_assemblies = ci_value(installed_meta, "assemblies")
+    load_all_packaged = declared_assemblies in (None, [])
     return {
         "id": artifact["id"],
         "destination": str(destination),
@@ -747,6 +777,12 @@ def materialize(path: Path, artifact: dict[str, Any], destination: Path) -> dict
         "metaPath": str(meta_path),
         "metaSource": "generated" if policy == "absent-generate" else "upstream-completed",
         "metaChecks": meta_checks,
+        "dllInventory": dll_inventory,
+        "assemblySelection": {
+            "policy": "load-all-packaged" if load_all_packaged else "explicit-whitelist",
+            "declared": declared_assemblies,
+            "effective": sorted(dll_inventory) if load_all_packaged else declared_assemblies,
+        },
         "materialized": True,
     }
 
