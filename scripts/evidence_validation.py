@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
+import math
 import pathlib
 import re
 from collections import Counter
@@ -122,6 +124,21 @@ COMPAT_RAW_HTTP_FILES = (
     "conditional.headers",
     "conditional-status.txt",
 )
+COMPAT_CONTENT_PROBE_SUFFIXES = (".txt", ".headers", ".status")
+COMPAT_CONTENT_PROBE_MAX_BODY_BYTES = 1024 * 1024
+COMPAT_CONTENT_PROBE_MAX_HEADER_BYTES = 64 * 1024
+COMPAT_CONTENT_PROBE_MAX_STATUS_BYTES = 4096
+COMPAT_CONTENT_PROBE_MAX_COUNT = 64
+COMPAT_CONTENT_PROBE_MAX_ID_CHARS = 64
+COMPAT_CONTENT_PROBE_MAX_PATH_CHARS = 2048
+COMPAT_CONTENT_PROBE_MAX_ACCEPT_CHARS = 128
+COMPAT_CONTENT_PROBE_MAX_MAP_ENTRIES = 64
+COMPAT_CONTENT_PROBE_MAX_LIST_ENTRIES = 64
+COMPAT_CONTENT_PROBE_MAX_KEY_CHARS = 128
+COMPAT_CONTENT_PROBE_MAX_VALUE_CHARS = 4096
+COMPAT_CONTENT_PROBE_MAX_TOTAL_REQUIREMENTS = 64
+COMPAT_HTTP_TOKEN = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+COMPAT_HTTP_QUOTED_STRING = r'"(?:[\t !#-\[\]-~]|\\[\t -~])*"'
 SAFE_DEGRADE_CHECK_NAMES = {
     "primaryStatus200",
     "primaryFramingValid",
@@ -658,6 +675,15 @@ def _compatibility_text(raw: bytes, label: str) -> str:
         ) from error
 
 
+def _compatibility_probe_text(raw: bytes, label: str) -> str:
+    try:
+        return raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise EvidenceValidationError(
+            f"compatibility content-probe evidence is not strict UTF-8: {label}: {error}"
+        ) from error
+
+
 def _compatibility_headers(raw: bytes, label: str) -> dict[str, list[str]]:
     headers: dict[str, list[str]] = {}
     for raw_line in _compatibility_text(raw, label).splitlines():
@@ -675,6 +701,425 @@ def _compatibility_http_status(raw: bytes, label: str) -> int | None:
         if match is not None:
             statuses.append(int(match.group(1)))
     return statuses[-1] if statuses else None
+
+
+def _compatibility_content_type_details(value: str) -> tuple[str | None, bool]:
+    """Return a strict MIME essence and whether any charset is UTF-8."""
+    match = re.match(rf"({COMPAT_HTTP_TOKEN})/({COMPAT_HTTP_TOKEN})", value)
+    if match is None:
+        return None, False
+    essence = f"{match.group(1)}/{match.group(2)}".casefold()
+    position = match.end()
+    parameter_names: set[str] = set()
+    charset: str | None = None
+    while True:
+        while position < len(value) and value[position] in " \t":
+            position += 1
+        if position == len(value):
+            return essence, charset is None or charset.casefold() in {
+                "utf-8",
+                "utf8",
+            }
+        if value[position] != ";":
+            return None, False
+        position += 1
+        while position < len(value) and value[position] in " \t":
+            position += 1
+        name_match = re.match(COMPAT_HTTP_TOKEN, value[position:])
+        if name_match is None:
+            return None, False
+        name = name_match.group(0).casefold()
+        if name in parameter_names:
+            return None, False
+        parameter_names.add(name)
+        position += name_match.end()
+        while position < len(value) and value[position] in " \t":
+            position += 1
+        if position == len(value) or value[position] != "=":
+            return None, False
+        position += 1
+        while position < len(value) and value[position] in " \t":
+            position += 1
+        value_match = re.match(
+            COMPAT_HTTP_QUOTED_STRING
+            if position < len(value) and value[position] == '"'
+            else COMPAT_HTTP_TOKEN,
+            value[position:],
+        )
+        if value_match is None:
+            return None, False
+        parameter_value = value_match.group(0)
+        if parameter_value.startswith('"'):
+            parameter_value = re.sub(
+                r"\\([\t -~])", r"\1", parameter_value[1:-1]
+            )
+        if name == "charset":
+            charset = parameter_value
+        position += value_match.end()
+
+
+def _compatibility_content_type_essence(value: str) -> str | None:
+    return _compatibility_content_type_details(value)[0]
+
+
+def _compatibility_response_blocks(
+    raw: bytes, label: str
+) -> tuple[list[dict[str, Any]], bool]:
+    text = _compatibility_probe_text(raw, label)
+    blocks: list[dict[str, Any]] = []
+    if (
+        re.search(r"(?<!\r)\n|\r(?!\n)", text) is not None
+        or not text.endswith("\r\n\r\n")
+    ):
+        return blocks, False
+    raw_blocks = text.split("\r\n\r\n")
+    if raw_blocks[-1] != "" or any(not block for block in raw_blocks[:-1]):
+        return blocks, False
+    syntax_valid = True
+    for raw_block in raw_blocks[:-1]:
+        lines = raw_block.split("\r\n")
+        line = lines[0]
+        status_match = re.fullmatch(
+            r"HTTP/1\.1 ([0-9]{3})(?: [\x20-\x7e]*)?", line
+        )
+        if status_match is None:
+            syntax_valid = False
+            continue
+        current: dict[str, Any] = {
+            "status": int(status_match.group(1)),
+            "headers": {},
+        }
+        for line in lines[1:]:
+            if (
+                not line
+                or line[0] in " \t"
+                or ":" not in line
+                or re.fullmatch(
+                    r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", line.split(":", 1)[0]
+                )
+                is None
+            ):
+                syntax_valid = False
+                continue
+            key, header_value = line.split(":", 1)
+            if any(
+                character != "\t" and not 0x20 <= ord(character) <= 0x7E
+                for character in header_value
+            ):
+                syntax_valid = False
+                continue
+            current["headers"].setdefault(key.casefold(), []).append(
+                header_value.strip()
+            )
+        blocks.append(current)
+    return blocks, syntax_valid
+
+
+def _compatibility_probe_status(
+    raw: bytes, expected_origin: str | None, expected_path: str, label: str
+) -> tuple[int | None, str | None, bool]:
+    text = _compatibility_probe_text(raw, label)
+    match = re.fullmatch(r"([0-9]{3})\t([^\r\n]+)\n", text)
+    if match is None:
+        return None, None, False
+    effective_url = match.group(2)
+    effective_valid = (
+        expected_origin is not None
+        and effective_url == f"{expected_origin}{expected_path}"
+    )
+    return int(match.group(1)), effective_url, effective_valid
+
+
+def _compatibility_strict_json_object(text: str) -> tuple[Any, bool]:
+    def object_from_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        def finite_float(value: str) -> float:
+            parsed = float(value)
+            if not math.isfinite(parsed):
+                raise ValueError(f"non-finite JSON float: {value}")
+            return parsed
+
+        value = json.loads(
+            text,
+            object_pairs_hook=object_from_pairs,
+            parse_float=finite_float,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant: {value}")
+            ),
+        )
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return None, False
+    if not isinstance(value, dict):
+        return value, False
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    nodes = 0
+    while pending:
+        current, depth = pending.pop()
+        nodes += 1
+        if depth > 64 or nodes > 100_000:
+            return None, False
+        if isinstance(current, list):
+            pending.extend((item, depth + 1) for item in current)
+        elif isinstance(current, dict):
+            pending.extend((item, depth + 1) for item in current.values())
+    return value, True
+
+
+def _compatibility_count_literal_occurrences(text: str, marker: str) -> int:
+    count = 0
+    position = 0
+    while True:
+        position = text.find(marker, position)
+        if position < 0:
+            return count
+        count += 1
+        position += 1
+
+
+def _compatibility_count_json_string(value: Any, marker: str) -> int:
+    count = 0
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            count += int(current == marker)
+        elif isinstance(current, list):
+            pending.extend(current)
+        elif isinstance(current, dict):
+            pending.extend(current.values())
+    return count
+
+
+def reconstruct_compatibility_content_probe(
+    captures: dict[str, bytes],
+    probe: dict[str, Any],
+    matrix_id: str,
+    expected_origin: str | None,
+) -> dict[str, Any]:
+    """Rebuild one content-probe projection solely from its three raw captures."""
+    require(
+        set(captures) == set(COMPAT_CONTENT_PROBE_SUFFIXES),
+        f"{matrix_id}/{probe['id']}: content probe raw inventory differs",
+    )
+    body_raw = captures[".txt"]
+    header_raw = captures[".headers"]
+    status_raw = captures[".status"]
+    label = f"{matrix_id}/content-probes/{probe['id']}"
+    blocks, header_syntax_valid = _compatibility_response_blocks(
+        header_raw, f"{label}.headers"
+    )
+    selected = blocks[0] if len(blocks) == 1 else None
+    headers = selected["headers"] if selected is not None else {}
+    header_status = selected["status"] if selected is not None else None
+    status_value, effective_url, effective_url_valid = _compatibility_probe_status(
+        status_raw, expected_origin, probe["path"], f"{label}.status"
+    )
+    content_type_values = headers.get("content-type", [])
+    content_type, utf8_charset_coherent = (
+        _compatibility_content_type_details(content_type_values[0])
+        if len(content_type_values) == 1
+        else (None, False)
+    )
+    content_encoding_values = headers.get("content-encoding", [])
+    identity_encoding = not content_encoding_values or (
+        len(content_encoding_values) == 1
+        and content_encoding_values[0].strip().casefold() == "identity"
+    )
+    framing_mode = _compatibility_framing_mode(headers, body_raw)
+    probe_text = _compatibility_probe_text(body_raw, f"{label}.txt")
+    probe_format = probe["format"]
+    parsed_probe: Any = None
+    if probe_format == "json-object":
+        parsed_probe, format_valid = _compatibility_strict_json_object(probe_text)
+    else:
+        format_valid = probe_format == "text"
+    body_contract = probe["response"]["body"]
+    body_sha256 = hashlib.sha256(body_raw).hexdigest()
+    if body_contract["mode"] == "exact":
+        body_bytes_valid = len(body_raw) == body_contract["bytes"]
+        body_hash_valid = body_sha256 == body_contract["sha256"]
+        request_max_bytes = body_contract["bytes"]
+    else:
+        body_bytes_valid = (
+            body_contract["minBytes"]
+            <= len(body_raw)
+            <= body_contract["maxBytes"]
+        )
+        body_hash_valid = True
+        request_max_bytes = body_contract["maxBytes"]
+
+    def marker_count(marker: str) -> int:
+        if probe_format == "json-object":
+            return (
+                _compatibility_count_json_string(parsed_probe, marker)
+                if format_valid
+                else 0
+            )
+        return _compatibility_count_literal_occurrences(probe_text, marker)
+
+    artifact_checks: dict[str, dict[str, dict[str, Any]]] = {}
+    for artifact_id, requirements in probe["markers"].items():
+        artifact_checks[artifact_id] = {}
+        for requirement in requirements:
+            value = requirement["value"]
+            count = marker_count(value)
+            artifact_checks[artifact_id][value] = {
+                "count": count,
+                "cardinality": requirement["cardinality"],
+                "passed": count == requirement["cardinality"],
+            }
+    json_array_checks: dict[str, dict[str, dict[str, Any]]] = {}
+    for key, requirements in probe.get("jsonArrayContains", {}).items():
+        observed = parsed_probe.get(key) if format_valid else None
+        json_array_checks[key] = {}
+        for requirement in requirements:
+            count = (
+                sum(
+                    type(value) is str and value == requirement["value"]
+                    for value in observed
+                )
+                if isinstance(observed, list)
+                else 0
+            )
+            json_array_checks[key][requirement["value"]] = {
+                "count": count,
+                "cardinality": requirement["cardinality"],
+                "passed": count == requirement["cardinality"],
+            }
+    checks = {
+        "bodyCaptureWithinHardLimit": 0 < len(body_raw)
+        <= COMPAT_CONTENT_PROBE_MAX_BODY_BYTES,
+        "headerCaptureWithinHardLimit": 0 < len(header_raw)
+        <= COMPAT_CONTENT_PROBE_MAX_HEADER_BYTES,
+        "statusCaptureWithinHardLimit": 0 < len(status_raw)
+        <= COMPAT_CONTENT_PROBE_MAX_STATUS_BYTES,
+        "headerSyntaxValid": header_syntax_valid,
+        "singleResponseBlock": header_syntax_valid and len(blocks) == 1,
+        "statusFileValid": status_value is not None and effective_url_valid,
+        "statusExpected": header_status == probe["response"]["status"]
+        and status_value == probe["response"]["status"],
+        "statusConsistent": header_status is not None
+        and header_status == status_value,
+        "singleContentType": len(content_type_values) == 1,
+        "contentTypeSyntaxValid": content_type is not None,
+        "mediaTypeExpected": content_type == probe["response"]["mediaType"],
+        "utf8CharsetCoherent": utf8_charset_coherent,
+        "identityContentEncoding": identity_encoding,
+        "framingValid": framing_mode is not None,
+        "strictUtf8": True,
+        "bodyBytesValid": body_bytes_valid,
+        "bodyHashValid": body_hash_valid,
+        "formatValid": format_valid,
+    }
+    all_cardinalities = all(
+        check["passed"]
+        for artifact in artifact_checks.values()
+        for check in artifact.values()
+    ) and all(
+        check["passed"]
+        for array in json_array_checks.values()
+        for check in array.values()
+    )
+    return {
+        "path": probe["path"],
+        "authenticated": probe["authenticated"],
+        "request": {
+            "accept": probe["request"]["accept"],
+            "acceptEncoding": "identity",
+            "followRedirects": False,
+            "maxBytes": request_max_bytes,
+        },
+        "expectedResponse": probe["response"],
+        "format": probe_format,
+        "response": {
+            "headerBlockCount": len(blocks),
+            "status": header_status,
+            "statusFile": status_value,
+            "effectiveUrl": effective_url,
+            "contentTypeValues": content_type_values,
+            "mediaType": content_type,
+            "contentEncodingValues": content_encoding_values,
+            "framingMode": framing_mode,
+            "bodyBytes": len(body_raw),
+            "bodySha256": body_sha256,
+            "headersBytes": len(header_raw),
+            "headersSha256": hashlib.sha256(header_raw).hexdigest(),
+            "statusBytes": len(status_raw),
+            "statusSha256": hashlib.sha256(status_raw).hexdigest(),
+        },
+        "checks": checks,
+        "jsonArrayContainsChecks": json_array_checks,
+        "artifactChecks": artifact_checks,
+        "allPassed": all(checks.values()) and all_cardinalities,
+    }
+
+
+def read_compatibility_content_probe_captures(
+    directory: pathlib.Path, probe: dict[str, Any], matrix_id: str
+) -> dict[str, bytes]:
+    limits = {
+        ".txt": COMPAT_CONTENT_PROBE_MAX_BODY_BYTES,
+        ".headers": COMPAT_CONTENT_PROBE_MAX_HEADER_BYTES,
+        ".status": COMPAT_CONTENT_PROBE_MAX_STATUS_BYTES,
+    }
+    captures: dict[str, bytes] = {}
+    for suffix, limit in limits.items():
+        path = directory / "content-probes" / f"{probe['id']}{suffix}"
+        try:
+            size = path.stat().st_size
+        except OSError as error:
+            raise EvidenceValidationError(
+                f"{matrix_id}/{probe['id']}{suffix}: cannot stat content probe: {error}"
+            ) from error
+        require(
+            0 < size <= limit,
+            f"{matrix_id}/{probe['id']}{suffix}: content probe capture size is invalid",
+        )
+        captures[suffix] = path.read_bytes()
+    return captures
+
+
+def compatibility_selected_origin(network: dict[str, Any]) -> str | None:
+    mode = network.get("originMode")
+    selected = network.get("selectedOrigin")
+    if not isinstance(selected, str):
+        return None
+    if mode == "published-loopback":
+        declared = network.get("declaredLoopback")
+        if (
+            not isinstance(declared, str)
+            or re.fullmatch(r"127\.0\.0\.1:([0-9]+)", declared) is None
+            or network.get("publishedLoopbackActive") is not True
+        ):
+            return None
+        port = int(declared.rsplit(":", 1)[1])
+        if not 1 <= port <= 65535:
+            return None
+        expected = f"http://{declared}"
+    elif mode == "verified-internal-bridge":
+        address = network.get("internalIpv4")
+        if (
+            not isinstance(address, str)
+            or network.get("publishedLoopbackActive") is not False
+        ):
+            return None
+        try:
+            parsed_address = ipaddress.ip_address(address)
+        except ValueError:
+            return None
+        if parsed_address.version != 4 or str(parsed_address) != address:
+            return None
+        expected = f"http://{address}:8096"
+    else:
+        return None
+    return expected if selected == expected else None
 
 
 def _compatibility_framing_mode(
@@ -1308,6 +1753,337 @@ def validate_integration_tree(root: pathlib.Path, build: pathlib.Path) -> set[st
     return {f"lab/{name}" for name in expected_lab} | {f"logs/{name}" for name in expected_logs}
 
 
+def load_compatibility_content_probes(
+    matrices_path: pathlib.Path,
+) -> dict[str, list[dict[str, Any]]]:
+    """Load the exact retained content-probe contract for every matrix."""
+    root = load_object(matrices_path)
+    rows = root.get("matrices")
+    require(isinstance(rows, list), "compatibility matrices has no array")
+    result: dict[str, list[dict[str, Any]]] = {}
+    mime_pattern = re.compile(
+        r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*"
+    )
+    for row in rows:
+        require(isinstance(row, dict), "compatibility matrix row is not an object")
+        matrix_id = row.get("id")
+        require(
+            isinstance(matrix_id, str) and matrix_id not in result,
+            f"invalid/repeated compatibility matrix id: {matrix_id!r}",
+        )
+        install_order = row.get("installOrder")
+        require(
+            isinstance(install_order, list),
+            f"compatibility matrix {matrix_id} install order is invalid",
+        )
+        probes = row.get("contentProbes", [])
+        require(
+            isinstance(probes, list),
+            f"compatibility matrix {matrix_id} content probes are invalid",
+        )
+        require(
+            len(probes) <= COMPAT_CONTENT_PROBE_MAX_COUNT,
+            f"{matrix_id}: content probe count exceeds "
+            f"{COMPAT_CONTENT_PROBE_MAX_COUNT}",
+        )
+        probe_ids: list[str] = []
+        probe_paths: list[str] = []
+        exact_routes: Counter[tuple[str, str]] = Counter()
+        validated: list[dict[str, Any]] = []
+        for probe in probes:
+            require(
+                isinstance(probe, dict),
+                f"compatibility matrix {matrix_id} content probe is not an object",
+            )
+            probe_id = probe.get("id")
+            path = probe.get("path")
+            probe_format = probe.get("format")
+            wanted_fields = {
+                "id", "path", "authenticated", "request", "response",
+                "format", "markers",
+            } | ({"jsonArrayContains"} if probe_format == "json-object" else set())
+            require(
+                set(probe) == wanted_fields
+                and isinstance(probe_id, str)
+                and re.fullmatch(r"[a-z0-9][a-z0-9-]*", probe_id) is not None,
+                f"{matrix_id}: invalid content probe identity/schema",
+            )
+            require(
+                len(probe_id) <= COMPAT_CONTENT_PROBE_MAX_ID_CHARS,
+                f"{matrix_id}: content probe id exceeds "
+                f"{COMPAT_CONTENT_PROBE_MAX_ID_CHARS} characters",
+            )
+            require(
+                isinstance(path, str)
+                and len(path) <= COMPAT_CONTENT_PROBE_MAX_PATH_CHARS,
+                f"{matrix_id}/{probe_id}: content probe path exceeds "
+                f"{COMPAT_CONTENT_PROBE_MAX_PATH_CHARS} characters",
+            )
+            require(
+                all(ord(character) <= 0x7F for character in path),
+                f"{matrix_id}/{probe_id}: content probe path must be ASCII",
+            )
+            require(
+                path.startswith("/")
+                and "?" not in path
+                and "#" not in path
+                and "\\" not in path
+                and "%" not in path
+                and "//" not in path
+                and not any(segment in {".", ".."} for segment in path.split("/"))
+                and not any(
+                    character.isspace()
+                    or ord(character) < 0x20
+                    or ord(character) == 0x7F
+                    for character in path
+                ),
+                f"{matrix_id}/{probe_id}: invalid content probe path",
+            )
+            require(
+                type(probe.get("authenticated")) is bool,
+                f"{matrix_id}/{probe_id}: invalid authentication flag",
+            )
+            request = probe.get("request")
+            response = probe.get("response")
+            require(
+                isinstance(request, dict)
+                and set(request) == {"accept"}
+                and isinstance(request.get("accept"), str),
+                f"{matrix_id}/{probe_id}: invalid content probe request",
+            )
+            require(
+                len(request["accept"]) <= COMPAT_CONTENT_PROBE_MAX_ACCEPT_CHARS,
+                f"{matrix_id}/{probe_id}: content probe Accept exceeds "
+                f"{COMPAT_CONTENT_PROBE_MAX_ACCEPT_CHARS} characters",
+            )
+            require(
+                mime_pattern.fullmatch(request["accept"]) is not None,
+                f"{matrix_id}/{probe_id}: invalid content probe request",
+            )
+            require(
+                isinstance(response, dict)
+                and set(response) == {"status", "mediaType", "body"}
+                and type(response.get("status")) is int
+                and response["status"] == 200
+                and response.get("mediaType") == request["accept"],
+                f"{matrix_id}/{probe_id}: invalid content probe response",
+            )
+            body = response.get("body")
+            require(
+                isinstance(body, dict),
+                f"{matrix_id}/{probe_id}: invalid content probe body contract",
+            )
+            if body.get("mode") == "exact":
+                require(
+                    set(body) == {"mode", "bytes", "sha256"}
+                    and type(body.get("bytes")) is int
+                    and 1 <= body["bytes"] <= COMPAT_CONTENT_PROBE_MAX_BODY_BYTES
+                    and isinstance(body.get("sha256"), str)
+                    and SHA256.fullmatch(body["sha256"]) is not None,
+                    f"{matrix_id}/{probe_id}: invalid exact content body contract",
+                )
+            else:
+                require(
+                    body.get("mode") == "semantic"
+                    and set(body) == {"mode", "minBytes", "maxBytes"}
+                    and type(body.get("minBytes")) is int
+                    and type(body.get("maxBytes")) is int
+                    and 1 <= body["minBytes"] <= body["maxBytes"]
+                    <= COMPAT_CONTENT_PROBE_MAX_BODY_BYTES,
+                    f"{matrix_id}/{probe_id}: invalid semantic content body contract",
+                )
+            require(
+                probe_format in {"text", "json-object"}
+                and (probe_format == "json-object")
+                == (response["mediaType"] == "application/json"),
+                f"{matrix_id}/{probe_id}: content format/media type disagree",
+            )
+            json_arrays = probe.get("jsonArrayContains", {})
+            require(
+                isinstance(json_arrays, dict)
+                and bool(json_arrays) == (probe_format == "json-object"),
+                f"{matrix_id}/{probe_id}: invalid JSON array contract",
+            )
+            require(
+                len(json_arrays) <= COMPAT_CONTENT_PROBE_MAX_MAP_ENTRIES,
+                f"{matrix_id}/{probe_id}: JSON array map exceeds "
+                f"{COMPAT_CONTENT_PROBE_MAX_MAP_ENTRIES} entries",
+            )
+            for key, requirements in json_arrays.items():
+                require(
+                    isinstance(key, str)
+                    and bool(key)
+                    and isinstance(requirements, list)
+                    and bool(requirements)
+                    and all(
+                        isinstance(requirement, dict)
+                        and set(requirement) == {"value", "cardinality"}
+                        and isinstance(requirement.get("value"), str)
+                        and bool(requirement["value"])
+                        and type(requirement.get("cardinality")) is int
+                        and requirement["cardinality"] == 1
+                        for requirement in requirements
+                    )
+                    and len({requirement["value"] for requirement in requirements})
+                    == len(requirements),
+                    f"{matrix_id}/{probe_id}: invalid JSON cardinality contract",
+                )
+                require(
+                    len(key) <= COMPAT_CONTENT_PROBE_MAX_KEY_CHARS,
+                    f"{matrix_id}/{probe_id}: JSON array key exceeds "
+                    f"{COMPAT_CONTENT_PROBE_MAX_KEY_CHARS} characters",
+                )
+                require(
+                    all(
+                        ord(character) >= 0x20 and ord(character) != 0x7F
+                        for character in key
+                    ),
+                    f"{matrix_id}/{probe_id}: JSON array key contains control characters",
+                )
+                require(
+                    len(requirements) <= COMPAT_CONTENT_PROBE_MAX_LIST_ENTRIES,
+                    f"{matrix_id}/{probe_id}: JSON array requirement list exceeds "
+                    f"{COMPAT_CONTENT_PROBE_MAX_LIST_ENTRIES} entries",
+                )
+                for requirement in requirements:
+                    value = requirement["value"]
+                    require(
+                        len(value) <= COMPAT_CONTENT_PROBE_MAX_VALUE_CHARS,
+                        f"{matrix_id}/{probe_id}: JSON array value exceeds "
+                        f"{COMPAT_CONTENT_PROBE_MAX_VALUE_CHARS} characters",
+                    )
+                    require(
+                        all(
+                            ord(character) >= 0x20 and ord(character) != 0x7F
+                            for character in value
+                        ),
+                        f"{matrix_id}/{probe_id}: JSON array value contains control characters",
+                    )
+            markers = probe.get("markers")
+            require(
+                isinstance(markers, dict) and bool(markers),
+                f"{matrix_id}/{probe_id}: invalid marker contract",
+            )
+            require(
+                len(markers) <= COMPAT_CONTENT_PROBE_MAX_MAP_ENTRIES,
+                f"{matrix_id}/{probe_id}: content marker owner map exceeds "
+                f"{COMPAT_CONTENT_PROBE_MAX_MAP_ENTRIES} entries",
+            )
+            marker_owners: dict[str, str] = {}
+            for artifact_id, requirements in markers.items():
+                require(
+                    isinstance(artifact_id, str),
+                    f"{matrix_id}/{probe_id}: invalid content marker owner",
+                )
+                require(
+                    len(artifact_id) <= COMPAT_CONTENT_PROBE_MAX_KEY_CHARS,
+                    f"{matrix_id}/{probe_id}: content marker owner exceeds "
+                    f"{COMPAT_CONTENT_PROBE_MAX_KEY_CHARS} characters",
+                )
+                require(
+                    all(
+                        ord(character) >= 0x20 and ord(character) != 0x7F
+                        for character in artifact_id
+                    ),
+                    f"{matrix_id}/{probe_id}: content marker owner contains "
+                    "control characters",
+                )
+                require(
+                    artifact_id in install_order
+                    and artifact_id != "@refresh-kit"
+                    and isinstance(requirements, list)
+                    and bool(requirements)
+                    and all(
+                        isinstance(requirement, dict)
+                        and set(requirement) == {"value", "cardinality"}
+                        and isinstance(requirement.get("value"), str)
+                        and bool(requirement["value"])
+                        and type(requirement.get("cardinality")) is int
+                        and requirement["cardinality"] == 1
+                        for requirement in requirements
+                    )
+                    and len({requirement["value"] for requirement in requirements})
+                    == len(requirements),
+                    f"{matrix_id}/{probe_id}: invalid marker cardinality contract",
+                )
+                require(
+                    len(requirements) <= COMPAT_CONTENT_PROBE_MAX_LIST_ENTRIES,
+                    f"{matrix_id}/{probe_id}: content marker requirement list "
+                    f"exceeds {COMPAT_CONTENT_PROBE_MAX_LIST_ENTRIES} entries",
+                )
+                for requirement in requirements:
+                    marker_value = requirement["value"]
+                    require(
+                        len(marker_value) <= COMPAT_CONTENT_PROBE_MAX_VALUE_CHARS,
+                        f"{matrix_id}/{probe_id}: content marker value exceeds "
+                        f"{COMPAT_CONTENT_PROBE_MAX_VALUE_CHARS} characters",
+                    )
+                    require(
+                        all(
+                            ord(character) >= 0x20 and ord(character) != 0x7F
+                            for character in marker_value
+                        ),
+                        f"{matrix_id}/{probe_id}: content marker value contains "
+                        "control characters",
+                    )
+                    previous_owner = marker_owners.setdefault(
+                        marker_value, artifact_id
+                    )
+                    require(
+                        previous_owner == artifact_id,
+                        f"{matrix_id}/{probe_id}: marker value has multiple owners",
+                    )
+            total_requirements = sum(
+                len(requirements) for requirements in json_arrays.values()
+            ) + sum(len(requirements) for requirements in markers.values())
+            require(
+                total_requirements <= COMPAT_CONTENT_PROBE_MAX_TOTAL_REQUIREMENTS,
+                f"{matrix_id}/{probe_id}: content probe total requirements exceeds "
+                f"{COMPAT_CONTENT_PROBE_MAX_TOTAL_REQUIREMENTS}",
+            )
+            if body["mode"] == "exact":
+                require(
+                    len(markers) == 1
+                    and response["mediaType"]
+                    == ("text/css" if path.endswith(".css") else "text/javascript"),
+                    f"{matrix_id}/{probe_id}: invalid exact assembly probe ownership/type",
+                )
+                exact_routes[(next(iter(markers)), path)] += 1
+            probe_ids.append(probe_id)
+            probe_paths.append(path)
+            validated.append(probe)
+        require(
+            len(probe_ids) == len(set(probe_ids))
+            and len(probe_paths) == len(set(probe_paths)),
+            f"{matrix_id}: duplicate content probe id/path",
+        )
+        shell_requirements = row.get("shellRequirements", {})
+        require(
+            isinstance(shell_requirements, dict),
+            f"{matrix_id}: shell requirements are invalid",
+        )
+        assembly_routes: Counter[tuple[str, str]] = Counter()
+        for artifact_id, requirement in shell_requirements.items():
+            if isinstance(requirement, dict) and requirement.get("mode") == "assembly-versioned-path":
+                selectors = requirement.get("selectors")
+                require(
+                    isinstance(selectors, list),
+                    f"{matrix_id}/{artifact_id}: assembly selectors are invalid",
+                )
+                for selector in selectors:
+                    require(
+                        isinstance(selector, dict) and isinstance(selector.get("path"), str),
+                        f"{matrix_id}/{artifact_id}: assembly selector is invalid",
+                    )
+                    assembly_routes[(artifact_id, selector["path"])] += 1
+        require(
+            exact_routes == assembly_routes,
+            f"{matrix_id}: exact probes do not map one-to-one to assembly selectors",
+        )
+        result[matrix_id] = validated
+    return result
+
+
 def _matrix_contract(
     matrices_path: pathlib.Path,
 ) -> tuple[
@@ -1447,6 +2223,7 @@ def validate_compatibility_tree(
         runtime_orders,
         install_orders,
     ) = _matrix_contract(matrices_path)
+    content_probes = load_compatibility_content_probes(matrices_path)
     expected = {"summary.json", "all-locked-verification.json"} | {
         f"{matrix_id}/{name}" for matrix_id in ids for name in COMPAT_MATRIX_FILES
     }
@@ -1457,6 +2234,12 @@ def validate_compatibility_tree(
         f"{matrix_id}/{name}"
         for matrix_id in webroot_disk_requirements
         for name in COMPAT_WEBROOT_FILES
+    }
+    expected |= {
+        f"{matrix_id}/content-probes/{probe['id']}{suffix}"
+        for matrix_id, probes in content_probes.items()
+        for probe in probes
+        for suffix in COMPAT_CONTENT_PROBE_SUFFIXES
     }
     actual = {
         path.relative_to(compat).as_posix() for path in compat.rglob("*") if path.is_file()
@@ -1587,6 +2370,11 @@ def validate_compatibility_tree(
                 and network.get("originMode") == "verified-internal-bridge"
                 and network.get("publishedLoopbackActive") is False,
                 f"{matrix_id}: network isolation identity differs")
+        selected_origin = compatibility_selected_origin(network)
+        require(
+            selected_origin is not None,
+            f"{matrix_id}: selected compatibility origin identity differs",
+        )
         require(result.get("cacheExpectation") == cache_expectations[matrix_id],
                 f"{matrix_id}: result cache expectation differs")
         require(
@@ -1641,6 +2429,30 @@ def validate_compatibility_tree(
             ),
             f"{matrix_id}: runtime plugin order proof differs",
         )
+        result_probes = result.get("contentProbes")
+        expected_probe_ids = [probe["id"] for probe in content_probes[matrix_id]]
+        require(
+            isinstance(result_probes, dict)
+            and list(result_probes) == expected_probe_ids,
+            f"{matrix_id}: result content-probe inventory/order differs",
+        )
+        for probe in content_probes[matrix_id]:
+            captures = read_compatibility_content_probe_captures(
+                directory, probe, matrix_id
+            )
+            reconstructed_probe = reconstruct_compatibility_content_probe(
+                captures, probe, matrix_id, selected_origin
+            )
+            require(
+                reconstructed_probe["allPassed"] is True,
+                f"{matrix_id}/{probe['id']}: raw content probe contract failed",
+            )
+            require(
+                exact_json_value(
+                    result_probes[probe["id"]], reconstructed_probe
+                ),
+                f"{matrix_id}/{probe['id']}: result content probe differs from raw captures",
+            )
         rows = result.get("limitations")
         require(isinstance(rows, list) and [row.get("artifactId") for row in rows if isinstance(row, dict)]
                 == expected_limitations and len(rows) == len(expected_limitations),

@@ -76,11 +76,33 @@
           "id": "intro-skipper-bundle",
           "path": "/web/main.jellyfin.bundle.js",
           "authenticated": false,
+          "request": {
+            "accept": "text/javascript"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/javascript",
+            "body": {
+              "mode": "semantic",
+              "minBytes": 400000,
+              "maxBytes": 600000
+            }
+          },
+          "format": "text",
           "markers": {
             "intro-skipper-jf10": [
-              "false||(t.hideTimeout=setTimeout(t.hideSkipButton.bind(t),13000))",
-              ":false||this.hideTimeout||this.hideSkipButton()",
-              "isCurrentlyFocusable(document.activeElement)&&t.playbackManager.currentTime()>1000"
+              {
+                "value": "false||(t.hideTimeout=setTimeout(t.hideSkipButton.bind(t),13000))",
+                "cardinality": 1
+              },
+              {
+                "value": ":false||this.hideTimeout||this.hideSkipButton()",
+                "cardinality": 1
+              },
+              {
+                "value": "isCurrentlyFocusable(document.activeElement)&&t.playbackManager.currentTime()>1000",
+                "cardinality": 1
+              }
             ]
           }
         }
@@ -645,17 +667,45 @@
           "id": "javascript-injector-public",
           "path": "/JavaScriptInjector/public.js",
           "authenticated": false,
+          "request": {
+            "accept": "application/javascript"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "application/javascript",
+            "body": {
+              "mode": "semantic",
+              "minBytes": 30000,
+              "maxBytes": 65536
+            }
+          },
+          "format": "text",
           "markers": {
             "media-preview-jf10": [
-              "window.JellyfinMediaPreview"
+              {
+                "value": "window.JellyfinMediaPreview",
+                "cardinality": 1
+              }
             ],
             "gelato-jf10": [
-              "(from Gelato)",
-              "jellyfin_local_search_enabled"
+              {
+                "value": "(from Gelato)",
+                "cardinality": 1
+              },
+              {
+                "value": "jellyfin_local_search_enabled",
+                "cardinality": 1
+              }
             ],
             "jellyfin-oscars-jf10": [
-              "(from Jellyfin Oscars)",
-              "window.__jellyfinOscarsInitialized = true;"
+              {
+                "value": "(from Jellyfin Oscars)",
+                "cardinality": 1
+              },
+              {
+                "value": "window.__jellyfinOscarsInitialized = true;",
+                "cardinality": 1
+              }
             ]
           }
         },
@@ -663,14 +713,39 @@
           "id": "javascript-injector-private",
           "path": "/JavaScriptInjector/private.js",
           "authenticated": true,
+          "request": {
+            "accept": "application/javascript"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "application/javascript",
+            "body": {
+              "mode": "semantic",
+              "minBytes": 25000,
+              "maxBytes": 65536
+            }
+          },
+          "format": "text",
           "markers": {
             "discontinue-watching-jf10": [
-              "(from DiscontinueWatching)",
-              "[DiscontinueWatching] Initializing"
+              {
+                "value": "(from DiscontinueWatching)",
+                "cardinality": 1
+              },
+              {
+                "value": "[DiscontinueWatching] Initializing",
+                "cardinality": 1
+              }
             ],
             "jellysleep-jf10": [
-              "(from Jellysleep)",
-              "Sleep Timer Plugin for Jellyfin"
+              {
+                "value": "(from Jellysleep)",
+                "cardinality": 1
+              },
+              {
+                "value": "Sleep Timer Plugin for Jellyfin",
+                "cardinality": 1
+              }
             ]
           }
         }
@@ -764,12 +839,132 @@
       "configurationPatches": [],
       "contentProbes": [
         {
+          "id": "powertoys-jellytag-stylesheet",
+          "path": "/_/3936977dc27b1d5f4a1a23230bf93b00/9aaab5e58c0772b4f9c796f7b47c02d2.css",
+          "authenticated": false,
+          "request": {
+            "accept": "text/css"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/css",
+            "body": {
+              "mode": "exact",
+              "bytes": 330,
+              "sha256": "6df81644baeaf28b5361409516bb8bd39488e49894e084306370e89cc4a77578"
+            }
+          },
+          "format": "text",
+          "markers": {
+            "powertoys-jellytag-jf10": [
+              {
+                "value": ".jellytag-empty {",
+                "cardinality": 1
+              }
+            ]
+          }
+        },
+        {
+          "id": "powertoys-privacy-mode-stylesheet",
+          "path": "/_/95e039f3e000ef0f7d85cb61a0bad5a5/36a95c4d42479011d16e8df45b3c7102.css",
+          "authenticated": false,
+          "request": {
+            "accept": "text/css"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/css",
+            "body": {
+              "mode": "exact",
+              "bytes": 1070,
+              "sha256": "8669c42b961582cd58533b9f96dbf1cf681c0f3cbc4d90b44c9cdb4f42b84f56"
+            }
+          },
+          "format": "text",
+          "markers": {
+            "powertoys-privacy-mode-jf10": [
+              {
+                "value": ".powertoysPrivacyMode .cardScalable {",
+                "cardinality": 1
+              }
+            ]
+          }
+        },
+        {
+          "id": "powertoys-remote-trailers-stylesheet",
+          "path": "/_/d7de205fc13eaad0272342ed1ccb7e1b/b188ba46d7d1d8a8f4bfe1a41e9b6cd5.css",
+          "authenticated": false,
+          "request": {
+            "accept": "text/css"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/css",
+            "body": {
+              "mode": "exact",
+              "bytes": 292,
+              "sha256": "3a42d2201e87f641bc7fdc1c0ac1fac60ae473a91d19f9e474dc862b9e1df700"
+            }
+          },
+          "format": "text",
+          "markers": {
+            "powertoys-remote-trailers-jf10": [
+              {
+                "value": ".RemoteTrailersContainer {",
+                "cardinality": 1
+              }
+            ]
+          }
+        },
+        {
+          "id": "powertoys-thumbnail-stylesheet",
+          "path": "/_/9ad69ad4aa6db94bb91ba372701f75f8/ef238e529e0bdba93e028ebb9a59dbe4.css",
+          "authenticated": false,
+          "request": {
+            "accept": "text/css"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/css",
+            "body": {
+              "mode": "exact",
+              "bytes": 1340,
+              "sha256": "6aba971d7fdd2c555a52520d2cea3b74fe936b7782f61127725ade62c329978c"
+            }
+          },
+          "format": "text",
+          "markers": {
+            "powertoys-thumbnail-previews-jf10": [
+              {
+                "value": ".preview-player {",
+                "cardinality": 1
+              }
+            ]
+          }
+        },
+        {
           "id": "powertoys-thumbnail-javascript",
           "path": "/_/9ad69ad4aa6db94bb91ba372701f75f8/59b81a2dc57f3e32ef95fdacfd4cf666.js",
           "authenticated": false,
+          "request": {
+            "accept": "text/javascript"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/javascript",
+            "body": {
+              "mode": "exact",
+              "bytes": 21710,
+              "sha256": "2dd124f2e9dd9d9c646e57126c58ef2c0128fbd7da399e33a162cc92c751c20c"
+            }
+          },
+          "format": "text",
           "markers": {
             "powertoys-thumbnail-previews-jf10": [
-              "const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"
+              {
+                "value": "const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";",
+                "cardinality": 1
+              }
             ]
           }
         },
@@ -777,15 +972,33 @@
           "id": "powertoys-remote-trailers-config",
           "path": "/web/config.json",
           "authenticated": false,
+          "request": {
+            "accept": "application/json"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "application/json",
+            "body": {
+              "mode": "semantic",
+              "minBytes": 512,
+              "maxBytes": 4096
+            }
+          },
           "format": "json-object",
           "jsonArrayContains": {
             "plugins": [
-              "powertoys/RemoteTrailers"
+              {
+                "value": "powertoys/RemoteTrailers",
+                "cardinality": 1
+              }
             ]
           },
           "markers": {
             "powertoys-remote-trailers-jf10": [
-              "powertoys/RemoteTrailers"
+              {
+                "value": "powertoys/RemoteTrailers",
+                "cardinality": 1
+              }
             ]
           }
         }
@@ -891,12 +1104,132 @@
       "configurationPatches": [],
       "contentProbes": [
         {
+          "id": "powertoys-jellytag-stylesheet",
+          "path": "/_/3936977dc27b1d5f4a1a23230bf93b00/9aaab5e58c0772b4f9c796f7b47c02d2.css",
+          "authenticated": false,
+          "request": {
+            "accept": "text/css"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/css",
+            "body": {
+              "mode": "exact",
+              "bytes": 330,
+              "sha256": "6df81644baeaf28b5361409516bb8bd39488e49894e084306370e89cc4a77578"
+            }
+          },
+          "format": "text",
+          "markers": {
+            "powertoys-jellytag-jf10": [
+              {
+                "value": ".jellytag-empty {",
+                "cardinality": 1
+              }
+            ]
+          }
+        },
+        {
+          "id": "powertoys-privacy-mode-stylesheet",
+          "path": "/_/95e039f3e000ef0f7d85cb61a0bad5a5/36a95c4d42479011d16e8df45b3c7102.css",
+          "authenticated": false,
+          "request": {
+            "accept": "text/css"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/css",
+            "body": {
+              "mode": "exact",
+              "bytes": 1070,
+              "sha256": "8669c42b961582cd58533b9f96dbf1cf681c0f3cbc4d90b44c9cdb4f42b84f56"
+            }
+          },
+          "format": "text",
+          "markers": {
+            "powertoys-privacy-mode-jf10": [
+              {
+                "value": ".powertoysPrivacyMode .cardScalable {",
+                "cardinality": 1
+              }
+            ]
+          }
+        },
+        {
+          "id": "powertoys-remote-trailers-stylesheet",
+          "path": "/_/d7de205fc13eaad0272342ed1ccb7e1b/b188ba46d7d1d8a8f4bfe1a41e9b6cd5.css",
+          "authenticated": false,
+          "request": {
+            "accept": "text/css"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/css",
+            "body": {
+              "mode": "exact",
+              "bytes": 292,
+              "sha256": "3a42d2201e87f641bc7fdc1c0ac1fac60ae473a91d19f9e474dc862b9e1df700"
+            }
+          },
+          "format": "text",
+          "markers": {
+            "powertoys-remote-trailers-jf10": [
+              {
+                "value": ".RemoteTrailersContainer {",
+                "cardinality": 1
+              }
+            ]
+          }
+        },
+        {
+          "id": "powertoys-thumbnail-stylesheet",
+          "path": "/_/9ad69ad4aa6db94bb91ba372701f75f8/ef238e529e0bdba93e028ebb9a59dbe4.css",
+          "authenticated": false,
+          "request": {
+            "accept": "text/css"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/css",
+            "body": {
+              "mode": "exact",
+              "bytes": 1340,
+              "sha256": "6aba971d7fdd2c555a52520d2cea3b74fe936b7782f61127725ade62c329978c"
+            }
+          },
+          "format": "text",
+          "markers": {
+            "powertoys-thumbnail-previews-jf10": [
+              {
+                "value": ".preview-player {",
+                "cardinality": 1
+              }
+            ]
+          }
+        },
+        {
           "id": "powertoys-thumbnail-javascript",
           "path": "/_/9ad69ad4aa6db94bb91ba372701f75f8/59b81a2dc57f3e32ef95fdacfd4cf666.js",
           "authenticated": false,
+          "request": {
+            "accept": "text/javascript"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "text/javascript",
+            "body": {
+              "mode": "exact",
+              "bytes": 21710,
+              "sha256": "2dd124f2e9dd9d9c646e57126c58ef2c0128fbd7da399e33a162cc92c751c20c"
+            }
+          },
+          "format": "text",
           "markers": {
             "powertoys-thumbnail-previews-jf10": [
-              "const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"
+              {
+                "value": "const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";",
+                "cardinality": 1
+              }
             ]
           }
         },
@@ -904,15 +1237,33 @@
           "id": "powertoys-remote-trailers-config",
           "path": "/web/config.json",
           "authenticated": false,
+          "request": {
+            "accept": "application/json"
+          },
+          "response": {
+            "status": 200,
+            "mediaType": "application/json",
+            "body": {
+              "mode": "semantic",
+              "minBytes": 512,
+              "maxBytes": 4096
+            }
+          },
           "format": "json-object",
           "jsonArrayContains": {
             "plugins": [
-              "powertoys/RemoteTrailers"
+              {
+                "value": "powertoys/RemoteTrailers",
+                "cardinality": 1
+              }
             ]
           },
           "markers": {
             "powertoys-remote-trailers-jf10": [
-              "powertoys/RemoteTrailers"
+              {
+                "value": "powertoys/RemoteTrailers",
+                "cardinality": 1
+              }
             ]
           }
         }

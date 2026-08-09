@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import analyze as analyze_lib
 import artifacts as artifact_lib
@@ -171,6 +172,53 @@ def main() -> int:
             and manifest_lib.matrix_contract_digest(matrices)
             == manifest_lib.EXPECTED_MATRIX_CONTRACT_SHA256,
             "the exact 14-matrix compatibility contract digest changed",
+        )
+        content_probe_occurrences = [
+            probe
+            for matrix in matrices["matrices"]
+            for probe in matrix.get("contentProbes", [])
+        ]
+        exact_probe_occurrences = [
+            probe
+            for probe in content_probe_occurrences
+            if probe["response"]["body"]["mode"] == "exact"
+        ]
+        expected_exact_resources = {
+            "powertoys-jellytag-stylesheet": (
+                330,
+                "6df81644baeaf28b5361409516bb8bd39488e49894e084306370e89cc4a77578",
+            ),
+            "powertoys-privacy-mode-stylesheet": (
+                1070,
+                "8669c42b961582cd58533b9f96dbf1cf681c0f3cbc4d90b44c9cdb4f42b84f56",
+            ),
+            "powertoys-remote-trailers-stylesheet": (
+                292,
+                "3a42d2201e87f641bc7fdc1c0ac1fac60ae473a91d19f9e474dc862b9e1df700",
+            ),
+            "powertoys-thumbnail-stylesheet": (
+                1340,
+                "6aba971d7fdd2c555a52520d2cea3b74fe936b7782f61127725ade62c329978c",
+            ),
+            "powertoys-thumbnail-javascript": (
+                21710,
+                "2dd124f2e9dd9d9c646e57126c58ef2c0128fbd7da399e33a162cc92c751c20c",
+            ),
+        }
+        require(
+            len(content_probe_occurrences) == 15
+            and len(content_probe_occurrences) * 3 == 45
+            and Counter(probe["id"] for probe in exact_probe_occurrences)
+            == Counter({probe_id: 2 for probe_id in expected_exact_resources})
+            and all(
+                (
+                    probe["response"]["body"]["bytes"],
+                    probe["response"]["body"]["sha256"],
+                )
+                == expected_exact_resources[probe["id"]]
+                for probe in exact_probe_occurrences
+            ),
+            "content-probe count or source-derived PowerToys byte identities changed",
         )
         actual_runtime_orders = {
             matrix["id"]: tuple(matrix["expectedRuntimePluginOrder"])
@@ -360,6 +408,10 @@ def main() -> int:
             '"${OUT}/network.json"' in runtime and '"${ORIGIN_MODE}"' in runtime,
             "runtime does not bind its selected origin into network evidence",
         )
+        require(
+            '[[ "${token}" =~ ^[0-9A-Fa-f]{32}$ ]]' in runtime,
+            "runtime authentication must accept only exact 32-hex Jellyfin tokens",
+        )
         for fragment in (
             'CONDITIONAL_ETAG=\'"rk-compat-probe"\'',
             ': > "${OUT}/conditional.html"',
@@ -377,11 +429,31 @@ def main() -> int:
             'probes "${MATRIX_ID}"',
             '"${OUT}/configurations/${artifact_id}.json"',
             '"${OUT}/content-probes/${probe_id}.txt"',
+            '"${OUT}/content-probes/${probe_id}.headers"',
+            '"${OUT}/content-probes/${probe_id}.status"',
+            "-H 'Accept-Encoding: identity'",
+            '-H "Accept: ${probe_accept}"',
+            '--connect-timeout 10 --max-time 30',
+            '--max-filesize "${probe_max_bytes}"',
+            '--no-location --globoff',
+            "--write-out $'%{http_code}\\t%{url_effective}'",
             '"${OUT}/webroot-before.html"',
             '"${OUT}/webroot-after.html"',
             '/jellyfin/jellyfin-web/index.html',
         ):
             require(fragment in runtime, f"expanded interaction evidence is missing: {fragment}")
+        probe_runtime = runtime[runtime.index('mkdir -p "${OUT}/content-probes"'):]
+        require(
+            "curl --fail" not in probe_runtime.split("while IFS=$'\\t' read -r _ artifact_id", 1)[0]
+            and probe_runtime.count(': > "${probe_body}"') == 2
+            and probe_runtime.count(': > "${probe_headers}"') == 2
+            and probe_runtime.count(': > "${probe_status_file}"') == 2
+            and probe_runtime.index(': > "${probe_body}"')
+            < probe_runtime.index('if [ "${authenticated}" = true ]')
+            and 'grep -Fq -- "${TOKEN}" "${probe_capture}"' in probe_runtime,
+            "content probes must pre-truncate captures and wipe token-echo failures "
+            "without curl --fail",
+        )
 
         analyzer = (COMPAT_ROOT / "lib" / "analyze.py").read_text(encoding="utf-8")
         for fragment in (
@@ -406,6 +478,12 @@ def main() -> int:
             '"observedRuntimePluginOrder"',
             '"requiredChecks"',
             'evaluate_required_cache(',
+            'evaluate_content_probe(',
+            'read_bounded_content_probe_file(',
+            'parse_http_response_blocks(',
+            'content_type_details(',
+            'content_type_essence(',
+            '"utf8CharsetCoherent"',
         ):
             require(fragment in analyzer, f"safe-degrade analyzer assertion is missing: {fragment}")
 
@@ -575,6 +653,413 @@ def main() -> int:
                 ),
                 f"invalid Jellyfin Web config shape was accepted: {invalid_json_shape!r}",
             )
+
+        probe_origin = "http://127.0.0.1:18116"
+        probe_body = b"prefix UNIQUE-CONTENT-MARKER suffix"
+        semantic_probe = {
+            "id": "synthetic-content",
+            "path": "/assets/content.js",
+            "authenticated": False,
+            "request": {"accept": "text/javascript"},
+            "response": {
+                "status": 200,
+                "mediaType": "text/javascript",
+                "body": {
+                    "mode": "semantic",
+                    "minBytes": 1,
+                    "maxBytes": 4096,
+                },
+            },
+            "format": "text",
+            "markers": {
+                "synthetic-plugin": [
+                    {"value": "UNIQUE-CONTENT-MARKER", "cardinality": 1}
+                ]
+            },
+        }
+
+        def content_headers(
+            body: bytes,
+            content_type: str = "text/javascript; charset=utf-8",
+            extra: bytes = b"",
+            status: bytes = b"HTTP/1.1 200 OK",
+        ) -> bytes:
+            return (
+                status
+                + b"\r\nContent-Type: "
+                + content_type.encode("ascii")
+                + b"\r\nContent-Length: "
+                + str(len(body)).encode("ascii")
+                + b"\r\n"
+                + extra
+                + b"\r\n"
+            )
+
+        probe_headers = content_headers(probe_body)
+        probe_status = (
+            f"200\t{probe_origin}{semantic_probe['path']}\n".encode("ascii")
+        )
+        positive_probe = analyze_lib.evaluate_content_probe(
+            semantic_probe,
+            probe_body,
+            probe_headers,
+            probe_status,
+            probe_origin,
+        )
+        require(
+            positive_probe["allPassed"] is True
+            and all(positive_probe["checks"].values()),
+            "valid strict content-probe response evidence was rejected",
+        )
+
+        protocol_mutations = {
+            "wrong-origin": (
+                probe_body,
+                probe_headers,
+                probe_status.replace(b"127.0.0.1", b"127.0.0.2"),
+                "statusFileValid",
+            ),
+            "wrong-path": (
+                probe_body,
+                probe_headers,
+                probe_status.replace(b"content.js", b"changed.js"),
+                "statusFileValid",
+            ),
+            "http-1.0": (
+                probe_body,
+                probe_headers.replace(b"HTTP/1.1", b"HTTP/1.0"),
+                probe_status,
+                "headerSyntaxValid",
+            ),
+            "http-2": (
+                probe_body,
+                probe_headers.replace(b"HTTP/1.1", b"HTTP/2  "),
+                probe_status,
+                "headerSyntaxValid",
+            ),
+            "bare-lf": (
+                probe_body,
+                probe_headers.replace(b"\r\n", b"\n"),
+                probe_status,
+                "headerSyntaxValid",
+            ),
+            "bare-cr": (
+                probe_body,
+                probe_headers.replace(b"\r\n", b"\r"),
+                probe_status,
+                "headerSyntaxValid",
+            ),
+            "leading-blank": (
+                probe_body,
+                b"\r\n" + probe_headers,
+                probe_status,
+                "headerSyntaxValid",
+            ),
+            "truncated-termination": (
+                probe_body,
+                probe_headers[:-2],
+                probe_status,
+                "headerSyntaxValid",
+            ),
+            "extra-trailing-block": (
+                probe_body,
+                probe_headers + b"\r\n",
+                probe_status,
+                "headerSyntaxValid",
+            ),
+            "header-ctl": (
+                probe_body,
+                content_headers(probe_body, extra=b"X-Test: bad\x01value\r\n"),
+                probe_status,
+                "headerSyntaxValid",
+            ),
+            "header-unicode-line-separator": (
+                probe_body,
+                content_headers(probe_body).replace(
+                    b"Content-Length:", "X-Test: bad\u2028value\r\nContent-Length:".encode("utf-8")
+                ),
+                probe_status,
+                "headerSyntaxValid",
+            ),
+            "duplicate-response-block": (
+                probe_body,
+                b"HTTP/1.1 100 Continue\r\n\r\n" + probe_headers,
+                probe_status,
+                "singleResponseBlock",
+            ),
+            "duplicate-content-type": (
+                probe_body,
+                content_headers(
+                    probe_body,
+                    extra=b"Content-Type: text/javascript\r\n",
+                ),
+                probe_status,
+                "singleContentType",
+            ),
+            "malformed-content-type": (
+                probe_body,
+                content_headers(probe_body, "text/javascript;"),
+                probe_status,
+                "contentTypeSyntaxValid",
+            ),
+            "duplicate-content-type-parameter": (
+                probe_body,
+                content_headers(
+                    probe_body,
+                    "text/javascript; charset=utf-8; CHARSET=us-ascii",
+                ),
+                probe_status,
+                "contentTypeSyntaxValid",
+            ),
+            "wrong-content-type": (
+                probe_body,
+                content_headers(probe_body, "text/css"),
+                probe_status,
+                "mediaTypeExpected",
+            ),
+            "wrong-charset": (
+                probe_body,
+                content_headers(
+                    probe_body, "text/javascript; charset=iso-8859-1"
+                ),
+                probe_status,
+                "utf8CharsetCoherent",
+            ),
+            "compressed-response": (
+                probe_body,
+                content_headers(
+                    probe_body, extra=b"Content-Encoding: gzip\r\n"
+                ),
+                probe_status,
+                "identityContentEncoding",
+            ),
+            "missing-framing": (
+                probe_body,
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/javascript\r\n\r\n",
+                probe_status,
+                "framingValid",
+            ),
+            "wrong-status": (
+                probe_body,
+                content_headers(
+                    probe_body, status=b"HTTP/1.1 404 Not Found"
+                ),
+                probe_status.replace(b"200\t", b"404\t"),
+                "statusExpected",
+            ),
+            "malformed-status-capture": (
+                probe_body,
+                probe_headers,
+                probe_status.replace(b"200\t", b"200 "),
+                "statusFileValid",
+            ),
+            "header-status-mismatch": (
+                probe_body,
+                probe_headers,
+                probe_status.replace(b"200\t", b"404\t"),
+                "statusConsistent",
+            ),
+            "redirect-302": (
+                probe_body,
+                content_headers(
+                    probe_body, status=b"HTTP/1.1 302 Found"
+                ),
+                probe_status.replace(b"200\t", b"302\t"),
+                "statusExpected",
+            ),
+            "invalid-utf8": (
+                probe_body + b"\xff",
+                content_headers(probe_body + b"\xff"),
+                probe_status,
+                "strictUtf8",
+            ),
+        }
+        for label, (body, headers_value, status_value, failed_check) in (
+            protocol_mutations.items()
+        ):
+            result = analyze_lib.evaluate_content_probe(
+                semantic_probe,
+                body,
+                headers_value,
+                status_value,
+                probe_origin,
+            )
+            require(
+                result["checks"][failed_check] is False
+                and result["allPassed"] is False,
+                f"content-probe protocol mutation did not fail closed: {label}",
+            )
+
+        for valid_content_type in (
+            'text/javascript; charset="UTF-8"',
+            "text/javascript; charset=utf8; profile=fixture",
+        ):
+            result = analyze_lib.evaluate_content_probe(
+                semantic_probe,
+                probe_body,
+                content_headers(probe_body, valid_content_type),
+                probe_status,
+                probe_origin,
+            )
+            require(
+                result["checks"]["utf8CharsetCoherent"] is True
+                and result["allPassed"] is True,
+                f"UTF-8-coherent Content-Type was rejected: {valid_content_type}",
+            )
+
+        duplicate_marker = analyze_lib.evaluate_content_probe(
+            semantic_probe,
+            probe_body + b" UNIQUE-CONTENT-MARKER",
+            content_headers(probe_body + b" UNIQUE-CONTENT-MARKER"),
+            probe_status,
+            probe_origin,
+        )
+        require(
+            duplicate_marker["artifactChecks"]["synthetic-plugin"]
+            ["UNIQUE-CONTENT-MARKER"]["passed"] is False
+            and duplicate_marker["allPassed"] is False,
+            "duplicate content marker cardinality was accepted",
+        )
+
+        border_probe = json.loads(json.dumps(semantic_probe))
+        border_probe["markers"] = {
+            "synthetic-plugin": [{"value": "aba", "cardinality": 1}]
+        }
+        border_body = b"ababa"
+        border_result = analyze_lib.evaluate_content_probe(
+            border_probe,
+            border_body,
+            content_headers(border_body),
+            probe_status,
+            probe_origin,
+        )
+        require(
+            border_result["artifactChecks"]["synthetic-plugin"]["aba"]["count"]
+            == 2
+            and border_result["allPassed"] is False,
+            "overlapping content marker cardinality was accepted",
+        )
+
+        exact_probe = json.loads(json.dumps(semantic_probe))
+        exact_probe["response"]["body"] = {
+            "mode": "exact",
+            "bytes": len(probe_body),
+            "sha256": hashlib.sha256(probe_body).hexdigest(),
+        }
+        wrong_exact = analyze_lib.evaluate_content_probe(
+            exact_probe,
+            probe_body[:-1] + b"X",
+            probe_headers,
+            probe_status,
+            probe_origin,
+        )
+        require(
+            wrong_exact["checks"]["bodyHashValid"] is False
+            and wrong_exact["allPassed"] is False,
+            "wrong exact content hash was accepted",
+        )
+        wrong_exact_size_body = probe_body + b"x"
+        wrong_exact_size = analyze_lib.evaluate_content_probe(
+            exact_probe,
+            wrong_exact_size_body,
+            content_headers(wrong_exact_size_body),
+            probe_status,
+            probe_origin,
+        )
+        require(
+            wrong_exact_size["checks"]["bodyBytesValid"] is False
+            and wrong_exact_size["allPassed"] is False,
+            "wrong exact content size was accepted",
+        )
+
+        json_probe = next(
+            probe
+            for matrix in matrices["matrices"]
+            if matrix["id"] == "jf10-response-transformers-forward"
+            for probe in matrix["contentProbes"]
+            if probe["id"] == "powertoys-remote-trailers-config"
+        )
+        json_body = json.dumps(
+            {
+                "plugins": ["powertoys/RemoteTrailers"],
+                "padding": "x" * 600,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        json_headers = content_headers(json_body, "application/json; charset=utf-8")
+        json_status = f"200\t{probe_origin}/web/config.json\n".encode("ascii")
+        json_positive = analyze_lib.evaluate_content_probe(
+            json_probe, json_body, json_headers, json_status, probe_origin
+        )
+        require(json_positive["allPassed"] is True, "valid JSON content probe failed")
+        duplicate_json_value = json.dumps(
+            {
+                "plugins": [
+                    "powertoys/RemoteTrailers",
+                    "powertoys/RemoteTrailers",
+                ],
+                "padding": "x" * 600,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        for label, invalid_json in {
+            "duplicate-json-value": duplicate_json_value,
+            "duplicate-json-key": (
+                b'{"plugins":["powertoys/RemoteTrailers"],'
+                b'"plugins":["powertoys/RemoteTrailers"],"padding":"'
+                + (b"x" * 600)
+                + b'"}'
+            ),
+            "bom-json": b"\xef\xbb\xbf" + json_body,
+            "nonfinite-json": (
+                b'{"plugins":["powertoys/RemoteTrailers"],"x":NaN,"padding":"'
+                + (b"x" * 600)
+                + b'"}'
+            ),
+            "positive-exponent-overflow-json": (
+                b'{"plugins":["powertoys/RemoteTrailers"],"x":1e9999,"padding":"'
+                + (b"x" * 600)
+                + b'"}'
+            ),
+            "negative-exponent-overflow-json": (
+                b'{"plugins":["powertoys/RemoteTrailers"],"x":-1e9999,"padding":"'
+                + (b"x" * 600)
+                + b'"}'
+            ),
+            "scalar-json": b'"' + (b"x" * 600) + b'"',
+            "array-json": b'["' + (b"x" * 600) + b'"]',
+            "deep-json": (
+                b'{"plugins":["powertoys/RemoteTrailers"],"x":'
+                + (b"[" * 1100)
+                + b"0"
+                + (b"]" * 1100)
+                + b"}"
+            ),
+        }.items():
+            invalid_result = analyze_lib.evaluate_content_probe(
+                json_probe,
+                invalid_json,
+                content_headers(invalid_json, "application/json"),
+                json_status,
+                probe_origin,
+            )
+            if label == "duplicate-json-value":
+                cardinality = invalid_result["jsonArrayContainsChecks"]["plugins"][
+                    "powertoys/RemoteTrailers"
+                ]
+                require(
+                    cardinality["passed"] is False
+                    and cardinality["count"] == 2
+                    and invalid_result["allPassed"] is False,
+                    "duplicate JSON value cardinality was accepted",
+                )
+            else:
+                require(
+                    invalid_result["checks"]["formatValid"] is False
+                    and invalid_result["allPassed"] is False,
+                    f"invalid JSON content probe format was accepted: {label}",
+                )
         empty_query = {"requiredKeys": [], "allowedKeys": [], "equals": {}}
         current_requirement = {
             "mode": "current-rkv",
@@ -1325,14 +1810,23 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="rk-compat-manifest-negative-") as temporary:
             negative_root = Path(temporary)
 
-            def require_manifest_rejected(label: str, mutated: dict[str, object]) -> None:
+            def require_manifest_rejected(
+                label: str,
+                mutated: dict[str, object],
+                expected_error: str | None = None,
+            ) -> None:
                 path = negative_root / f"{label}.json"
                 artifact_lib.write_json(path, mutated)
                 try:
                     manifest_lib.load_and_validate(
                         COMPAT_ROOT / "ecosystem.lock.json", path
                     )
-                except artifact_lib.HarnessError:
+                except artifact_lib.HarnessError as error:
+                    if expected_error is not None and expected_error not in str(error):
+                        raise artifact_lib.HarnessError(
+                            f"negative manifest mutation {label} failed for the wrong "
+                            f"reason: {error}"
+                        ) from error
                     negative_manifest_checks.append(label)
                 else:
                     raise artifact_lib.HarnessError(
@@ -1611,8 +2105,345 @@ def main() -> int:
                 for row in changed_content["matrices"]
                 if row["id"] == "jf10-registration-broker"
             )
-            broker["contentProbes"][0]["markers"]["media-preview-jf10"][0] += "x"
+            broker["contentProbes"][0]["markers"]["media-preview-jf10"][0][
+                "value"
+            ] += "x"
             require_manifest_rejected("exact-content-contract", changed_content)
+
+            content_mutations: dict[str, tuple[object, str]] = {}
+
+            missing_request = fresh_manifest()
+            next(
+                row for row in missing_request["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0].pop("request")
+            content_mutations["content-request-required"] = (
+                missing_request, "content probe request must be an object"
+            )
+
+            numeric_probe_id = fresh_manifest()
+            next(
+                row for row in numeric_probe_id["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]["id"] = 1
+            content_mutations["content-id-must-be-string"] = (
+                numeric_probe_id, "unsafe content probe id"
+            )
+
+            too_many_probes = fresh_manifest()
+            too_many_matrix = next(
+                row for row in too_many_probes["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )
+            too_many_matrix["contentProbes"] = [
+                json.loads(json.dumps(too_many_matrix["contentProbes"][0]))
+                for _ in range(65)
+            ]
+            content_mutations["content-probe-count-over-limit"] = (
+                too_many_probes, "content probe count exceeds 64"
+            )
+
+            long_probe_id = fresh_manifest()
+            next(
+                row for row in long_probe_id["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]["id"] = "a" * 65
+            content_mutations["content-id-over-limit"] = (
+                long_probe_id, "content probe id exceeds 64 characters"
+            )
+
+            long_path = fresh_manifest()
+            next(
+                row for row in long_path["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]["path"] = "/" + ("a" * 2048)
+            content_mutations["content-path-over-limit"] = (
+                long_path, "content probe path exceeds 2048 characters"
+            )
+
+            non_ascii_path = fresh_manifest()
+            next(
+                row for row in non_ascii_path["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]["path"] = "/Fixture/é.js"
+            content_mutations["content-path-non-ascii"] = (
+                non_ascii_path, "content probe path must be ASCII"
+            )
+
+            long_accept = fresh_manifest()
+            long_accept_probe = next(
+                row for row in long_accept["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]
+            long_accept_value = "application/" + ("a" * 117)
+            long_accept_probe["request"]["accept"] = long_accept_value
+            long_accept_probe["response"]["mediaType"] = long_accept_value
+            content_mutations["content-accept-over-limit"] = (
+                long_accept, "content probe Accept exceeds 128 characters"
+            )
+
+            empty_json_on_text = fresh_manifest()
+            next(
+                row for row in empty_json_on_text["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]["jsonArrayContains"] = {}
+            content_mutations["content-text-rejects-empty-json-contract"] = (
+                empty_json_on_text, "invalid JSON array content contract"
+            )
+
+            wrong_accept = fresh_manifest()
+            next(
+                row for row in wrong_accept["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]["request"]["accept"] = "text/javascript"
+            content_mutations["content-accept-media-mismatch"] = (
+                wrong_accept, "Accept and response media type must match"
+            )
+
+            wrong_status = fresh_manifest()
+            next(
+                row for row in wrong_status["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]["response"]["status"] = 204
+            content_mutations["content-status-not-200"] = (
+                wrong_status, "content probe status must be exactly 200"
+            )
+
+            semantic_unbounded = fresh_manifest()
+            next(
+                row for row in semantic_unbounded["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]["response"]["body"]["maxBytes"] = 1048577
+            content_mutations["content-semantic-over-hard-cap"] = (
+                semantic_unbounded, "invalid bounded semantic body contract"
+            )
+
+            exact_unbounded = fresh_manifest()
+            next(
+                row for row in exact_unbounded["matrices"]
+                if row["id"] == "jf10-response-transformers-forward"
+            )["contentProbes"][0]["response"]["body"]["bytes"] = 1048577
+            content_mutations["content-exact-over-hard-cap"] = (
+                exact_unbounded, "invalid exact body contract"
+            )
+
+            bad_hash = fresh_manifest()
+            next(
+                row for row in bad_hash["matrices"]
+                if row["id"] == "jf10-response-transformers-forward"
+            )["contentProbes"][0]["response"]["body"]["sha256"] = "invalid"
+            content_mutations["content-exact-invalid-hash"] = (
+                bad_hash, "invalid exact body contract"
+            )
+
+            wrong_cardinality = fresh_manifest()
+            next(
+                row for row in wrong_cardinality["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]["markers"]["media-preview-jf10"][0][
+                "cardinality"
+            ] = 2
+            content_mutations["content-marker-cardinality-not-exact"] = (
+                wrong_cardinality, "invalid content markers"
+            )
+
+            duplicate_owner = fresh_manifest()
+            duplicate_probe = next(
+                row for row in duplicate_owner["matrices"]
+                if row["id"] == "jf10-registration-broker"
+            )["contentProbes"][0]
+            duplicate_probe["markers"]["gelato-jf10"].append(
+                json.loads(json.dumps(
+                    duplicate_probe["markers"]["media-preview-jf10"][0]
+                ))
+            )
+            content_mutations["content-marker-value-multiple-owners"] = (
+                duplicate_owner, "multiple artifact owners"
+            )
+
+            wrong_json_cardinality = fresh_manifest()
+            next(
+                probe
+                for row in wrong_json_cardinality["matrices"]
+                if row["id"] == "jf10-response-transformers-forward"
+                for probe in row["contentProbes"]
+                if probe["id"] == "powertoys-remote-trailers-config"
+            )["jsonArrayContains"]["plugins"][0]["cardinality"] = 2
+            content_mutations["content-json-cardinality-not-exact"] = (
+                wrong_json_cardinality, "invalid JSON array content contract"
+            )
+
+            def json_probe(manifest: dict[str, Any]) -> dict[str, Any]:
+                return next(
+                    probe
+                    for row in manifest["matrices"]
+                    if row["id"] == "jf10-response-transformers-forward"
+                    for probe in row["contentProbes"]
+                    if probe["id"] == "powertoys-remote-trailers-config"
+                )
+
+            json_map_over_limit = fresh_manifest()
+            json_probe(json_map_over_limit)["jsonArrayContains"] = {
+                f"key-{index}": [
+                    {"value": f"value-{index}", "cardinality": 1}
+                ]
+                for index in range(65)
+            }
+            content_mutations["content-json-map-over-limit"] = (
+                json_map_over_limit, "JSON array map exceeds 64 entries"
+            )
+
+            json_key_over_limit = fresh_manifest()
+            contract = json_probe(json_key_over_limit)["jsonArrayContains"]
+            contract["k" * 129] = contract.pop("plugins")
+            content_mutations["content-json-key-over-limit"] = (
+                json_key_over_limit, "JSON array key exceeds 128 characters"
+            )
+
+            json_key_control = fresh_manifest()
+            contract = json_probe(json_key_control)["jsonArrayContains"]
+            contract["plugins\n"] = contract.pop("plugins")
+            content_mutations["content-json-key-control"] = (
+                json_key_control, "JSON array key contains control characters"
+            )
+
+            json_list_over_limit = fresh_manifest()
+            json_probe(json_list_over_limit)["jsonArrayContains"]["plugins"] = [
+                {"value": f"value-{index}", "cardinality": 1}
+                for index in range(65)
+            ]
+            content_mutations["content-json-list-over-limit"] = (
+                json_list_over_limit,
+                "JSON array requirement list exceeds 64 entries",
+            )
+
+            json_value_over_limit = fresh_manifest()
+            json_probe(json_value_over_limit)["jsonArrayContains"]["plugins"][0][
+                "value"
+            ] = "v" * 4097
+            content_mutations["content-json-value-over-limit"] = (
+                json_value_over_limit, "JSON array value exceeds 4096 characters"
+            )
+
+            json_value_control = fresh_manifest()
+            json_probe(json_value_control)["jsonArrayContains"]["plugins"][0][
+                "value"
+            ] = "value\u007f"
+            content_mutations["content-json-value-control"] = (
+                json_value_control,
+                "JSON array value contains control characters",
+            )
+
+            def text_probe(manifest: dict[str, Any]) -> dict[str, Any]:
+                return next(
+                    row for row in manifest["matrices"]
+                    if row["id"] == "jf10-registration-broker"
+                )["contentProbes"][0]
+
+            marker_map_over_limit = fresh_manifest()
+            text_probe(marker_map_over_limit)["markers"] = {
+                f"owner-{index}": [
+                    {"value": f"value-{index}", "cardinality": 1}
+                ]
+                for index in range(65)
+            }
+            content_mutations["content-marker-map-over-limit"] = (
+                marker_map_over_limit,
+                "content marker owner map exceeds 64 entries",
+            )
+
+            marker_owner_over_limit = fresh_manifest()
+            markers = text_probe(marker_owner_over_limit)["markers"]
+            first_owner = next(iter(markers))
+            markers["o" * 129] = markers.pop(first_owner)
+            content_mutations["content-marker-owner-over-limit"] = (
+                marker_owner_over_limit,
+                "content marker owner exceeds 128 characters",
+            )
+
+            marker_owner_control = fresh_manifest()
+            markers = text_probe(marker_owner_control)["markers"]
+            first_owner = next(iter(markers))
+            markers[f"{first_owner}\n"] = markers.pop(first_owner)
+            content_mutations["content-marker-owner-control"] = (
+                marker_owner_control,
+                "content marker owner contains control characters",
+            )
+
+            marker_list_over_limit = fresh_manifest()
+            marker_requirements = next(
+                iter(text_probe(marker_list_over_limit)["markers"].values())
+            )
+            marker_requirements[:] = [
+                {"value": f"value-{index}", "cardinality": 1}
+                for index in range(65)
+            ]
+            content_mutations["content-marker-list-over-limit"] = (
+                marker_list_over_limit,
+                "content marker requirement list exceeds 64 entries",
+            )
+
+            marker_value_over_limit = fresh_manifest()
+            next(iter(text_probe(marker_value_over_limit)["markers"].values()))[
+                0
+            ]["value"] = "v" * 4097
+            content_mutations["content-marker-value-over-limit"] = (
+                marker_value_over_limit,
+                "content marker value exceeds 4096 characters",
+            )
+
+            marker_value_control = fresh_manifest()
+            next(iter(text_probe(marker_value_control)["markers"].values()))[
+                0
+            ]["value"] = "value\n"
+            content_mutations["content-marker-value-control"] = (
+                marker_value_control,
+                "content marker value contains control characters",
+            )
+
+            total_requirements_over_limit = fresh_manifest()
+            total_probe = json_probe(total_requirements_over_limit)
+            total_probe["jsonArrayContains"]["plugins"] = [
+                {"value": f"json-value-{index}", "cardinality": 1}
+                for index in range(32)
+            ]
+            owner = next(iter(total_probe["markers"]))
+            total_probe["markers"][owner] = [
+                {"value": f"marker-value-{index}", "cardinality": 1}
+                for index in range(33)
+            ]
+            content_mutations["content-total-requirements-over-limit"] = (
+                total_requirements_over_limit,
+                "content probe total requirements exceeds 64",
+            )
+
+            missing_assembly_probe = fresh_manifest()
+            next(
+                row for row in missing_assembly_probe["matrices"]
+                if row["id"] == "jf10-response-transformers-forward"
+            )["contentProbes"].pop(0)
+            content_mutations["content-assembly-selector-missing-probe"] = (
+                missing_assembly_probe, "map one-to-one"
+            )
+
+            for label, unsafe_path in {
+                "backslash": "/_/bad\\asset.css",
+                "double-slash": "/_/bad//asset.css",
+                "dot-segment": "/_/bad/../asset.css",
+                "encoded": "/_/bad/%2e%2e/asset.css",
+                "control": "/_/bad/asset.css\u0000",
+            }.items():
+                changed_path = fresh_manifest()
+                next(
+                    row for row in changed_path["matrices"]
+                    if row["id"] == "jf10-registration-broker"
+                )["contentProbes"][0]["path"] = unsafe_path
+                content_mutations[f"content-path-{label}"] = (
+                    changed_path, "invalid content probe path"
+                )
+
+            for label, (mutation, expected_error) in content_mutations.items():
+                require_manifest_rejected(label, mutation, expected_error)
 
             invalid_content_format = fresh_manifest()
             response = next(
@@ -1855,6 +2686,8 @@ def main() -> int:
             "fixtureCount": len(cases),
             "matrixCount": len(matrices["matrices"]),
             "matrixContractSha256": manifest_lib.EXPECTED_MATRIX_CONTRACT_SHA256,
+            "contentProbeCount": len(content_probe_occurrences),
+            "contentProbeRawFileCount": len(content_probe_occurrences) * 3,
             "negativeCatalogChecks": negative_catalog_checks,
             "negativeManifestChecks": negative_manifest_checks,
             "safeDegradeCacheMatrices": sorted(safe_degrade_ids),

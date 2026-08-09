@@ -76,6 +76,15 @@ ASSEMBLY_VERSIONED_ARTIFACTS_BY_MATRIX = {
         "powertoys-thumbnail-previews-jf10",
     },
 }
+CONTENT_PROBE_MAX_COUNT = 64
+CONTENT_PROBE_MAX_ID_CHARS = 64
+CONTENT_PROBE_MAX_PATH_CHARS = 2048
+CONTENT_PROBE_MAX_ACCEPT_CHARS = 128
+CONTENT_PROBE_MAX_MAP_ENTRIES = 64
+CONTENT_PROBE_MAX_LIST_ENTRIES = 64
+CONTENT_PROBE_MAX_KEY_CHARS = 128
+CONTENT_PROBE_MAX_VALUE_CHARS = 4096
+CONTENT_PROBE_MAX_TOTAL_REQUIREMENTS = 64
 EXTERNAL_ARTIFACTS_BY_MATRIX = {
     "jf10-transform-core": {"media-bar-jf10"},
 }
@@ -208,7 +217,7 @@ CONTRACT_FIELDS = (
     "contentProbes", "shellRequirements", "inlineRequirements",
     "webrootDiskRequirements", "quarantinedAssertions",
 )
-EXPECTED_MATRIX_CONTRACT_SHA256 = "8fab51792f72d5892a45281b88c0d09c45dfb42d7cf4bb834849854c256ae0b1"
+EXPECTED_MATRIX_CONTRACT_SHA256 = "fc28e21aadafe79befcb07b9365d8af925c382e4a21f8d4f84b27d92b3d76393"
 
 
 def reject_unknown_fields(value: dict[str, Any], allowed: set[str], context: str) -> None:
@@ -789,7 +798,13 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
         content_probes = matrix.get("contentProbes", [])
         if not isinstance(content_probes, list):
             raise artifact_lib.HarnessError(f"{matrix_id}: contentProbes must be an array")
+        if len(content_probes) > CONTENT_PROBE_MAX_COUNT:
+            raise artifact_lib.HarnessError(
+                f"{matrix_id}: content probe count exceeds {CONTENT_PROBE_MAX_COUNT}"
+            )
         probe_ids: list[str] = []
+        probe_paths: list[str] = []
+        exact_probe_routes: Counter[tuple[str, str]] = Counter()
         for probe in content_probes:
             if not isinstance(probe, dict):
                 raise artifact_lib.HarnessError(f"{matrix_id}: content probe must be an object")
@@ -799,49 +814,240 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
                     "id",
                     "path",
                     "authenticated",
+                    "request",
+                    "response",
                     "format",
                     "jsonArrayContains",
                     "markers",
                 },
                 f"{matrix_id} content probe",
             )
-            probe_id = str(probe.get("id", ""))
+            raw_probe_id = probe.get("id")
+            probe_id = raw_probe_id if isinstance(raw_probe_id, str) else ""
             probe_ids.append(probe_id)
             if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", probe_id):
                 raise artifact_lib.HarnessError(f"{matrix_id}: unsafe content probe id")
-            path = str(probe.get("path", ""))
-            if not path.startswith("/") or "?" in path or "#" in path:
+            if len(probe_id) > CONTENT_PROBE_MAX_ID_CHARS:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}: content probe id exceeds "
+                    f"{CONTENT_PROBE_MAX_ID_CHARS} characters"
+                )
+            raw_probe_path = probe.get("path")
+            path = raw_probe_path if isinstance(raw_probe_path, str) else ""
+            probe_paths.append(path)
+            if len(path) > CONTENT_PROBE_MAX_PATH_CHARS:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}: content probe path exceeds "
+                    f"{CONTENT_PROBE_MAX_PATH_CHARS} characters"
+                )
+            if any(ord(character) > 0x7F for character in path):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}: content probe path must be ASCII"
+                )
+            if (
+                not path.startswith("/")
+                or "?" in path
+                or "#" in path
+                or "\\" in path
+                or "%" in path
+                or "//" in path
+                or any(segment in {".", ".."} for segment in path.split("/"))
+                or any(
+                    character.isspace()
+                    or ord(character) < 0x20
+                    or ord(character) == 0x7F
+                    for character in path
+                )
+            ):
                 raise artifact_lib.HarnessError(f"{matrix_id}: invalid content probe path")
             if not isinstance(probe.get("authenticated"), bool):
                 raise artifact_lib.HarnessError(
                     f"{matrix_id}: content probe authenticated must be boolean"
                 )
-            probe_format = probe.get("format", "text")
+            request = probe.get("request")
+            if not isinstance(request, dict):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: content probe request must be an object"
+                )
+            reject_unknown_fields(
+                request, {"accept"}, f"{matrix_id}/{probe_id} content probe request"
+            )
+            accept = request.get("accept")
+            if isinstance(accept, str) and len(accept) > CONTENT_PROBE_MAX_ACCEPT_CHARS:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: content probe Accept exceeds "
+                    f"{CONTENT_PROBE_MAX_ACCEPT_CHARS} characters"
+                )
+            if (
+                not isinstance(accept, str)
+                or re.fullmatch(
+                    r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*",
+                    accept,
+                )
+                is None
+            ):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: invalid content probe Accept essence"
+                )
+            response = probe.get("response")
+            if not isinstance(response, dict):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: content probe response must be an object"
+                )
+            reject_unknown_fields(
+                response,
+                {"status", "mediaType", "body"},
+                f"{matrix_id}/{probe_id} content probe response",
+            )
+            if type(response.get("status")) is not int or response["status"] != 200:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: content probe status must be exactly 200"
+                )
+            media_type = response.get("mediaType")
+            if media_type != accept:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: Accept and response media type must match"
+                )
+            body = response.get("body")
+            if not isinstance(body, dict):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: content probe body contract must be an object"
+                )
+            body_mode = body.get("mode")
+            if body_mode == "exact":
+                reject_unknown_fields(
+                    body,
+                    {"mode", "bytes", "sha256"},
+                    f"{matrix_id}/{probe_id} exact body contract",
+                )
+                if (
+                    type(body.get("bytes")) is not int
+                    or body["bytes"] < 1
+                    or body["bytes"] > 1024 * 1024
+                    or not isinstance(body.get("sha256"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", body["sha256"]) is None
+                ):
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}/{probe_id}: invalid exact body contract"
+                    )
+            elif body_mode == "semantic":
+                reject_unknown_fields(
+                    body,
+                    {"mode", "minBytes", "maxBytes"},
+                    f"{matrix_id}/{probe_id} semantic body contract",
+                )
+                if (
+                    type(body.get("minBytes")) is not int
+                    or type(body.get("maxBytes")) is not int
+                    or body["minBytes"] < 1
+                    or body["minBytes"] > body["maxBytes"]
+                    or body["maxBytes"] > 1024 * 1024
+                ):
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}/{probe_id}: invalid bounded semantic body contract"
+                    )
+            else:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: content probe body mode must be exact or semantic"
+                )
+            probe_format = probe.get("format")
             if probe_format not in {"text", "json-object"}:
                 raise artifact_lib.HarnessError(
                     f"{matrix_id}: content probe format must be text or json-object"
                 )
+            if (probe_format == "json-object") != (media_type == "application/json"):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: content probe format/media type disagree"
+                )
             json_array_contains = probe.get("jsonArrayContains", {})
             if (
                 not isinstance(json_array_contains, dict)
+                or ("jsonArrayContains" in probe) != (probe_format == "json-object")
                 or (json_array_contains and probe_format != "json-object")
+                or (probe_format == "json-object" and not json_array_contains)
                 or any(
                     not isinstance(key, str)
                     or not key
                     or not isinstance(values, list)
                     or not values
-                    or len(values) != len(set(values))
-                    or any(not isinstance(value, str) or not value for value in values)
+                    or any(
+                        not isinstance(value, dict)
+                        or set(value) != {"value", "cardinality"}
+                        or not isinstance(value.get("value"), str)
+                        or not value["value"]
+                        or type(value.get("cardinality")) is not int
+                        or value["cardinality"] != 1
+                        for value in values
+                    )
+                    or len({value["value"] for value in values}) != len(values)
                     for key, values in json_array_contains.items()
                 )
             ):
                 raise artifact_lib.HarnessError(
                     f"{matrix_id}: invalid JSON array content contract"
                 )
+            if len(json_array_contains) > CONTENT_PROBE_MAX_MAP_ENTRIES:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: JSON array map exceeds "
+                    f"{CONTENT_PROBE_MAX_MAP_ENTRIES} entries"
+                )
+            for key, values in json_array_contains.items():
+                if len(key) > CONTENT_PROBE_MAX_KEY_CHARS:
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}/{probe_id}: JSON array key exceeds "
+                        f"{CONTENT_PROBE_MAX_KEY_CHARS} characters"
+                    )
+                if any(ord(character) < 0x20 or ord(character) == 0x7F for character in key):
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}/{probe_id}: JSON array key contains control characters"
+                    )
+                if len(values) > CONTENT_PROBE_MAX_LIST_ENTRIES:
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}/{probe_id}: JSON array requirement list exceeds "
+                        f"{CONTENT_PROBE_MAX_LIST_ENTRIES} entries"
+                    )
+                for requirement in values:
+                    value = requirement["value"]
+                    if len(value) > CONTENT_PROBE_MAX_VALUE_CHARS:
+                        raise artifact_lib.HarnessError(
+                            f"{matrix_id}/{probe_id}: JSON array value exceeds "
+                            f"{CONTENT_PROBE_MAX_VALUE_CHARS} characters"
+                        )
+                    if any(
+                        ord(character) < 0x20 or ord(character) == 0x7F
+                        for character in value
+                    ):
+                        raise artifact_lib.HarnessError(
+                            f"{matrix_id}/{probe_id}: JSON array value contains "
+                            "control characters"
+                        )
             markers = probe.get("markers")
             if not isinstance(markers, dict) or not markers:
                 raise artifact_lib.HarnessError(f"{matrix_id}: content probe markers are empty")
+            if len(markers) > CONTENT_PROBE_MAX_MAP_ENTRIES:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: content marker owner map exceeds "
+                    f"{CONTENT_PROBE_MAX_MAP_ENTRIES} entries"
+                )
+            marker_owners: dict[str, str] = {}
             for artifact_id, values in markers.items():
+                if not isinstance(artifact_id, str):
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}: invalid content marker owner"
+                    )
+                if len(artifact_id) > CONTENT_PROBE_MAX_KEY_CHARS:
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}/{probe_id}: content marker owner exceeds "
+                        f"{CONTENT_PROBE_MAX_KEY_CHARS} characters"
+                    )
+                if any(
+                    ord(character) < 0x20 or ord(character) == 0x7F
+                    for character in artifact_id
+                ):
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}/{probe_id}: content marker owner contains "
+                        "control characters"
+                    )
                 if artifact_id not in order or artifact_id == "@refresh-kit":
                     raise artifact_lib.HarnessError(
                         f"{matrix_id}: content probe artifact is not installed: {artifact_id}"
@@ -849,14 +1055,85 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
                 if (
                     not isinstance(values, list)
                     or not values
-                    or len(values) != len(set(values))
-                    or any(not isinstance(value, str) or not value for value in values)
+                    or any(
+                        not isinstance(value, dict)
+                        or set(value) != {"value", "cardinality"}
+                        or not isinstance(value.get("value"), str)
+                        or not value["value"]
+                        or type(value.get("cardinality")) is not int
+                        or value["cardinality"] != 1
+                        for value in values
+                    )
+                    or len({value["value"] for value in values}) != len(values)
                 ):
                     raise artifact_lib.HarnessError(
                         f"{matrix_id}: invalid content markers for {artifact_id}"
                     )
+                if len(values) > CONTENT_PROBE_MAX_LIST_ENTRIES:
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}/{probe_id}: content marker requirement list "
+                        f"exceeds {CONTENT_PROBE_MAX_LIST_ENTRIES} entries"
+                    )
+                for value in values:
+                    marker_value = value["value"]
+                    if len(marker_value) > CONTENT_PROBE_MAX_VALUE_CHARS:
+                        raise artifact_lib.HarnessError(
+                            f"{matrix_id}/{probe_id}: content marker value exceeds "
+                            f"{CONTENT_PROBE_MAX_VALUE_CHARS} characters"
+                        )
+                    if any(
+                        ord(character) < 0x20 or ord(character) == 0x7F
+                        for character in marker_value
+                    ):
+                        raise artifact_lib.HarnessError(
+                            f"{matrix_id}/{probe_id}: content marker value contains "
+                            "control characters"
+                        )
+                    previous_owner = marker_owners.setdefault(
+                        marker_value, artifact_id
+                    )
+                    if previous_owner != artifact_id:
+                        raise artifact_lib.HarnessError(
+                            f"{matrix_id}/{probe_id}: content marker value is attributed "
+                            "to multiple artifact owners"
+                        )
+            total_requirements = sum(
+                len(values) for values in json_array_contains.values()
+            ) + sum(len(values) for values in markers.values())
+            if total_requirements > CONTENT_PROBE_MAX_TOTAL_REQUIREMENTS:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{probe_id}: content probe total requirements "
+                    f"exceeds {CONTENT_PROBE_MAX_TOTAL_REQUIREMENTS}"
+                )
+            if body_mode == "exact":
+                if len(markers) != 1:
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}/{probe_id}: exact body probe must have one artifact owner"
+                    )
+                artifact_id = next(iter(markers))
+                expected_media_type = (
+                    "text/css" if path.endswith(".css") else "text/javascript"
+                )
+                if media_type != expected_media_type:
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}/{probe_id}: exact assembly asset media type differs"
+                    )
+                exact_probe_routes[(artifact_id, path)] += 1
         if len(probe_ids) != len(set(probe_ids)):
             raise artifact_lib.HarnessError(f"{matrix_id}: duplicate content probe ids")
+        if len(probe_paths) != len(set(probe_paths)):
+            raise artifact_lib.HarnessError(f"{matrix_id}: duplicate content probe paths")
+        assembly_selector_routes = Counter(
+            (artifact_id, selector["path"])
+            for artifact_id, requirement in structured_requirements.items()
+            if requirement["mode"] == "assembly-versioned-path"
+            for selector in requirement["selectors"]
+        )
+        if exact_probe_routes != assembly_selector_routes:
+            raise artifact_lib.HarnessError(
+                f"{matrix_id}: exact content probes must map one-to-one to every "
+                "assembly-versioned shell selector"
+            )
         quarantined = matrix.get("quarantinedAssertions")
         if not isinstance(quarantined, list) or any(
             not isinstance(note, str) or not note.strip() for note in quarantined
@@ -1130,12 +1407,15 @@ def main() -> int:
         elif args.command == "probes":
             matrix = get_matrix(document, args.id)
             for probe in matrix.get("contentProbes", []):
+                body = probe["response"]["body"]
                 print(
                     "\t".join(
                         (
                             probe["id"],
                             probe["path"],
                             "true" if probe["authenticated"] else "false",
+                            probe["request"]["accept"],
+                            str(body.get("maxBytes", body.get("bytes"))),
                         )
                     )
                 )

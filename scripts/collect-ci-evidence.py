@@ -19,12 +19,19 @@ from host_upgrade_evidence import (
     validate_evidence as validate_host_upgrade_evidence,
 )
 from evidence_validation import (
+    COMPAT_CONTENT_PROBE_MAX_BODY_BYTES,
+    COMPAT_CONTENT_PROBE_MAX_HEADER_BYTES,
+    COMPAT_CONTENT_PROBE_MAX_STATUS_BYTES,
+    COMPAT_CONTENT_PROBE_SUFFIXES,
     EvidenceValidationError,
     INTEGRATION_LOGS,
     INTEGRATION_TEXT,
     artifact_verification_summary,
+    compatibility_selected_origin,
     load_compatibility_artifact_lock,
+    load_compatibility_content_probes,
     reconstruct_compatibility_cache_evidence,
+    reconstruct_compatibility_content_probe,
     validate_artifact_verification_report,
     validate_compatibility_tree,
     validate_integration_tree,
@@ -34,6 +41,7 @@ from evidence_validation import (
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LAB_ARTIFACTS = ROOT / "e2e" / "jellyfin" / "artifacts"
 COMPAT_ARTIFACTS = ROOT / "e2e" / "compat" / "artifacts"
+COMPAT_STATE = ROOT / "e2e" / "compat" / ".state"
 COMPAT_MATRICES = ROOT / "e2e" / "compat" / "matrices.json"
 COMPAT_LOCK = ROOT / "e2e" / "compat" / "ecosystem.lock.json"
 SAFE_JSON = (
@@ -155,13 +163,36 @@ FORBIDDEN_CREDENTIAL = re.compile(
     r'|\b(?:Set-)?Cookie\s*:\s*(?!<redacted>)[^\r\n]+',
     re.I,
 )
+COMPATIBILITY_CONCRETE_ATOM = (
+    r"[A-Za-z0-9._~+/=-]+"
+    r"(?![A-Za-z0-9._~+/=-]|\s*\()"
+)
 COMPATIBILITY_LITERAL_SECRET = re.compile(
     r"(?:[?&](?:token|access.?token|refresh.?token|id.?token|x.?emby.?token|"
-    r"api.?key|authorization|password|cookie|session(?:.?id)?)=|"
-    r"[\"']?(?:token|access.?token|refresh.?token|id.?token|x.?emby.?token|"
-    r"api.?key|authorization|password|secret|cookie|session(?:.?id)?)"
-    r"[\"']?\s*[:=]\s*[\"']|\bMediaBrowser\s+Token\s*=\s*[\"']?)"
-    r"[A-Za-z0-9._~+/=-]{16,}",
+    r"api.?key|authorization|password|cookie|session(?:.?id)?)=)"
+    + COMPATIBILITY_CONCRETE_ATOM
+    + r"|(?:[\"']?(?:token|access.?token|refresh.?token|id.?token|"
+    r"x.?emby.?token|api.?key|authorization|password|secret|cookie|"
+    r"session(?:.?id)?)[\"']?\s*[:=]\s*[\"'])"
+    r"[A-Za-z0-9._~+/=-]+"
+    r"|\bMediaBrowser\s+Token\s*=\s*[\"'][A-Za-z0-9._~+/=-]+"
+    r"|\bMediaBrowser\s+Token\s*=\s*"
+    + COMPATIBILITY_CONCRETE_ATOM,
+    re.I,
+)
+COMPATIBILITY_WIRE_SECRET = re.compile(
+    r"(?:\b(?:Proxy-)?Authorization\s*[:=]\s*[\"'`]?(?:Bearer|Basic|Digest)\s+"
+    + COMPATIBILITY_CONCRETE_ATOM
+    + r"|"
+    r"\b(?:Proxy-)?Authorization\s*[:=]\s*[\"'`]?MediaBrowser\s+Token\s*=\s*"
+    + COMPATIBILITY_CONCRETE_ATOM
+    + r"|"
+    r"\bX-Emby-Token\s*[:=]\s*[\"'`]?"
+    + COMPATIBILITY_CONCRETE_ATOM
+    + r"|"
+    r"\b(?:Set-)?Cookie\s*[:=]\s*[\"'`]?[A-Za-z0-9._~-]+="
+    + COMPATIBILITY_CONCRETE_ATOM
+    + r")",
     re.I,
 )
 BINARY_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".zip"}
@@ -392,8 +423,32 @@ def copy_exact_compatibility_http(
     source: pathlib.Path,
     target: pathlib.Path,
     relative: str,
+    forbidden_value: bytes | None = None,
 ) -> bytes:
     """Inspect and retain cache-proof HTTP bytes without rewriting them."""
+    pure_relative = pathlib.PurePosixPath(relative)
+    probe_limit: int | None = None
+    if pure_relative.parent.name == "content-probes":
+        limits = {
+            ".txt": COMPAT_CONTENT_PROBE_MAX_BODY_BYTES,
+            ".headers": COMPAT_CONTENT_PROBE_MAX_HEADER_BYTES,
+            ".status": COMPAT_CONTENT_PROBE_MAX_STATUS_BYTES,
+        }
+        probe_limit = limits.get(pure_relative.suffix)
+        if probe_limit is None:
+            raise ValueError(
+                f"unknown exact compatibility content-probe evidence: {relative}"
+            )
+        try:
+            size = source.stat().st_size
+        except OSError as error:
+            raise ValueError(
+                f"cannot stat exact compatibility HTTP evidence {relative}: {error}"
+            ) from error
+        if not 0 < size <= probe_limit:
+            raise ValueError(
+                f"invalid exact compatibility content-probe size: {relative}: {size}"
+            )
     try:
         raw = source.read_bytes()
         text = raw.decode("utf-8", errors="strict")
@@ -401,9 +456,17 @@ def copy_exact_compatibility_http(
         raise ValueError(
             f"unsafe exact compatibility HTTP evidence {relative}: {error}"
         ) from error
+    if probe_limit is not None and not 0 < len(raw) <= probe_limit:
+        raise ValueError(
+            f"changed exact compatibility content-probe size: {relative}: {len(raw)}"
+        )
+    if forbidden_value and forbidden_value in raw:
+        raise ValueError(
+            f"dynamic authentication token in exact compatibility HTTP evidence: {relative}"
+        )
     if not raw and pathlib.PurePosixPath(relative).name != "conditional.html":
         raise ValueError(f"empty exact compatibility HTTP evidence: {relative}")
-    name = pathlib.PurePosixPath(relative).name
+    name = pure_relative.name
     header_secret = name.endswith(".headers") and any(
         pattern.search(text) is not None
         for pattern in (
@@ -415,6 +478,7 @@ def copy_exact_compatibility_http(
     if (
         header_secret
         or COMPATIBILITY_LITERAL_SECRET.search(text) is not None
+        or COMPATIBILITY_WIRE_SECRET.search(text) is not None
         or any(secret in text for secret in known_fixture_secrets())
     ):
         raise ValueError(
@@ -929,6 +993,32 @@ def collect_compatibility(
 ) -> None:
     matrices = compatibility_matrices()
     matrix_ids = list(matrices)
+    content_probes = load_compatibility_content_probes(COMPAT_MATRICES)
+    content_probe_tokens: dict[str, bytes] = {}
+    for matrix_id, probes in content_probes.items():
+        if not probes:
+            continue
+        token_path = COMPAT_STATE / matrix_id / "token"
+        try:
+            token_size = token_path.stat().st_size
+            token = token_path.read_bytes()
+        except OSError as error:
+            if required:
+                strict_errors.append(
+                    f"{matrix_id}: compatibility probe token state is unavailable"
+                )
+            continue
+        if (
+            token_size != 32
+            or len(token) != token_size
+            or re.fullmatch(rb"[0-9A-Fa-f]{32}", token) is None
+        ):
+            if required:
+                strict_errors.append(
+                    f"{matrix_id}: compatibility probe token state is invalid"
+                )
+            continue
+        content_probe_tokens[matrix_id] = token
     services = compatibility_services()
     install_orders = compatibility_install_orders()
     disk_requirements = compatibility_webroot_disk_requirements()
@@ -952,6 +1042,7 @@ def collect_compatibility(
         for name in COMPAT_MATRIX_FILES
     )
     result_values: dict[str, dict[str, Any]] = {}
+    network_values: dict[str, dict[str, Any]] = {}
     artifact_values: dict[str, dict[str, Any]] = {}
     all_locked_value: dict[str, Any] | None = None
     summary_value: dict[str, Any] | None = None
@@ -990,6 +1081,8 @@ def collect_compatibility(
 
         if relative.name == "result.json" and isinstance(value, dict):
             result_values[relative.parent.name] = value
+        elif relative.name == "network.json" and isinstance(value, dict):
+            network_values[relative.parent.name] = value
         elif (
             relative.name == "artifact-verification.json"
             and isinstance(value, dict)
@@ -1328,6 +1421,43 @@ def collect_compatibility(
             if relative_target not in evidence["collected"]:
                 evidence["collected"].append(relative_target)
 
+    retained_probes: dict[str, dict[str, dict[str, bytes]]] = {}
+    for matrix_id, probes in content_probes.items():
+        if probes and matrix_id not in content_probe_tokens:
+            continue
+        for probe in probes:
+            for suffix in COMPAT_CONTENT_PROBE_SUFFIXES:
+                name = f"{probe['id']}{suffix}"
+                relative = pathlib.Path(matrix_id) / "content-probes" / name
+                source = COMPAT_ARTIFACTS / relative
+                label = f"compat:{relative.as_posix()}"
+                if not source.is_file():
+                    evidence["missing"].append(label)
+                    if required:
+                        strict_errors.append(
+                            f"missing required compatibility evidence: {relative}"
+                        )
+                    continue
+                target = output / "compat" / relative
+                try:
+                    raw = copy_exact_compatibility_http(
+                        source,
+                        target,
+                        relative.as_posix(),
+                        content_probe_tokens[matrix_id],
+                    )
+                except ValueError as error:
+                    evidence["missing"].append(f"{label} (unsafe exact bytes)")
+                    if required:
+                        strict_errors.append(str(error))
+                    continue
+                retained_probes.setdefault(matrix_id, {}).setdefault(
+                    probe["id"], {}
+                )[suffix] = raw
+                relative_target = target.relative_to(output).as_posix()
+                if relative_target not in evidence["collected"]:
+                    evidence["collected"].append(relative_target)
+
     if required:
         if (
             summary_value is None
@@ -1383,6 +1513,49 @@ def collect_compatibility(
                     "compatibility cache evidence differs from retained HTTP bytes: "
                     f"{matrix_id}"
                 )
+            result_probes = result.get("contentProbes")
+            probes = content_probes[matrix_id]
+            expected_probe_ids = [probe["id"] for probe in probes]
+            if (
+                not isinstance(result_probes, dict)
+                or list(result_probes) != expected_probe_ids
+            ):
+                strict_errors.append(
+                    f"{matrix_id}: compatibility result content-probe inventory/order differs"
+                )
+                continue
+            selected_origin = compatibility_selected_origin(
+                network_values.get(matrix_id, {})
+            )
+            if selected_origin is None:
+                strict_errors.append(
+                    f"{matrix_id}: compatibility selected origin identity differs"
+                )
+                continue
+            for probe in probes:
+                probe_captures = retained_probes.get(matrix_id, {}).get(
+                    probe["id"], {}
+                )
+                if set(probe_captures) != set(COMPAT_CONTENT_PROBE_SUFFIXES):
+                    continue
+                try:
+                    reconstructed_probe = reconstruct_compatibility_content_probe(
+                        probe_captures, probe, matrix_id, selected_origin
+                    )
+                except EvidenceValidationError as error:
+                    strict_errors.append(str(error))
+                    continue
+                if reconstructed_probe["allPassed"] is not True:
+                    strict_errors.append(
+                        f"{matrix_id}/{probe['id']}: compatibility raw content probe failed"
+                    )
+                if not exact_json_value(
+                    result_probes[probe["id"]], reconstructed_probe
+                ):
+                    strict_errors.append(
+                        f"{matrix_id}/{probe['id']}: compatibility result content probe "
+                        "differs from retained raw captures"
+                    )
         for matrix_id, requirements in disk_requirements.items():
             captures = retained_raw.get(matrix_id, {})
             if set(captures) != set(COMPAT_WEBROOT_FILES):
@@ -1667,8 +1840,15 @@ def main() -> int:
     }
     exact_compatibility_http_targets = {
         path.resolve()
-        for path in (output / "compat").glob("*/*")
-        if path.is_file() and path.name in COMPAT_RAW_HTTP_FILES
+        for path in (output / "compat").rglob("*")
+        if path.is_file()
+        and (
+            path.name in COMPAT_RAW_HTTP_FILES
+            or (
+                path.parent.name == "content-probes"
+                and path.suffix in COMPAT_CONTENT_PROBE_SUFFIXES
+            )
+        )
     }
     for path in sorted(output.rglob("*")):
         if path.is_file() and path.suffix.lower() not in BINARY_SUFFIXES:

@@ -92,13 +92,13 @@ PY
             -H "$(compat_no_token_auth_header)" \
             --data "${payload}" 2>/dev/null || true)"
         token="$(printf '%s' "${response}" | json_field AccessToken)"
-        if [ -n "${token}" ]; then
+        if [[ "${token}" =~ ^[0-9A-Fa-f]{32}$ ]]; then
             printf '%s\n' "${token}"
             return 0
         fi
         sleep 1
     done
-    compat_die "${MATRIX_ID}: authentication returned no token"
+    compat_die "${MATRIX_ID}: authentication returned no valid 32-hex token"
 }
 
 complete_wizard() {
@@ -355,14 +355,53 @@ for route in / /web /web/ /web/index.html; do
 done
 
 mkdir -p "${OUT}/content-probes"
-while IFS=$'\t' read -r probe_id probe_path authenticated; do
+while IFS=$'\t' read -r probe_id probe_path authenticated probe_accept probe_max_bytes; do
     [ -n "${probe_id}" ] || continue
+    if [[ ! "${probe_max_bytes}" =~ ^[0-9]+$ ]] \
+        || [ "${probe_max_bytes}" -lt 1 ] \
+        || [ "${probe_max_bytes}" -gt 1048576 ]; then
+        compat_die "${MATRIX_ID}: content probe ${probe_id} has an invalid transfer cap"
+    fi
+    probe_body="${OUT}/content-probes/${probe_id}.txt"
+    probe_headers="${OUT}/content-probes/${probe_id}.headers"
+    probe_status_file="${OUT}/content-probes/${probe_id}.status"
+    : > "${probe_body}"
+    : > "${probe_headers}"
+    : > "${probe_status_file}"
     if [ "${authenticated}" = true ]; then
-        curl --fail --silent --show-error -H "${AUTH}" \
-            -o "${OUT}/content-probes/${probe_id}.txt" "${ORIGIN}${probe_path}"
+        if probe_status="$(curl --silent --show-error --no-location --globoff \
+            --connect-timeout 10 --max-time 30 --max-filesize "${probe_max_bytes}" \
+            -H "${AUTH}" -H "Accept: ${probe_accept}" \
+            -H 'Accept-Encoding: identity' -D "${probe_headers}" \
+            -o "${probe_body}" --write-out $'%{http_code}\t%{url_effective}' \
+            "${ORIGIN}${probe_path}")"; then
+            probe_rc=0
+        else
+            probe_rc=$?
+        fi
     else
-        curl --fail --silent --show-error \
-            -o "${OUT}/content-probes/${probe_id}.txt" "${ORIGIN}${probe_path}"
+        if probe_status="$(curl --silent --show-error --no-location --globoff \
+            --connect-timeout 10 --max-time 30 --max-filesize "${probe_max_bytes}" \
+            -H "Accept: ${probe_accept}" -H 'Accept-Encoding: identity' \
+            -D "${probe_headers}" -o "${probe_body}" \
+            --write-out $'%{http_code}\t%{url_effective}' \
+            "${ORIGIN}${probe_path}")"; then
+            probe_rc=0
+        else
+            probe_rc=$?
+        fi
+    fi
+    printf '%s\n' "${probe_status}" > "${probe_status_file}"
+    for probe_capture in "${probe_body}" "${probe_headers}" "${probe_status_file}"; do
+        if grep -Fq -- "${TOKEN}" "${probe_capture}"; then
+            : > "${probe_body}"
+            : > "${probe_headers}"
+            : > "${probe_status_file}"
+            compat_die "${MATRIX_ID}: content probe ${probe_id} echoed the authentication token"
+        fi
+    done
+    if [ "${probe_rc}" -ne 0 ]; then
+        compat_die "${MATRIX_ID}: content probe ${probe_id} transport failed with curl status ${probe_rc}"
     fi
 done < <(python3 "${MANIFEST_TOOL}" probes "${MATRIX_ID}")
 

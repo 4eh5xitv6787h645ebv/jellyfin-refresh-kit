@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import math
 import re
 import sys
 import urllib.parse
@@ -56,6 +57,11 @@ JAVASCRIPT_MIME_TYPES = {
     "text/x-ecmascript",
     "text/x-javascript",
 }
+CONTENT_PROBE_MAX_BODY_BYTES = 1024 * 1024
+CONTENT_PROBE_MAX_HEADER_BYTES = 64 * 1024
+CONTENT_PROBE_MAX_STATUS_BYTES = 4096
+HTTP_TOKEN = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+HTTP_QUOTED_STRING = r'"(?:[\t !#-\[\]-~]|\\[\t -~])*"'
 
 
 def normalize_special_url_reference(value: str) -> str:
@@ -271,6 +277,373 @@ def response_framing_mode(headers: dict[str, list[str]], body: bytes) -> str | N
     return None
 
 
+def strict_utf8(raw: bytes) -> tuple[str, bool]:
+    try:
+        return raw.decode("utf-8", errors="strict"), True
+    except UnicodeDecodeError:
+        return "", False
+
+
+def content_type_details(value: str) -> tuple[str | None, bool]:
+    """Return a strict MIME essence and whether any charset is UTF-8."""
+    match = re.match(rf"({HTTP_TOKEN})/({HTTP_TOKEN})", value)
+    if match is None:
+        return None, False
+    essence = f"{match.group(1)}/{match.group(2)}".casefold()
+    position = match.end()
+    parameter_names: set[str] = set()
+    charset: str | None = None
+    while True:
+        while position < len(value) and value[position] in " \t":
+            position += 1
+        if position == len(value):
+            return essence, charset is None or charset.casefold() in {
+                "utf-8",
+                "utf8",
+            }
+        if value[position] != ";":
+            return None, False
+        position += 1
+        while position < len(value) and value[position] in " \t":
+            position += 1
+        name_match = re.match(HTTP_TOKEN, value[position:])
+        if name_match is None:
+            return None, False
+        name = name_match.group(0).casefold()
+        if name in parameter_names:
+            return None, False
+        parameter_names.add(name)
+        position += name_match.end()
+        while position < len(value) and value[position] in " \t":
+            position += 1
+        if position == len(value) or value[position] != "=":
+            return None, False
+        position += 1
+        while position < len(value) and value[position] in " \t":
+            position += 1
+        value_match = re.match(
+            HTTP_QUOTED_STRING if position < len(value) and value[position] == '"'
+            else HTTP_TOKEN,
+            value[position:],
+        )
+        if value_match is None:
+            return None, False
+        parameter_value = value_match.group(0)
+        if parameter_value.startswith('"'):
+            parameter_value = re.sub(
+                r"\\([\t -~])", r"\1", parameter_value[1:-1]
+            )
+        if name == "charset":
+            charset = parameter_value
+        position += value_match.end()
+
+
+def content_type_essence(value: str) -> str | None:
+    return content_type_details(value)[0]
+
+
+def read_bounded_content_probe_file(path: Path, maximum: int) -> bytes:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise artifact_lib.HarnessError(
+            f"cannot stat content probe evidence {path}: {exc}"
+        ) from exc
+    if not 0 < size <= maximum:
+        raise artifact_lib.HarnessError(
+            f"content probe evidence size is invalid: {path}: {size}"
+        )
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise artifact_lib.HarnessError(
+            f"cannot read content probe evidence {path}: {exc}"
+        ) from exc
+
+
+def parse_http_response_blocks(
+    raw: bytes,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Parse curl's raw response-header capture without collapsing blocks."""
+    text, utf8_valid = strict_utf8(raw)
+    if not utf8_valid:
+        return [], False
+    blocks: list[dict[str, Any]] = []
+    if (
+        re.search(r"(?<!\r)\n|\r(?!\n)", text) is not None
+        or not text.endswith("\r\n\r\n")
+    ):
+        return blocks, False
+    raw_blocks = text.split("\r\n\r\n")
+    if raw_blocks[-1] != "" or any(not block for block in raw_blocks[:-1]):
+        return blocks, False
+    syntax_valid = True
+    for raw_block in raw_blocks[:-1]:
+        lines = raw_block.split("\r\n")
+        line = lines[0]
+        status_match = re.fullmatch(
+            r"HTTP/1\.1 ([0-9]{3})(?: [\x20-\x7e]*)?", line
+        )
+        if status_match is None:
+            syntax_valid = False
+            continue
+        current: dict[str, Any] = {
+            "status": int(status_match.group(1)),
+            "headers": {},
+        }
+        for line in lines[1:]:
+            if (
+                not line
+                or line[0] in " \t"
+                or ":" not in line
+                or re.fullmatch(
+                    r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", line.split(":", 1)[0]
+                )
+                is None
+            ):
+                syntax_valid = False
+                continue
+            key, header_value = line.split(":", 1)
+            if any(
+                character != "\t" and not 0x20 <= ord(character) <= 0x7E
+                for character in header_value
+            ):
+                syntax_valid = False
+                continue
+            current["headers"].setdefault(key.casefold(), []).append(
+                header_value.strip()
+            )
+        blocks.append(current)
+    return blocks, syntax_valid
+
+
+def parse_content_probe_status(
+    raw: bytes, expected_origin: str | None, expected_path: str
+) -> tuple[int | None, str | None, bool]:
+    text, utf8_valid = strict_utf8(raw)
+    if not utf8_valid:
+        return None, None, False
+    match = re.fullmatch(r"([0-9]{3})\t([^\r\n]+)\n", text)
+    if match is None:
+        return None, None, False
+    effective_url = match.group(2)
+    effective_valid = (
+        expected_origin is not None
+        and effective_url == f"{expected_origin}{expected_path}"
+    )
+    return int(match.group(1)), effective_url, effective_valid
+
+
+def strict_json_object(text: str) -> tuple[Any, bool]:
+    def object_from_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        def finite_float(value: str) -> float:
+            parsed = float(value)
+            if not math.isfinite(parsed):
+                raise ValueError(f"non-finite JSON float: {value}")
+            return parsed
+
+        value = json.loads(
+            text,
+            object_pairs_hook=object_from_pairs,
+            parse_float=finite_float,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant: {value}")
+            ),
+        )
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return None, False
+    if not isinstance(value, dict):
+        return value, False
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    nodes = 0
+    while pending:
+        current, depth = pending.pop()
+        nodes += 1
+        if depth > 64 or nodes > 100_000:
+            return None, False
+        if isinstance(current, list):
+            pending.extend((item, depth + 1) for item in current)
+        elif isinstance(current, dict):
+            pending.extend((item, depth + 1) for item in current.values())
+    return value, True
+
+
+def count_literal_occurrences(text: str, marker: str) -> int:
+    """Count every literal start position, including overlapping matches."""
+    count = 0
+    position = 0
+    while True:
+        position = text.find(marker, position)
+        if position < 0:
+            return count
+        count += 1
+        position += 1
+
+
+def evaluate_content_probe(
+    probe: dict[str, Any],
+    body_raw: bytes,
+    header_raw: bytes,
+    status_raw: bytes,
+    expected_origin: str | None,
+) -> dict[str, Any]:
+    blocks, header_syntax_valid = parse_http_response_blocks(header_raw)
+    selected = blocks[0] if len(blocks) == 1 else None
+    headers = selected["headers"] if selected is not None else {}
+    header_status = selected["status"] if selected is not None else None
+    status_value, effective_url, effective_url_valid = parse_content_probe_status(
+        status_raw, expected_origin, probe["path"]
+    )
+    content_type_values = headers.get("content-type", [])
+    content_type, utf8_charset_coherent = (
+        content_type_details(content_type_values[0])
+        if len(content_type_values) == 1
+        else (None, False)
+    )
+    content_encoding_values = headers.get("content-encoding", [])
+    identity_encoding = not content_encoding_values or (
+        len(content_encoding_values) == 1
+        and content_encoding_values[0].strip().casefold() == "identity"
+    )
+    framing_mode = response_framing_mode(headers, body_raw)
+    probe_text, utf8_valid = strict_utf8(body_raw)
+    probe_format = probe["format"]
+    parsed_probe: Any = None
+    if probe_format == "json-object" and utf8_valid:
+        parsed_probe, format_valid = strict_json_object(probe_text)
+    else:
+        format_valid = probe_format == "text" and utf8_valid
+
+    body_contract = probe["response"]["body"]
+    body_sha256 = hashlib.sha256(body_raw).hexdigest()
+    if body_contract["mode"] == "exact":
+        body_bytes_valid = len(body_raw) == body_contract["bytes"]
+        body_hash_valid = body_sha256 == body_contract["sha256"]
+        request_max_bytes = body_contract["bytes"]
+    else:
+        body_bytes_valid = (
+            body_contract["minBytes"]
+            <= len(body_raw)
+            <= body_contract["maxBytes"]
+        )
+        body_hash_valid = True
+        request_max_bytes = body_contract["maxBytes"]
+
+    def marker_count(marker: str) -> int:
+        if probe_format == "json-object":
+            return (
+                count_exact_json_string(parsed_probe, marker)
+                if format_valid
+                else 0
+            )
+        return count_literal_occurrences(probe_text, marker) if utf8_valid else 0
+
+    artifact_checks: dict[str, dict[str, dict[str, Any]]] = {}
+    for artifact_id, requirements in probe["markers"].items():
+        artifact_checks[artifact_id] = {}
+        for requirement in requirements:
+            value = requirement["value"]
+            count = marker_count(value)
+            artifact_checks[artifact_id][value] = {
+                "count": count,
+                "cardinality": requirement["cardinality"],
+                "passed": count == requirement["cardinality"],
+            }
+    json_array_checks: dict[str, dict[str, dict[str, Any]]] = {}
+    for key, requirements in probe.get("jsonArrayContains", {}).items():
+        observed = parsed_probe.get(key) if format_valid else None
+        json_array_checks[key] = {}
+        for requirement in requirements:
+            count = (
+                sum(
+                    type(value) is str and value == requirement["value"]
+                    for value in observed
+                )
+                if isinstance(observed, list)
+                else 0
+            )
+            json_array_checks[key][requirement["value"]] = {
+                "count": count,
+                "cardinality": requirement["cardinality"],
+                "passed": count == requirement["cardinality"],
+            }
+
+    checks = {
+        "bodyCaptureWithinHardLimit": 0 < len(body_raw)
+        <= CONTENT_PROBE_MAX_BODY_BYTES,
+        "headerCaptureWithinHardLimit": 0 < len(header_raw)
+        <= CONTENT_PROBE_MAX_HEADER_BYTES,
+        "statusCaptureWithinHardLimit": 0 < len(status_raw)
+        <= CONTENT_PROBE_MAX_STATUS_BYTES,
+        "headerSyntaxValid": header_syntax_valid,
+        "singleResponseBlock": header_syntax_valid and len(blocks) == 1,
+        "statusFileValid": status_value is not None and effective_url_valid,
+        "statusExpected": header_status == probe["response"]["status"]
+        and status_value == probe["response"]["status"],
+        "statusConsistent": header_status is not None
+        and header_status == status_value,
+        "singleContentType": len(content_type_values) == 1,
+        "contentTypeSyntaxValid": content_type is not None,
+        "mediaTypeExpected": content_type == probe["response"]["mediaType"],
+        "utf8CharsetCoherent": utf8_charset_coherent,
+        "identityContentEncoding": identity_encoding,
+        "framingValid": framing_mode is not None,
+        "strictUtf8": utf8_valid,
+        "bodyBytesValid": body_bytes_valid,
+        "bodyHashValid": body_hash_valid,
+        "formatValid": format_valid,
+    }
+    all_cardinalities = all(
+        check["passed"]
+        for artifact in artifact_checks.values()
+        for check in artifact.values()
+    ) and all(
+        check["passed"]
+        for array in json_array_checks.values()
+        for check in array.values()
+    )
+    return {
+        "path": probe["path"],
+        "authenticated": probe["authenticated"],
+        "request": {
+            "accept": probe["request"]["accept"],
+            "acceptEncoding": "identity",
+            "followRedirects": False,
+            "maxBytes": request_max_bytes,
+        },
+        "expectedResponse": probe["response"],
+        "format": probe_format,
+        "response": {
+            "headerBlockCount": len(blocks),
+            "status": header_status,
+            "statusFile": status_value,
+            "effectiveUrl": effective_url,
+            "contentTypeValues": content_type_values,
+            "mediaType": content_type,
+            "contentEncodingValues": content_encoding_values,
+            "framingMode": framing_mode,
+            "bodyBytes": len(body_raw),
+            "bodySha256": body_sha256,
+            "headersBytes": len(header_raw),
+            "headersSha256": hashlib.sha256(header_raw).hexdigest(),
+            "statusBytes": len(status_raw),
+            "statusSha256": hashlib.sha256(status_raw).hexdigest(),
+        },
+        "checks": checks,
+        "jsonArrayContainsChecks": json_array_checks,
+        "artifactChecks": artifact_checks,
+        "allPassed": all(checks.values()) and all_cardinalities,
+    }
+
+
 def evaluate_safe_degrade(
     primary_status: int | None,
     primary_headers: dict[str, list[str]],
@@ -368,13 +741,17 @@ def generation_from(path: Path) -> str:
 
 
 def count_exact_json_string(value: Any, marker: str) -> int:
-    if isinstance(value, str):
-        return int(value == marker)
-    if isinstance(value, list):
-        return sum(count_exact_json_string(item, marker) for item in value)
-    if isinstance(value, dict):
-        return sum(count_exact_json_string(item, marker) for item in value.values())
-    return 0
+    count = 0
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            count += int(current == marker)
+        elif isinstance(current, list):
+            pending.extend(current)
+        elif isinstance(current, dict):
+            pending.extend(current.values())
+    return count
 
 
 def evaluate_json_array_contains(
@@ -1116,77 +1493,48 @@ def cmd_runtime(args: argparse.Namespace) -> int:
 
     content_probe_results: dict[str, Any] = {}
     for probe in matrix.get("contentProbes", []):
-        probe_path = evidence / "content-probes" / f"{probe['id']}.txt"
-        require_file(probe_path)
-        probe_text = read_text(probe_path)
-        probe_format = probe.get("format", "text")
-        parsed_probe: Any = None
-        format_valid = True
-        if probe_format == "json-object":
-            try:
-                parsed_probe = json.loads(probe_text)
-            except json.JSONDecodeError:
-                format_valid = False
-            if not isinstance(parsed_probe, dict):
-                format_valid = False
-            if not format_valid:
-                errors.append(
-                    f"content probe {probe['id']} did not return a JSON object"
-                )
-
-        def marker_count(marker: str) -> int:
-            if probe_format == "json-object":
-                return (
-                    count_exact_json_string(parsed_probe, marker)
-                    if format_valid
-                    else 0
-                )
-            return probe_text.count(marker)
-
-        json_array_checks = evaluate_json_array_contains(
-            parsed_probe, probe.get("jsonArrayContains", {})
+        probe_root = evidence / "content-probes" / probe["id"]
+        probe_paths = {
+            "body": probe_root.with_suffix(".txt"),
+            "headers": probe_root.with_suffix(".headers"),
+            "status": probe_root.with_suffix(".status"),
+        }
+        for probe_path in probe_paths.values():
+            require_file(probe_path)
+        result = evaluate_content_probe(
+            probe,
+            read_bounded_content_probe_file(
+                probe_paths["body"], CONTENT_PROBE_MAX_BODY_BYTES
+            ),
+            read_bounded_content_probe_file(
+                probe_paths["headers"], CONTENT_PROBE_MAX_HEADER_BYTES
+            ),
+            read_bounded_content_probe_file(
+                probe_paths["status"], CONTENT_PROBE_MAX_STATUS_BYTES
+            ),
+            selected_origin,
         )
-        for key, passed in json_array_checks.items():
+        content_probe_results[probe["id"]] = result
+        for check_name, passed in result["checks"].items():
             if not passed:
                 errors.append(
-                    f"content probe {probe['id']} JSON array {key!r} "
-                    "does not contain every required value"
+                    f"content probe {probe['id']} response check failed: {check_name}"
                 )
-
-        artifact_checks = {
-            artifact_id: {
-                marker: {
-                    "count": marker_count(marker),
-                    "minimum": 1,
-                    "passed": marker_count(marker) >= 1,
-                }
-                for marker in markers
-            }
-            for artifact_id, markers in probe["markers"].items()
-        }
-        content_probe_results[probe["id"]] = {
-            "path": probe["path"],
-            "authenticated": probe["authenticated"],
-            "format": probe_format,
-            "formatValid": format_valid,
-            "jsonArrayContainsChecks": json_array_checks,
-            "sha256": sha256(probe_path),
-            "bytes": probe_path.stat().st_size,
-            "artifactChecks": artifact_checks,
-            "allPassed": format_valid
-            and all(json_array_checks.values())
-            and all(
-                check["passed"]
-                for checks in artifact_checks.values()
-                for check in checks.values()
-            ),
-        }
-        for artifact_id, checks in artifact_checks.items():
+        for key, checks in result["jsonArrayContainsChecks"].items():
+            for value, check in checks.items():
+                if not check["passed"]:
+                    errors.append(
+                        f"content probe {probe['id']} JSON array {key!r} cardinality "
+                        f"failed for {value!r}: expected={check['cardinality']}, "
+                        f"actual={check['count']}"
+                    )
+        for artifact_id, checks in result["artifactChecks"].items():
             for marker, check in checks.items():
                 if not check["passed"]:
                     errors.append(
                         f"{artifact_id}: content probe {probe['id']} marker cardinality "
-                        f"failed for {marker!r}: minimum=1, actual={check['count']}"
+                        f"failed for {marker!r}: expected={check['cardinality']}, "
+                        f"actual={check['count']}"
                     )
 
     inventory_rows = plugin_rows(read_json(evidence / "plugins.json"))

@@ -1382,6 +1382,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
     def make_direct_webroot_fixture(root: pathlib.Path) -> dict[str, object]:
         artifact_root = root / "artifacts"
         output = root / "output"
+        state = root / "state"
         matrix_path = root / "matrices.json"
         lock_path = root / "ecosystem.lock.json"
         build = root / "build"
@@ -1524,6 +1525,8 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     "noGateway": True,
                     "originMode": "verified-internal-bridge",
                     "publishedLoopbackActive": False,
+                    "internalIpv4": "10.77.0.2",
+                    "selectedOrigin": "http://10.77.0.2:8096",
                 },
                 "artifact-verification.json": {
                     **matrix_report,
@@ -1543,6 +1546,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     "expectedRuntimePluginOrder": runtime_order,
                     "observedRuntimePluginOrder": runtime_order,
                     "limitations": [],
+                    "contentProbes": {},
                     "webrootDisk": webroot_disk if matrix_id == disk_id else None,
                     "refreshKit": {
                         "generationAfter": generation,
@@ -1570,6 +1574,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         return {
             "artifact_root": artifact_root,
             "output": output,
+            "state": state,
             "matrix_path": matrix_path,
             "lock_path": lock_path,
             "build": build,
@@ -1583,6 +1588,104 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             "after": after,
         }
 
+    @staticmethod
+    def add_content_probe_fixture(
+        fixture: dict[str, object],
+    ) -> dict[str, object]:
+        artifact_root = pathlib.Path(fixture["artifact_root"])
+        matrix_path = pathlib.Path(fixture["matrix_path"])
+        matrix_id = str(fixture["disk_id"])
+        origin = "http://10.77.0.2:8096"
+        token = b"0123456789abcdef0123456789abcdef"
+        marker = "EXACT-SEMANTIC-PROBE-MARKER"
+        body = f"fixture prefix {marker} fixture suffix".encode("utf-8")
+        probe = {
+            "id": "fixture-content-javascript",
+            "path": "/Fixture/content.js",
+            "authenticated": True,
+            "request": {"accept": "text/javascript"},
+            "response": {
+                "status": 200,
+                "mediaType": "text/javascript",
+                "body": {
+                    "mode": "semantic",
+                    "minBytes": 32,
+                    "maxBytes": 1024,
+                },
+            },
+            "format": "text",
+            "markers": {
+                "direct-plugin": [
+                    {"value": marker, "cardinality": 1}
+                ]
+            },
+        }
+        manifest = json.loads(matrix_path.read_text(encoding="utf-8"))
+        matrix = next(row for row in manifest["matrices"] if row["id"] == matrix_id)
+        matrix["contentProbes"] = [probe]
+        matrix_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        directory = artifact_root / matrix_id
+        captures = {
+            ".txt": body,
+            ".headers": (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/javascript; charset=utf-8\r\n"
+                f"Content-Length: {len(body)}\r\n\r\n"
+            ).encode("ascii"),
+            ".status": f"200\t{origin}{probe['path']}\n".encode("ascii"),
+        }
+        probe_directory = directory / "content-probes"
+        probe_directory.mkdir()
+        for suffix, raw in captures.items():
+            (probe_directory / f"{probe['id']}{suffix}").write_bytes(raw)
+
+        network_path = directory / "network.json"
+        network = json.loads(network_path.read_text(encoding="utf-8"))
+        network.update(
+            {
+                "internalIpv4": "10.77.0.2",
+                "selectedOrigin": origin,
+            }
+        )
+        network_path.write_text(json.dumps(network), encoding="utf-8")
+
+        result_path = directory / "result.json"
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        projection = evidence_validation.reconstruct_compatibility_content_probe(
+            captures, probe, matrix_id, origin
+        )
+        if projection["allPassed"] is not True:
+            raise AssertionError(projection)
+        result["contentProbes"] = {probe["id"]: projection}
+        result_path.write_text(json.dumps(result), encoding="utf-8")
+
+        summary_path = artifact_root / "summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["results"] = [
+            json.loads(
+                (artifact_root / row["id"] / "result.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            for row in manifest["matrices"]
+        ]
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+        state = pathlib.Path(fixture["state"]) / matrix_id
+        state.mkdir(parents=True)
+        (state / "token").write_bytes(token)
+        fixture.update(
+            {
+                "probe": probe,
+                "probe_body": body,
+                "probe_captures": captures,
+                "probe_origin": origin,
+                "probe_token": token,
+            }
+        )
+        return fixture
+
     def collect_direct_webroot_fixture(
         self, fixture: dict[str, object]
     ) -> tuple[dict[str, list[str]], list[str]]:
@@ -1594,6 +1697,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             ),
             mock.patch.object(collector, "COMPAT_MATRICES", fixture["matrix_path"]),
             mock.patch.object(collector, "COMPAT_LOCK", fixture["lock_path"]),
+            mock.patch.object(collector, "COMPAT_STATE", fixture["state"]),
         ):
             collector.collect_compatibility(
                 fixture["output"],
@@ -1882,6 +1986,16 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             for matrix_id in ids
             for name in evidence_validation.COMPAT_RAW_HTTP_FILES
         }
+        probe_contracts = evidence_validation.load_compatibility_content_probes(
+            matrices_path
+        )
+        probe_paths = {
+            f"compat/{matrix_id}/content-probes/{probe['id']}{suffix}"
+            for matrix_id, probes in probe_contracts.items()
+            for probe in probes
+            for suffix in evidence_validation.COMPAT_CONTENT_PROBE_SUFFIXES
+        }
+        self.assertEqual(len(probe_paths), 45)
         expected_inventory = {"summary.json", "all-locked-verification.json"} | {
             f"{matrix_id}/{name}"
             for matrix_id in ids
@@ -1890,8 +2004,10 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             path.removeprefix("compat/") for path in raw_paths
         } | {
             path.removeprefix("compat/") for path in http_paths
+        } | {
+            path.removeprefix("compat/") for path in probe_paths
         }
-        self.assertEqual(len(expected_inventory), 146)
+        self.assertEqual(len(expected_inventory), 191)
         self.assertEqual(
             {
                 path
@@ -1910,6 +2026,10 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         self.assertEqual(
             collector.COMPAT_RAW_HTTP_FILES,
             evidence_validation.COMPAT_RAW_HTTP_FILES,
+        )
+        self.assertEqual(
+            collector.COMPAT_CONTENT_PROBE_SUFFIXES,
+            evidence_validation.COMPAT_CONTENT_PROBE_SUFFIXES,
         )
 
     def test_raw_webroot_collection_is_byte_exact_and_semantically_bound(self) -> None:
@@ -1985,6 +2105,14 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 "shell-after.headers",
                 b"HTTP/1.1 200 OK\r\nAuthorization: Bearer exposed\r\n",
             ),
+            "proxy-authorization": (
+                "shell-after.headers",
+                b"HTTP/1.1 200 OK\r\nProxy-Authorization: Basic exposed-value\r\n",
+            ),
+            "set-cookie": (
+                "shell-after.headers",
+                b"HTTP/1.1 200 OK\r\nSet-Cookie: sid=exposed-value\r\n",
+            ),
             "fixture-password": (
                 "shell-after.html",
                 b"<html>Compat669Pw!x</html>",
@@ -2012,21 +2140,50 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 b"<script>var token = ApiClient.accessToken(); "
                 b"const h = { Authorization: `MediaBrowser Token=${token}` };</script>"
             )
-            benign_source.write_bytes(benign)
-            self.assertEqual(
-                collector.copy_exact_compatibility_http(
-                    benign_source,
-                    benign_target,
-                    "matrix/shell-after.html",
-                ),
+            benign_values = (
                 benign,
+                b"<script>const h = { Authorization: authHeader };</script>",
+                b'<script>const h = { "X-Emby-Token": ApiClient.accessToken() };</script>',
+                b"<script>const h = { X-Emby-Token: ApiClient.accessToken() };</script>",
+                b"<script>const h = { Authorization: MediaBrowser Token=ApiClient.accessToken() };</script>",
+                b"<script>const url = `/x?api_key=${apiKey}`;</script>",
+                b"<script>const h = { Cookie: cookieHeader };</script>",
             )
+            for index, benign_value in enumerate(benign_values):
+                with self.subTest(benign=index):
+                    benign_source.write_bytes(benign_value)
+                    self.assertEqual(
+                        collector.copy_exact_compatibility_http(
+                            benign_source,
+                            benign_target,
+                            "matrix/shell-after.html",
+                        ),
+                        benign_value,
+                    )
             for label, (name, raw) in cases.items():
                 with self.subTest(label=label):
                     source = root / f"{label}-{name}"
                     target = root / f"{label}.copied"
                     source.write_bytes(raw)
-                    with self.assertRaises(ValueError):
+                    expected = (
+                        "credential-shaped value in exact compatibility HTTP "
+                        f"evidence: matrix/{name}"
+                        if label
+                        in {
+                            "authorization",
+                            "proxy-authorization",
+                            "set-cookie",
+                            "fixture-password",
+                            "literal-token",
+                        }
+                        else None
+                    )
+                    context = (
+                        self.assertRaisesRegex(ValueError, re.escape(expected))
+                        if expected is not None
+                        else self.assertRaises(ValueError)
+                    )
+                    with context:
                         collector.copy_exact_compatibility_http(
                             source, target, f"matrix/{name}"
                         )
@@ -2072,6 +2229,596 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     self.assertIs(
                         failed[check_field]["conditionalGenerationAddressedKit"],
                         False,
+                    )
+
+    def test_content_probe_collection_is_byte_exact_and_independently_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.add_content_probe_fixture(
+                self.make_direct_webroot_fixture(pathlib.Path(temporary))
+            )
+            evidence, errors = self.collect_direct_webroot_fixture(fixture)
+            self.assertEqual(errors, [])
+            self.assertEqual(evidence["missing"], [])
+            output = pathlib.Path(fixture["output"])
+            matrix_id = str(fixture["disk_id"])
+            probe = fixture["probe"]
+            for suffix, raw in fixture["probe_captures"].items():
+                retained = (
+                    output
+                    / "compat"
+                    / matrix_id
+                    / "content-probes"
+                    / f"{probe['id']}{suffix}"
+                )
+                self.assertEqual(retained.read_bytes(), raw)
+            collected = evidence_validation.validate_compatibility_tree(
+                output,
+                pathlib.Path(fixture["build"]),
+                pathlib.Path(fixture["matrix_path"]),
+            )
+            self.assertEqual(set(evidence["collected"]), collected)
+            result = json.loads(
+                (output / "compat" / matrix_id / "result.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            projection = result["contentProbes"][probe["id"]]
+            self.assertTrue(projection["allPassed"])
+            self.assertEqual(projection["response"]["bodyBytes"], len(fixture["probe_body"]))
+            self.assertEqual(projection["response"]["headerBlockCount"], 1)
+
+    def test_retained_content_probe_schema_bounds_are_reason_pinned(self) -> None:
+        base = json.loads(
+            (ROOT / "e2e" / "compat" / "matrices.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        expected_errors = {
+            "probe-count": "content probe count exceeds 64",
+            "id-length": "content probe id exceeds 64 characters",
+            "path-length": "content probe path exceeds 2048 characters",
+            "path-ascii": "content probe path must be ASCII",
+            "accept-length": "content probe Accept exceeds 128 characters",
+            "json-map": "JSON array map exceeds 64 entries",
+            "json-key-length": "JSON array key exceeds 128 characters",
+            "json-key-control": "JSON array key contains control characters",
+            "json-list": "JSON array requirement list exceeds 64 entries",
+            "json-value-length": "JSON array value exceeds 4096 characters",
+            "json-value-control": "JSON array value contains control characters",
+            "marker-map": "content marker owner map exceeds 64 entries",
+            "marker-owner-length": "content marker owner exceeds 128 characters",
+            "marker-owner-control": "content marker owner contains control characters",
+            "marker-list": "content marker requirement list exceeds 64 entries",
+            "marker-value-length": "content marker value exceeds 4096 characters",
+            "marker-value-control": "content marker value contains control characters",
+            "total-requirements": "content probe total requirements exceeds 64",
+        }
+        for scenario, expected in expected_errors.items():
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                manifest = copy.deepcopy(base)
+                text_matrix = next(
+                    row for row in manifest["matrices"]
+                    if row["id"] == "jf10-registration-broker"
+                )
+                text_probe = text_matrix["contentProbes"][0]
+                json_probe = next(
+                    probe
+                    for row in manifest["matrices"]
+                    if row["id"] == "jf10-response-transformers-forward"
+                    for probe in row["contentProbes"]
+                    if probe["id"] == "powertoys-remote-trailers-config"
+                )
+                if scenario == "probe-count":
+                    text_matrix["contentProbes"] = [
+                        copy.deepcopy(text_probe) for _ in range(65)
+                    ]
+                elif scenario == "id-length":
+                    text_probe["id"] = "a" * 65
+                elif scenario == "path-length":
+                    text_probe["path"] = "/" + ("a" * 2048)
+                elif scenario == "path-ascii":
+                    text_probe["path"] = "/Fixture/é.js"
+                elif scenario == "accept-length":
+                    value = "application/" + ("a" * 117)
+                    text_probe["request"]["accept"] = value
+                    text_probe["response"]["mediaType"] = value
+                elif scenario == "json-map":
+                    json_probe["jsonArrayContains"] = {
+                        f"key-{index}": [
+                            {"value": f"value-{index}", "cardinality": 1}
+                        ]
+                        for index in range(65)
+                    }
+                elif scenario == "json-key-length":
+                    contract = json_probe["jsonArrayContains"]
+                    contract["k" * 129] = contract.pop("plugins")
+                elif scenario == "json-key-control":
+                    contract = json_probe["jsonArrayContains"]
+                    contract["plugins\n"] = contract.pop("plugins")
+                elif scenario == "json-list":
+                    json_probe["jsonArrayContains"]["plugins"] = [
+                        {"value": f"value-{index}", "cardinality": 1}
+                        for index in range(65)
+                    ]
+                elif scenario == "json-value-length":
+                    json_probe["jsonArrayContains"]["plugins"][0]["value"] = (
+                        "v" * 4097
+                    )
+                elif scenario == "json-value-control":
+                    json_probe["jsonArrayContains"]["plugins"][0]["value"] = (
+                        "value\u007f"
+                    )
+                elif scenario == "marker-map":
+                    text_probe["markers"] = {
+                        f"owner-{index}": [
+                            {"value": f"value-{index}", "cardinality": 1}
+                        ]
+                        for index in range(65)
+                    }
+                elif scenario == "marker-owner-length":
+                    markers = text_probe["markers"]
+                    owner = next(iter(markers))
+                    markers["o" * 129] = markers.pop(owner)
+                elif scenario == "marker-owner-control":
+                    markers = text_probe["markers"]
+                    owner = next(iter(markers))
+                    markers[f"{owner}\n"] = markers.pop(owner)
+                elif scenario == "marker-list":
+                    requirements = next(iter(text_probe["markers"].values()))
+                    requirements[:] = [
+                        {"value": f"value-{index}", "cardinality": 1}
+                        for index in range(65)
+                    ]
+                elif scenario == "marker-value-length":
+                    next(iter(text_probe["markers"].values()))[0]["value"] = (
+                        "v" * 4097
+                    )
+                elif scenario == "marker-value-control":
+                    next(iter(text_probe["markers"].values()))[0]["value"] = (
+                        "value\n"
+                    )
+                else:
+                    json_probe["jsonArrayContains"]["plugins"] = [
+                        {"value": f"json-value-{index}", "cardinality": 1}
+                        for index in range(32)
+                    ]
+                    owner = next(iter(json_probe["markers"]))
+                    json_probe["markers"][owner] = [
+                        {"value": f"marker-value-{index}", "cardinality": 1}
+                        for index in range(33)
+                    ]
+                path = pathlib.Path(temporary) / "matrices.json"
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    evidence_validation.EvidenceValidationError,
+                    re.escape(expected),
+                ):
+                    evidence_validation.load_compatibility_content_probes(path)
+
+    def test_content_probe_json_reconstruction_is_strict_and_bounded(self) -> None:
+        contracts = evidence_validation.load_compatibility_content_probes(
+            ROOT / "e2e" / "compat" / "matrices.json"
+        )
+        probe = next(
+            row
+            for row in contracts["jf10-response-transformers-forward"]
+            if row["id"] == "powertoys-remote-trailers-config"
+        )
+        origin = "http://10.77.0.2:8096"
+        body = json.dumps(
+            {
+                "plugins": ["powertoys/RemoteTrailers"],
+                "padding": "x" * 600,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        def captures(value: bytes) -> dict[str, bytes]:
+            return {
+                ".txt": value,
+                ".headers": (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json; charset=utf-8\r\n"
+                    f"Content-Length: {len(value)}\r\n\r\n"
+                ).encode("ascii"),
+                ".status": f"200\t{origin}{probe['path']}\n".encode("ascii"),
+            }
+
+        valid = evidence_validation.reconstruct_compatibility_content_probe(
+            captures(body), probe, "fixture", origin
+        )
+        self.assertTrue(valid["allPassed"], valid)
+
+        quoted_utf8 = captures(body)
+        quoted_utf8[".headers"] = quoted_utf8[".headers"].replace(
+            b"charset=utf-8", b'charset="UTF-8"'
+        )
+        quoted_result = evidence_validation.reconstruct_compatibility_content_probe(
+            quoted_utf8, probe, "fixture", origin
+        )
+        self.assertTrue(quoted_result["checks"]["utf8CharsetCoherent"])
+        self.assertTrue(quoted_result["allPassed"])
+
+        wrong_charset = captures(body)
+        wrong_charset[".headers"] = wrong_charset[".headers"].replace(
+            b"charset=utf-8", b"charset=iso-8859-1"
+        )
+        wrong_charset_result = (
+            evidence_validation.reconstruct_compatibility_content_probe(
+                wrong_charset, probe, "fixture", origin
+            )
+        )
+        self.assertFalse(
+            wrong_charset_result["checks"]["utf8CharsetCoherent"]
+        )
+        self.assertFalse(wrong_charset_result["allPassed"])
+
+        border_probe = copy.deepcopy(probe)
+        border_probe["format"] = "text"
+        border_probe.pop("jsonArrayContains")
+        border_probe["request"]["accept"] = "text/javascript"
+        border_probe["response"]["mediaType"] = "text/javascript"
+        border_probe["response"]["body"] = {
+            "mode": "semantic",
+            "minBytes": 1,
+            "maxBytes": 32,
+        }
+        border_probe["markers"] = {
+            "powertoys-remote-trailers-jf10": [
+                {"value": "aba", "cardinality": 1}
+            ]
+        }
+        border_body = b"ababa"
+        border_captures = {
+            ".txt": border_body,
+            ".headers": (
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/javascript\r\n"
+                b"Content-Length: 5\r\n\r\n"
+            ),
+            ".status": f"200\t{origin}{border_probe['path']}\n".encode("ascii"),
+        }
+        border_result = evidence_validation.reconstruct_compatibility_content_probe(
+            border_captures, border_probe, "fixture", origin
+        )
+        self.assertEqual(
+            border_result["artifactChecks"]["powertoys-remote-trailers-jf10"]
+            ["aba"]["count"],
+            2,
+        )
+        self.assertFalse(border_result["allPassed"])
+
+        duplicate_value = json.dumps(
+            {
+                "plugins": [
+                    "powertoys/RemoteTrailers",
+                    "powertoys/RemoteTrailers",
+                ],
+                "padding": "x" * 600,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        duplicate_result = evidence_validation.reconstruct_compatibility_content_probe(
+            captures(duplicate_value), probe, "fixture", origin
+        )
+        self.assertFalse(
+            duplicate_result["jsonArrayContainsChecks"]["plugins"]
+            ["powertoys/RemoteTrailers"]["passed"]
+        )
+
+        invalid_values = {
+            "bom": b"\xef\xbb\xbf" + body,
+            "literal-nan": (
+                b'{"plugins":["powertoys/RemoteTrailers"],"padding":"'
+                + (b"x" * 600)
+                + b'","number":NaN}'
+            ),
+            "top-level-scalar": b'"' + (b"x" * 600) + b'"',
+            "top-level-array": b'["' + (b"x" * 600) + b'"]',
+            "duplicate-key": (
+                b'{"plugins":["powertoys/RemoteTrailers"],'
+                b'"plugins":["powertoys/RemoteTrailers"],"padding":"'
+                + (b"x" * 600)
+                + b'"}'
+            ),
+            "deep": (
+                b'{"plugins":["powertoys/RemoteTrailers"],"padding":"'
+                + (b"x" * 600)
+                + b'","nested":'
+                + (b"[" * 1100)
+                + b"0"
+                + (b"]" * 1100)
+                + b"}"
+            ),
+            "positive-exponent-overflow": (
+                b'{"plugins":["powertoys/RemoteTrailers"],"padding":"'
+                + (b"x" * 600)
+                + b'","number":1e9999}'
+            ),
+            "negative-exponent-overflow": (
+                b'{"plugins":["powertoys/RemoteTrailers"],"padding":"'
+                + (b"x" * 600)
+                + b'","number":-1e9999}'
+            ),
+        }
+        for label, value in invalid_values.items():
+            with self.subTest(label=label):
+                result = evidence_validation.reconstruct_compatibility_content_probe(
+                    captures(value), probe, "fixture", origin
+                )
+                self.assertIs(result["checks"]["formatValid"], False)
+                self.assertIs(result["allPassed"], False)
+
+        invalid_utf8 = dict(captures(body))
+        invalid_utf8[".txt"] = body + b"\xff"
+        invalid_utf8[".headers"] = invalid_utf8[".headers"].replace(
+            f"Content-Length: {len(body)}".encode("ascii"),
+            f"Content-Length: {len(body) + 1}".encode("ascii"),
+        )
+        with self.assertRaises(evidence_validation.EvidenceValidationError):
+            evidence_validation.reconstruct_compatibility_content_probe(
+                invalid_utf8, probe, "fixture", origin
+            )
+
+    def test_content_probe_collector_rejects_tokens_credentials_and_oversize(self) -> None:
+        scenarios = (
+            "dynamic-token-body",
+            "dynamic-token-header",
+            "dynamic-token-status",
+            "invalid-token-state",
+            "authorization-body",
+            "short-basic-body",
+            "short-bearer-body",
+            "cookie-body",
+            "short-cookie-body",
+            "emby-token-body",
+            "short-emby-token-body",
+            "oversize-body",
+            "oversize-headers",
+            "oversize-status",
+            "empty-body",
+            "empty-headers",
+            "empty-status",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                fixture = self.add_content_probe_fixture(
+                    self.make_direct_webroot_fixture(pathlib.Path(temporary))
+                )
+                artifact_root = pathlib.Path(fixture["artifact_root"])
+                matrix_id = str(fixture["disk_id"])
+                probe = fixture["probe"]
+                probe_root = artifact_root / matrix_id / "content-probes" / probe["id"]
+                token = bytes(fixture["probe_token"])
+                if scenario == "dynamic-token-body":
+                    probe_root.with_suffix(".txt").write_bytes(token)
+                elif scenario == "dynamic-token-header":
+                    probe_root.with_suffix(".headers").write_bytes(
+                        b"HTTP/1.1 200 OK\r\nX-Echo: " + token + b"\r\n\r\n"
+                    )
+                elif scenario == "dynamic-token-status":
+                    probe_root.with_suffix(".status").write_bytes(token + b"\n")
+                elif scenario == "invalid-token-state":
+                    (
+                        pathlib.Path(fixture["state"]) / matrix_id / "token"
+                    ).write_bytes(b"short")
+                elif scenario == "authorization-body":
+                    probe_root.with_suffix(".txt").write_bytes(
+                        b'{Authorization:"Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+                    )
+                elif scenario == "short-basic-body":
+                    probe_root.with_suffix(".txt").write_bytes(
+                        b"Authorization: Basic YQ=="
+                    )
+                elif scenario == "short-bearer-body":
+                    probe_root.with_suffix(".txt").write_bytes(
+                        b"Authorization: Bearer abc"
+                    )
+                elif scenario == "cookie-body":
+                    probe_root.with_suffix(".txt").write_bytes(
+                        b"Cookie: sid=aaaaaaaaaaaaaaaa"
+                    )
+                elif scenario == "short-cookie-body":
+                    probe_root.with_suffix(".txt").write_bytes(b"Cookie: sid=x")
+                elif scenario == "emby-token-body":
+                    probe_root.with_suffix(".txt").write_bytes(
+                        b"X-Emby-Token: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    )
+                elif scenario == "short-emby-token-body":
+                    probe_root.with_suffix(".txt").write_bytes(
+                        b"X-Emby-Token: abc"
+                    )
+                elif scenario == "oversize-body":
+                    probe_root.with_suffix(".txt").write_bytes(
+                        b"x" * (evidence_validation.COMPAT_CONTENT_PROBE_MAX_BODY_BYTES + 1)
+                    )
+                elif scenario == "oversize-headers":
+                    probe_root.with_suffix(".headers").write_bytes(
+                        b"x" * (evidence_validation.COMPAT_CONTENT_PROBE_MAX_HEADER_BYTES + 1)
+                    )
+                elif scenario == "oversize-status":
+                    probe_root.with_suffix(".status").write_bytes(
+                        b"x" * (evidence_validation.COMPAT_CONTENT_PROBE_MAX_STATUS_BYTES + 1)
+                    )
+                elif scenario == "empty-body":
+                    probe_root.with_suffix(".txt").write_bytes(b"")
+                elif scenario == "empty-headers":
+                    probe_root.with_suffix(".headers").write_bytes(b"")
+                else:
+                    probe_root.with_suffix(".status").write_bytes(b"")
+                _evidence, errors = self.collect_direct_webroot_fixture(fixture)
+                relative_root = f"{matrix_id}/content-probes/{probe['id']}"
+                suffix = {
+                    "dynamic-token-body": ".txt",
+                    "dynamic-token-header": ".headers",
+                    "dynamic-token-status": ".status",
+                    "authorization-body": ".txt",
+                    "short-basic-body": ".txt",
+                    "short-bearer-body": ".txt",
+                    "cookie-body": ".txt",
+                    "short-cookie-body": ".txt",
+                    "emby-token-body": ".txt",
+                    "short-emby-token-body": ".txt",
+                    "oversize-body": ".txt",
+                    "oversize-headers": ".headers",
+                    "oversize-status": ".status",
+                    "empty-body": ".txt",
+                    "empty-headers": ".headers",
+                    "empty-status": ".status",
+                }.get(scenario)
+                if scenario == "invalid-token-state":
+                    expected = (
+                        f"{matrix_id}: compatibility probe token state is invalid"
+                    )
+                elif scenario.startswith("dynamic-token"):
+                    expected = (
+                        "dynamic authentication token in exact compatibility "
+                        f"HTTP evidence: {relative_root}{suffix}"
+                    )
+                elif scenario in {
+                    "authorization-body",
+                    "short-basic-body",
+                    "short-bearer-body",
+                    "cookie-body",
+                    "short-cookie-body",
+                    "emby-token-body",
+                    "short-emby-token-body",
+                }:
+                    expected = (
+                        "credential-shaped value in exact compatibility HTTP "
+                        f"evidence: {relative_root}{suffix}"
+                    )
+                else:
+                    size = {
+                        "oversize-body": (
+                            evidence_validation.COMPAT_CONTENT_PROBE_MAX_BODY_BYTES
+                            + 1
+                        ),
+                        "oversize-headers": (
+                            evidence_validation.COMPAT_CONTENT_PROBE_MAX_HEADER_BYTES
+                            + 1
+                        ),
+                        "oversize-status": (
+                            evidence_validation.COMPAT_CONTENT_PROBE_MAX_STATUS_BYTES
+                            + 1
+                        ),
+                    }.get(scenario, 0)
+                    expected = (
+                        "invalid exact compatibility content-probe size: "
+                        f"{relative_root}{suffix}: {size}"
+                    )
+                self.assertIn(expected, errors)
+
+    def test_retained_content_probe_mutations_fail_closed_for_intended_reason(self) -> None:
+        scenarios = (
+            "missing-raw",
+            "extra-raw",
+            "malformed-mime",
+            "duplicate-mime-parameter",
+            "wrong-charset",
+            "wrong-effective-origin",
+            "redirect-302",
+            "raw-result-divergence",
+            "result-projection-divergence",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                fixture = self.add_content_probe_fixture(
+                    self.make_direct_webroot_fixture(pathlib.Path(temporary))
+                )
+                _evidence, errors = self.collect_direct_webroot_fixture(fixture)
+                self.assertEqual(errors, [])
+                output = pathlib.Path(fixture["output"])
+                matrix_id = str(fixture["disk_id"])
+                probe = fixture["probe"]
+                directory = output / "compat" / matrix_id
+                probe_root = directory / "content-probes" / probe["id"]
+                if scenario == "missing-raw":
+                    probe_root.with_suffix(".headers").unlink()
+                    expected = "compatibility inventory differs"
+                elif scenario == "extra-raw":
+                    (directory / "content-probes" / "unexpected.txt").write_bytes(b"x")
+                    expected = "compatibility inventory differs"
+                elif scenario == "malformed-mime":
+                    path = probe_root.with_suffix(".headers")
+                    path.write_bytes(
+                        path.read_bytes().replace(
+                            b"text/javascript; charset=utf-8",
+                            b"text/javascript;",
+                        )
+                    )
+                    expected = "raw content probe contract failed"
+                elif scenario == "duplicate-mime-parameter":
+                    path = probe_root.with_suffix(".headers")
+                    path.write_bytes(
+                        path.read_bytes().replace(
+                            b"text/javascript; charset=utf-8",
+                            b"text/javascript; charset=utf-8; CHARSET=us-ascii",
+                        )
+                    )
+                    expected = "raw content probe contract failed"
+                elif scenario == "wrong-charset":
+                    path = probe_root.with_suffix(".headers")
+                    path.write_bytes(
+                        path.read_bytes().replace(
+                            b"text/javascript; charset=utf-8",
+                            b"text/javascript; charset=iso-8859-1",
+                        )
+                    )
+                    expected = "raw content probe contract failed"
+                elif scenario == "wrong-effective-origin":
+                    path = probe_root.with_suffix(".status")
+                    path.write_bytes(
+                        path.read_bytes().replace(b"10.77.0.2", b"10.77.0.3")
+                    )
+                    expected = "raw content probe contract failed"
+                elif scenario == "redirect-302":
+                    headers_path = probe_root.with_suffix(".headers")
+                    headers_path.write_bytes(
+                        headers_path.read_bytes().replace(
+                            b"HTTP/1.1 200 OK", b"HTTP/1.1 302 Found"
+                        )
+                    )
+                    status_path = probe_root.with_suffix(".status")
+                    status_path.write_bytes(
+                        status_path.read_bytes().replace(b"200\t", b"302\t")
+                    )
+                    expected = "raw content probe contract failed"
+                elif scenario == "raw-result-divergence":
+                    path = probe_root.with_suffix(".txt")
+                    old_body = path.read_bytes()
+                    new_body = old_body + b" "
+                    path.write_bytes(new_body)
+                    headers_path = probe_root.with_suffix(".headers")
+                    headers_path.write_bytes(
+                        headers_path.read_bytes().replace(
+                            f"Content-Length: {len(old_body)}".encode("ascii"),
+                            f"Content-Length: {len(new_body)}".encode("ascii"),
+                        )
+                    )
+                    expected = "result content probe differs from raw captures"
+                else:
+                    result_path = directory / "result.json"
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    result["contentProbes"][probe["id"]]["response"][
+                        "bodySha256"
+                    ] = "0" * 64
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                    summary_path = output / "compat" / "summary.json"
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    summary["results"] = [
+                        result if row.get("matrix") == matrix_id else row
+                        for row in summary["results"]
+                    ]
+                    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                    expected = "result content probe differs from raw captures"
+                with self.assertRaisesRegex(
+                    evidence_validation.EvidenceValidationError, expected
+                ):
+                    evidence_validation.validate_compatibility_tree(
+                        output,
+                        pathlib.Path(fixture["build"]),
+                        pathlib.Path(fixture["matrix_path"]),
                     )
 
     def test_collector_rejects_typed_marker_count_mismatch(self) -> None:
@@ -2685,6 +3432,8 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         "noGateway": True,
                         "originMode": "verified-internal-bridge",
                         "publishedLoopbackActive": False,
+                        "internalIpv4": "10.77.0.2",
+                        "selectedOrigin": "http://10.77.0.2:8096",
                     },
                     "artifact-verification.json": matrix_report,
                     "result.json": {
@@ -2707,6 +3456,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         "expectedRuntimePluginOrder": None,
                         "observedRuntimePluginOrder": None,
                         "webrootDisk": None,
+                        "contentProbes": {},
                         "limitations": [
                             {
                                 "code": "outer-owner-unversioned-shell-tag",
