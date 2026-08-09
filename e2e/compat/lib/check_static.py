@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -72,6 +73,16 @@ def main() -> int:
             "required-absent checks must remain limited to the audited read-only "
             "direct-writer cases",
         )
+        actual_assembly_versioned = {
+            matrix["id"]: set(matrix.get("requiredAssemblyVersionedArtifacts", []))
+            for matrix in matrices["matrices"]
+            if matrix.get("requiredAssemblyVersionedArtifacts")
+        }
+        require(
+            actual_assembly_versioned
+            == manifest_lib.ASSEMBLY_VERSIONED_ARTIFACTS_BY_MATRIX,
+            "assembly-versioned checks must remain limited to the exact PowerToys resources",
+        )
         actual_preversioned = {
             matrix["id"]: set(matrix.get("requiredPreVersionedArtifacts", []))
             for matrix in matrices["matrices"]
@@ -88,6 +99,15 @@ def main() -> int:
             and manifest_lib.matrix_contract_digest(matrices)
             == manifest_lib.EXPECTED_MATRIX_CONTRACT_SHA256,
             "the exact 14-matrix compatibility contract digest changed",
+        )
+        actual_runtime_orders = {
+            matrix["id"]: tuple(matrix["expectedRuntimePluginOrder"])
+            for matrix in matrices["matrices"]
+            if matrix.get("expectedRuntimePluginOrder") is not None
+        }
+        require(
+            actual_runtime_orders == manifest_lib.EXPECTED_RUNTIME_PLUGIN_ORDER,
+            "order-pair matrices must retain their manifest-name runtime order",
         )
         require(
             locked_artifacts["actor-plus-jf10"]["plugin"]["name"] == "Actor Plus",
@@ -272,6 +292,11 @@ def main() -> int:
             '"${OUT}/conditional.html"',
         ):
             require(fragment in runtime, f"safe-degrade conditional capture is missing: {fragment}")
+        require(
+            runtime.count("-H 'Accept: text/html'") == 6,
+            "all five retained HTML representations and the route-status probe must "
+            "send the browser-shaped text/html Accept header",
+        )
         for fragment in (
             'configurations "${MATRIX_ID}"',
             'probes "${MATRIX_ID}"',
@@ -303,6 +328,9 @@ def main() -> int:
             '"dllInventory"',
             '"assemblySelection"',
             '"load-all-packaged"',
+            '"observedRuntimePluginOrder"',
+            '"requiredChecks"',
+            'evaluate_required_cache(',
         ):
             require(fragment in analyzer, f"safe-degrade analyzer assertion is missing: {fragment}")
 
@@ -399,6 +427,79 @@ def main() -> int:
             and unsafe_checks["conditionalHtmlDocument"] is False,
             "safe-degrade negative evidence was not rejected",
         )
+        required_etag = f'"rk-{hashlib.sha256(safe_body).hexdigest()}"'
+        required_headers = {
+            "content-length": [str(len(safe_body))],
+            "etag": [required_etag],
+        }
+        required_conditional_headers = {"etag": [required_etag]}
+        required_checks = analyze_lib.evaluate_required_cache(
+            200,
+            required_headers,
+            safe_body,
+            "304",
+            304,
+            required_conditional_headers,
+            b"",
+        )
+        require(
+            all(required_checks.values()),
+            "valid byte-bound required-cache response evidence was rejected",
+        )
+        required_negative_cases = {
+            "primaryStatus200": (500, required_headers, safe_body, "304", 304, required_conditional_headers, b""),
+            "validFraming": (200, {"etag": [required_etag]}, safe_body, "304", 304, required_conditional_headers, b""),
+            "singleStrongEtag": (200, {**required_headers, "etag": [f'W/{required_etag}']}, safe_body, "304", 304, required_conditional_headers, b""),
+            "etagMatchesBodySha256": (200, {**required_headers, "etag": ['"rk-' + ('0' * 64) + '"']}, safe_body, "304", 304, required_conditional_headers, b""),
+            "lastModifiedAbsent": (200, {**required_headers, "last-modified": ["now"]}, safe_body, "304", 304, required_conditional_headers, b""),
+            "conditionalStatus304": (200, required_headers, safe_body, "200", 200, required_conditional_headers, b""),
+            "conditionalBodyEmpty": (200, required_headers, safe_body, "304", 304, required_conditional_headers, b"x"),
+            "conditionalEtagMatches": (200, required_headers, safe_body, "304", 304, {"etag": ['"rk-' + ('0' * 64) + '"']}, b""),
+            "conditionalFramingBodyless": (200, required_headers, safe_body, "304", 304, {**required_conditional_headers, "content-length": ["0"]}, b""),
+            "conditionalLastModifiedAbsent": (200, required_headers, safe_body, "304", 304, {**required_conditional_headers, "last-modified": ["now"]}, b""),
+        }
+        for expected_failure, arguments in required_negative_cases.items():
+            mutated = analyze_lib.evaluate_required_cache(*arguments)
+            require(
+                mutated[expected_failure] is False,
+                f"required-cache mutation did not fail {expected_failure}",
+            )
+        remote_trailers_marker = "powertoys/RemoteTrailers"
+        require(
+            analyze_lib.count_exact_json_string(
+                {"plugins": [remote_trailers_marker]}, remote_trailers_marker
+            )
+            == 1
+            and analyze_lib.count_exact_json_string(
+                {"description": f"prefix-{remote_trailers_marker}"},
+                remote_trailers_marker,
+            )
+            == 0,
+            "JSON content-probe markers must match exact scalar values",
+        )
+        json_array_contract = {"plugins": [remote_trailers_marker]}
+        require(
+            all(
+                analyze_lib.evaluate_json_array_contains(
+                    {"plugins": [remote_trailers_marker]}, json_array_contract
+                ).values()
+            ),
+            "valid Jellyfin Web plugin-array content was rejected",
+        )
+        for invalid_json_shape in (
+            remote_trailers_marker,
+            [remote_trailers_marker],
+            {"description": remote_trailers_marker},
+            {"plugins": [f"prefix-{remote_trailers_marker}"]},
+        ):
+            require(
+                not all(
+                    analyze_lib.evaluate_json_array_contains(
+                        invalid_json_shape, json_array_contract
+                    ).values()
+                ),
+                f"invalid Jellyfin Web config shape was accepted: {invalid_json_shape!r}",
+            )
         empty_query = {"requiredKeys": [], "allowedKeys": [], "equals": {}}
         current_requirement = {
             "mode": "current-rkv",
@@ -832,6 +933,63 @@ def main() -> int:
                     ).values()
                 ),
                 f"invalid source-versioned URL was accepted: {bad_source_url}",
+            )
+
+        assembly_versioned_requirement = {
+            "mode": "assembly-versioned-path",
+            "cardinality": 1,
+            "selectors": [
+                {
+                    "tag": "script",
+                    "origin": "same-origin",
+                    "path": (
+                        "/_/9ad69ad4aa6db94bb91ba372701f75f8/"
+                        "59b81a2dc57f3e32ef95fdacfd4cf666.js"
+                    ),
+                    "query": empty_query,
+                    "cardinality": 1,
+                }
+            ],
+        }
+        assembly_versioned_url = (
+            "/_/9ad69ad4aa6db94bb91ba372701f75f8/"
+            "59b81a2dc57f3e32ef95fdacfd4cf666.js"
+        )
+        assembly_attribution, _, assembly_errors = (
+            analyze_lib.attribute_shell_assets(
+                [{"tag": "script", "url": assembly_versioned_url}],
+                {"powertoys-thumbnail-previews-jf10": assembly_versioned_requirement},
+                generation,
+            )
+        )
+        require(
+            not assembly_errors
+            and all(
+                analyze_lib.evaluate_shell_requirement(
+                    assembly_attribution["powertoys-thumbnail-previews-jf10"],
+                    assembly_versioned_requirement,
+                ).values()
+            ),
+            "valid assembly-versioned embedded-resource path was rejected",
+        )
+        for invalid_assembly_url in (
+            f"{assembly_versioned_url}?rkv={generation}",
+            "/_/9ad69ad4aa6db94bb91ba372701f75f8/thumbnail-previews.js",
+            "https://cdn.example.invalid" + assembly_versioned_url,
+        ):
+            invalid_attribution, _, _ = analyze_lib.attribute_shell_assets(
+                [{"tag": "script", "url": invalid_assembly_url}],
+                {"powertoys-thumbnail-previews-jf10": assembly_versioned_requirement},
+                generation,
+            )
+            require(
+                not all(
+                    analyze_lib.evaluate_shell_requirement(
+                        invalid_attribution["powertoys-thumbnail-previews-jf10"],
+                        assembly_versioned_requirement,
+                    ).values()
+                ),
+                f"invalid assembly-versioned URL was accepted: {invalid_assembly_url}",
             )
 
         external_requirement = {
@@ -1293,6 +1451,19 @@ def main() -> int:
                 changed_pair["matrices"][index]["orderPair"] = "mutated-pair"
                 require_manifest_rejected(f"exact-order-pair-{matrix_id}", changed_pair)
 
+                if matrix.get("expectedRuntimePluginOrder") is not None:
+                    changed_runtime_order = fresh_manifest()
+                    runtime_order = changed_runtime_order["matrices"][index][
+                        "expectedRuntimePluginOrder"
+                    ]
+                    runtime_order[0], runtime_order[1] = (
+                        runtime_order[1],
+                        runtime_order[0],
+                    )
+                    require_manifest_rejected(
+                        f"exact-runtime-order-{matrix_id}", changed_runtime_order
+                    )
+
                 changed_cache = fresh_manifest()
                 current_cache = changed_cache["matrices"][index]["cacheExpectation"]
                 changed_cache["matrices"][index]["cacheExpectation"] = (
@@ -1337,6 +1508,17 @@ def main() -> int:
             core["inlineRequirements"]["custom-tabs-jf10"]["markers"][0] += " changed"
             require_manifest_rejected("exact-body-contract", changed_body)
 
+            changed_assembly_versioned = fresh_manifest()
+            response_forward = next(
+                row
+                for row in changed_assembly_versioned["matrices"]
+                if row["id"] == "jf10-response-transformers-forward"
+            )
+            response_forward["requiredAssemblyVersionedArtifacts"].pop()
+            require_manifest_rejected(
+                "exact-assembly-versioned-contract", changed_assembly_versioned
+            )
+
             changed_config = fresh_manifest()
             broker = next(
                 row
@@ -1356,6 +1538,17 @@ def main() -> int:
             )
             broker["contentProbes"][0]["markers"]["media-preview-jf10"][0] += "x"
             require_manifest_rejected("exact-content-contract", changed_content)
+
+            invalid_content_format = fresh_manifest()
+            response = next(
+                row
+                for row in invalid_content_format["matrices"]
+                if row["id"] == "jf10-response-transformers-forward"
+            )
+            response["contentProbes"][1]["format"] = "javascript"
+            require_manifest_rejected(
+                "invalid-content-format", invalid_content_format
+            )
 
             changed_selector = fresh_manifest()
             changed_selector["matrices"][0]["shellRequirements"]["plugin-pages-jf10"][
@@ -1420,6 +1613,12 @@ def main() -> int:
                     {
                         "matrix": matrix["id"],
                         "cacheExpectation": matrix["cacheExpectation"],
+                        "expectedRuntimePluginOrder": matrix.get(
+                            "expectedRuntimePluginOrder"
+                        ),
+                        "observedRuntimePluginOrder": matrix.get(
+                            "expectedRuntimePluginOrder"
+                        ),
                         "outcome": "pass-with-limitation" if limited else "pass",
                     },
                 )
@@ -1439,15 +1638,66 @@ def main() -> int:
                 == list(manifest_lib.UNVERSIONED_OUTER_ARTIFACTS_BY_MATRIX),
                 "aggregate did not preserve exact limitation completeness",
             )
-            first_limited = next(iter(manifest_lib.UNVERSIONED_OUTER_ARTIFACTS_BY_MATRIX))
-            artifact_lib.write_json(
-                aggregate_root / first_limited / "result.json",
-                {
-                    "matrix": first_limited,
-                    "cacheExpectation": "safe-degrade",
-                    "outcome": "pass",
-                },
+            require(
+                aggregate_value.get("pairRuntimeOrderChecks")
+                == {"jf10-middleware": True, "jf10-response-transformers": True},
+                "aggregate did not prove runtime-order invariance for both install pairs",
             )
+            response_reverse = aggregate_root / "jf10-response-transformers-reverse" / "result.json"
+            response_reverse_value = artifact_lib.load_json(response_reverse)
+            response_reverse_value["observedRuntimePluginOrder"] = list(
+                reversed(response_reverse_value["observedRuntimePluginOrder"])
+            )
+            artifact_lib.write_json(response_reverse, response_reverse_value)
+            require(
+                analyze_lib.cmd_aggregate(aggregate_args) == 1,
+                "aggregate accepted divergent runtime plugin order within a pair",
+            )
+            response_reverse_value["observedRuntimePluginOrder"] = (
+                response_reverse_value["expectedRuntimePluginOrder"]
+            )
+            artifact_lib.write_json(response_reverse, response_reverse_value)
+            forged_order = list(
+                reversed(response_reverse_value["expectedRuntimePluginOrder"])
+            )
+            response_forward = (
+                aggregate_root
+                / "jf10-response-transformers-forward"
+                / "result.json"
+            )
+            response_forward_value = artifact_lib.load_json(response_forward)
+            for value in (response_forward_value, response_reverse_value):
+                value["expectedRuntimePluginOrder"] = forged_order
+                value["observedRuntimePluginOrder"] = forged_order
+            artifact_lib.write_json(response_forward, response_forward_value)
+            artifact_lib.write_json(response_reverse, response_reverse_value)
+            require(
+                analyze_lib.cmd_aggregate(aggregate_args) == 1,
+                "aggregate accepted a consistently forged pair runtime order",
+            )
+            response_forward_value["expectedRuntimePluginOrder"] = (
+                manifest_lib.EXPECTED_RUNTIME_PLUGIN_ORDER[
+                    "jf10-response-transformers-forward"
+                ]
+            )
+            response_forward_value["observedRuntimePluginOrder"] = (
+                response_forward_value["expectedRuntimePluginOrder"]
+            )
+            response_reverse_value["expectedRuntimePluginOrder"] = (
+                manifest_lib.EXPECTED_RUNTIME_PLUGIN_ORDER[
+                    "jf10-response-transformers-reverse"
+                ]
+            )
+            response_reverse_value["observedRuntimePluginOrder"] = (
+                response_reverse_value["expectedRuntimePluginOrder"]
+            )
+            artifact_lib.write_json(response_forward, response_forward_value)
+            artifact_lib.write_json(response_reverse, response_reverse_value)
+            first_limited = next(iter(manifest_lib.UNVERSIONED_OUTER_ARTIFACTS_BY_MATRIX))
+            first_limited_path = aggregate_root / first_limited / "result.json"
+            first_limited_value = artifact_lib.load_json(first_limited_path)
+            first_limited_value["outcome"] = "pass"
+            artifact_lib.write_json(first_limited_path, first_limited_value)
             require(
                 analyze_lib.cmd_aggregate(aggregate_args) == 1,
                 "aggregate accepted a silently omitted expected limitation",
@@ -1486,6 +1736,12 @@ def main() -> int:
                 matrix_id: sorted(artifact_ids)
                 for matrix_id, artifact_ids in sorted(actual_absent.items())
             },
+            "requiredAssemblyVersionedArtifacts": {
+                matrix_id: sorted(artifact_ids)
+                for matrix_id, artifact_ids in sorted(
+                    actual_assembly_versioned.items()
+                )
+            },
             "requiredExternalArtifacts": {
                 matrix_id: sorted(artifact_ids)
                 for matrix_id, artifact_ids in sorted(actual_external.items())
@@ -1493,6 +1749,10 @@ def main() -> int:
             "requiredPreVersionedArtifacts": {
                 matrix_id: sorted(artifact_ids)
                 for matrix_id, artifact_ids in sorted(actual_preversioned.items())
+            },
+            "expectedRuntimePluginOrder": {
+                matrix_id: list(order)
+                for matrix_id, order in sorted(actual_runtime_orders.items())
             },
             "allPassed": True,
         }

@@ -7,6 +7,8 @@ import hashlib
 import json
 import pathlib
 import re
+from collections import Counter
+from html.parser import HTMLParser
 from typing import Any
 
 from host_upgrade_evidence import (
@@ -110,6 +112,13 @@ COMPAT_MATRIX_FILES = (
     "result.json",
 )
 COMPAT_WEBROOT_FILES = ("webroot-before.html", "webroot-after.html")
+COMPAT_RAW_HTTP_FILES = (
+    "shell-after.html",
+    "shell-after.headers",
+    "conditional.html",
+    "conditional.headers",
+    "conditional-status.txt",
+)
 SAFE_DEGRADE_CHECK_NAMES = {
     "primaryStatus200",
     "primaryFramingValid",
@@ -128,6 +137,18 @@ SAFE_DEGRADE_CHECK_NAMES = {
     "conditionalBootGeneration",
     "conditionalGenerationAddressedKit",
     "conditionalAssetMultisetMatchesPrimary",
+}
+REQUIRED_CACHE_CHECK_NAMES = {
+    "primaryStatus200",
+    "validFraming",
+    "singleStrongEtag",
+    "etagMatchesBodySha256",
+    "lastModifiedAbsent",
+    "conditionalStatus304",
+    "conditionalBodyEmpty",
+    "conditionalEtagMatches",
+    "conditionalFramingBodyless",
+    "conditionalLastModifiedAbsent",
 }
 
 
@@ -172,6 +193,319 @@ def exact_json_value(actual: Any, expected: Any) -> bool:
             exact_json_value(left, right) for left, right in zip(actual, expected)
         )
     return actual == expected
+
+
+_COMPAT_INERT_CONTAINERS = {
+    "iframe",
+    "math",
+    "noembed",
+    "noframes",
+    "noscript",
+    "plaintext",
+    "style",
+    "svg",
+    "template",
+    "textarea",
+    "title",
+    "xmp",
+}
+_COMPAT_JAVASCRIPT_TYPES = {
+    "application/ecmascript",
+    "application/javascript",
+    "application/x-ecmascript",
+    "application/x-javascript",
+    "text/ecmascript",
+    "text/javascript",
+    "text/javascript1.0",
+    "text/javascript1.1",
+    "text/javascript1.2",
+    "text/javascript1.3",
+    "text/javascript1.4",
+    "text/javascript1.5",
+    "text/jscript",
+    "text/livescript",
+    "text/x-ecmascript",
+    "text/x-javascript",
+}
+
+
+class _CompatibilityShellAssetParser(HTMLParser):
+    """Mirror the compatibility analyzer's executable shell-asset selection."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.assets: Counter[str] = Counter()
+        self.inert: Counter[str] = Counter()
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        self._handle(tag, attrs, self_closing=False)
+
+    def handle_startendtag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        self._handle(tag, attrs, self_closing=True)
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.casefold()
+        if self.inert[normalized_tag] > 0:
+            self.inert[normalized_tag] -= 1
+
+    def _handle(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+        *,
+        self_closing: bool,
+    ) -> None:
+        normalized_tag = tag.casefold()
+        if normalized_tag in _COMPAT_INERT_CONTAINERS:
+            if not self_closing or normalized_tag not in {"math", "svg"}:
+                self.inert[normalized_tag] += 1
+            return
+        if any(self.inert.values()):
+            return
+        normalized: dict[str, str] = {}
+        for key, value in attrs:
+            normalized.setdefault(key.casefold(), value or "")
+        url = ""
+        if normalized_tag == "script":
+            if "type" in normalized:
+                script_type = normalized["type"].strip().casefold()
+                executable = (
+                    not script_type
+                    or script_type == "module"
+                    or script_type in _COMPAT_JAVASCRIPT_TYPES
+                )
+            else:
+                language = normalized.get("language", "").strip().casefold()
+                executable = (
+                    not language
+                    or f"text/{language}" in _COMPAT_JAVASCRIPT_TYPES
+                )
+            if executable:
+                url = normalized.get("src", "")
+        elif normalized_tag == "link":
+            rel = {part.casefold() for part in normalized.get("rel", "").split()}
+            link_type = normalized.get("type", "").strip().casefold()
+            link_essence = link_type.split(";", 1)[0].strip()
+            if "stylesheet" in rel and (
+                not link_type or link_essence == "text/css"
+            ):
+                url = normalized.get("href", "")
+        if url:
+            self.assets[url] += 1
+
+
+def _compatibility_text(raw: bytes, label: str) -> str:
+    try:
+        return raw.decode("utf-8-sig", errors="strict")
+    except UnicodeDecodeError as error:
+        raise EvidenceValidationError(
+            f"compatibility raw HTTP evidence is not UTF-8: {label}: {error}"
+        ) from error
+
+
+def _compatibility_headers(raw: bytes, label: str) -> dict[str, list[str]]:
+    headers: dict[str, list[str]] = {}
+    for raw_line in _compatibility_text(raw, label).splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        headers.setdefault(key.strip().casefold(), []).append(value.strip())
+    return headers
+
+
+def _compatibility_http_status(raw: bytes, label: str) -> int | None:
+    statuses: list[int] = []
+    for raw_line in _compatibility_text(raw, label).splitlines():
+        match = re.fullmatch(r"HTTP/\S+\s+([0-9]{3})(?:\s+.*)?", raw_line.strip())
+        if match is not None:
+            statuses.append(int(match.group(1)))
+    return statuses[-1] if statuses else None
+
+
+def _compatibility_framing_mode(
+    headers: dict[str, list[str]], body: bytes
+) -> str | None:
+    content_lengths = headers.get("content-length", [])
+    transfer_encodings = headers.get("transfer-encoding", [])
+    if bool(content_lengths) == bool(transfer_encodings):
+        return None
+    if content_lengths:
+        if (
+            len(content_lengths) == 1
+            and re.fullmatch(r"[0-9]+", content_lengths[0]) is not None
+            and int(content_lengths[0]) == len(body)
+        ):
+            return "content-length"
+        return None
+    if (
+        len(transfer_encodings) == 1
+        and [token.strip().casefold() for token in transfer_encodings[0].split(",")]
+        == ["chunked"]
+    ):
+        return "chunked"
+    return None
+
+
+def _compatibility_has_cache_directive(
+    headers: dict[str, list[str]], directive: str
+) -> bool:
+    wanted = directive.casefold()
+    return any(
+        part.split("=", 1)[0].strip().casefold() == wanted
+        for value in headers.get("cache-control", [])
+        for part in value.split(",")
+    )
+
+
+def _compatibility_assets(text: str) -> Counter[str]:
+    parser = _CompatibilityShellAssetParser()
+    parser.feed(text)
+    parser.close()
+    return parser.assets
+
+
+def reconstruct_compatibility_cache_evidence(
+    captures: dict[str, bytes],
+    result: dict[str, Any],
+    expectation: str,
+    matrix_id: str,
+) -> dict[str, Any]:
+    """Rebuild cache claims solely from the retained wire headers and bodies."""
+    require(
+        set(captures) == set(COMPAT_RAW_HTTP_FILES),
+        f"{matrix_id}: compatibility raw HTTP inventory differs",
+    )
+    primary_body = captures["shell-after.html"]
+    conditional_body = captures["conditional.html"]
+    primary_headers = _compatibility_headers(
+        captures["shell-after.headers"], f"{matrix_id}/shell-after.headers"
+    )
+    conditional_headers = _compatibility_headers(
+        captures["conditional.headers"], f"{matrix_id}/conditional.headers"
+    )
+    primary_status = _compatibility_http_status(
+        captures["shell-after.headers"], f"{matrix_id}/shell-after.headers"
+    )
+    conditional_http_status = _compatibility_http_status(
+        captures["conditional.headers"], f"{matrix_id}/conditional.headers"
+    )
+    conditional_status = _compatibility_text(
+        captures["conditional-status.txt"],
+        f"{matrix_id}/conditional-status.txt",
+    ).strip()
+    primary_etags = primary_headers.get("etag", [])
+    expected_etag = f'"rk-{hashlib.sha256(primary_body).hexdigest()}"'
+    required_checks = {
+        "primaryStatus200": primary_status == 200,
+        "validFraming": _compatibility_framing_mode(
+            primary_headers, primary_body
+        )
+        is not None,
+        "singleStrongEtag": len(primary_etags) == 1
+        and re.fullmatch(r'"rk-[0-9a-f]{64}"', primary_etags[0]) is not None,
+        "etagMatchesBodySha256": primary_etags == [expected_etag],
+        "lastModifiedAbsent": not primary_headers.get("last-modified"),
+        "conditionalStatus304": conditional_status == "304"
+        and conditional_http_status == 304,
+        "conditionalBodyEmpty": len(conditional_body) == 0,
+        "conditionalEtagMatches": conditional_headers.get("etag", [])
+        == [expected_etag],
+        "conditionalFramingBodyless": not any(
+            conditional_headers.get(name)
+            for name in (
+                "content-length",
+                "transfer-encoding",
+                "content-encoding",
+            )
+        ),
+        "conditionalLastModifiedAbsent": not conditional_headers.get(
+            "last-modified"
+        ),
+    }
+    refresh_kit = result.get("refreshKit")
+    generation = (
+        refresh_kit.get("generationAfter")
+        if isinstance(refresh_kit, dict)
+        else None
+    )
+    primary_text = _compatibility_text(
+        primary_body, f"{matrix_id}/shell-after.html"
+    )
+    conditional_text = _compatibility_text(
+        conditional_body, f"{matrix_id}/conditional.html"
+    )
+    safe_degrade_checks = {
+        "primaryStatus200": primary_status == 200,
+        "primaryFramingValid": _compatibility_framing_mode(
+            primary_headers, primary_body
+        )
+        is not None,
+        "primaryCacheControlNoStore": _compatibility_has_cache_directive(
+            primary_headers, "no-store"
+        ),
+        "primaryEtagAbsent": not primary_headers.get("etag"),
+        "primaryLastModifiedAbsent": not primary_headers.get("last-modified"),
+        "conditionalStatus200": conditional_status == "200"
+        and conditional_http_status == 200,
+        "conditionalFramingValid": _compatibility_framing_mode(
+            conditional_headers, conditional_body
+        )
+        is not None,
+        "conditionalCacheControlNoStore": _compatibility_has_cache_directive(
+            conditional_headers, "no-store"
+        ),
+        "conditionalEtagAbsent": not conditional_headers.get("etag"),
+        "conditionalLastModifiedAbsent": not conditional_headers.get(
+            "last-modified"
+        ),
+        "conditionalBodyNonEmpty": len(conditional_body) > 0,
+        "conditionalHtmlDocument": "<html" in conditional_text.casefold()
+        and "</html>" in conditional_text.casefold(),
+        "conditionalSingleRefreshKitTag": conditional_text.count(
+            'plugin="Jellyfin Refresh Kit"'
+        )
+        == 1,
+        "conditionalNamedRuntime": 'data-name="RefreshKitPlugin"'
+        in conditional_text,
+        "conditionalBootGeneration": isinstance(generation, str)
+        and f'data-boot-version="{generation}"' in conditional_text,
+        "conditionalGenerationAddressedKit": isinstance(generation, str)
+        and f"/RefreshKit/kit.js?v={generation}" in conditional_text,
+        "conditionalAssetMultisetMatchesPrimary": _compatibility_assets(
+            conditional_text
+        )
+        == _compatibility_assets(primary_text),
+    }
+    primary_framing = _compatibility_framing_mode(primary_headers, primary_body)
+    conditional_framing = (
+        "bodyless-304"
+        if required_checks["conditionalStatus304"]
+        and required_checks["conditionalBodyEmpty"]
+        and required_checks["conditionalFramingBodyless"]
+        else _compatibility_framing_mode(conditional_headers, conditional_body)
+    )
+    safe_mode = expectation == "safe-degrade"
+    return {
+        "expectation": expectation,
+        "primary": {
+            "status": primary_status,
+            "bodyBytes": len(primary_body),
+            "bodySha256": hashlib.sha256(primary_body).hexdigest(),
+            "framingMode": primary_framing,
+        },
+        "conditional": {
+            "status": conditional_http_status,
+            "bodyBytes": len(conditional_body),
+            "bodySha256": hashlib.sha256(conditional_body).hexdigest(),
+            "framingMode": conditional_framing,
+        },
+        "requiredChecks": required_checks if expectation == "required" else {},
+        "safeDegradeChecks": safe_degrade_checks if safe_mode else {},
+    }
 
 
 def reconstruct_webroot_disk(
@@ -632,6 +966,8 @@ def _matrix_contract(
     dict[str, str],
     dict[str, list[str]],
     dict[str, dict[str, Any]],
+    dict[str, str | None],
+    dict[str, list[str] | None],
 ]:
     root = load_object(matrices_path)
     rows = root.get("matrices")
@@ -642,6 +978,8 @@ def _matrix_contract(
     cache: dict[str, str] = {}
     limitations: dict[str, list[str]] = {}
     webroot_disk: dict[str, dict[str, Any]] = {}
+    order_pairs: dict[str, str | None] = {}
+    runtime_orders: dict[str, list[str] | None] = {}
     for row in rows:
         require(isinstance(row, dict), "compatibility matrix row is not an object")
         matrix_id = row.get("id")
@@ -681,15 +1019,52 @@ def _matrix_contract(
                     and all(isinstance(marker, str) and bool(marker) for marker in markers)
                     and len(markers) == len(set(markers)),
                     f"compatibility matrix {matrix_id}/{artifact_id} disk requirement is invalid")
+        order_pair = row.get("orderPair")
+        runtime_order = row.get("expectedRuntimePluginOrder")
+        require(
+            (order_pair is None and runtime_order is None)
+            or (
+                isinstance(order_pair, str)
+                and re.fullmatch(r"[a-z0-9][a-z0-9-]*", order_pair) is not None
+                and isinstance(runtime_order, list)
+                and bool(runtime_order)
+                and all(isinstance(item, str) and bool(item) for item in runtime_order)
+                and len(runtime_order) == len(set(runtime_order))
+            ),
+            f"compatibility matrix {matrix_id} runtime-order contract is invalid",
+        )
         ids.append(matrix_id)
         runtimes[matrix_id] = runtime
         services[matrix_id] = service
         cache[matrix_id] = expectation
+        order_pairs[matrix_id] = order_pair
+        runtime_orders[matrix_id] = runtime_order
         if artifacts:
             limitations[matrix_id] = artifacts
         if disk_requirements:
             webroot_disk[matrix_id] = disk_requirements
-    return ids, runtimes, services, cache, limitations, webroot_disk
+    pair_members: dict[str, list[str]] = {}
+    for matrix_id, order_pair in order_pairs.items():
+        if order_pair is not None:
+            pair_members.setdefault(order_pair, []).append(matrix_id)
+    for order_pair, members in pair_members.items():
+        require(
+            len(members) == 2
+            and runtime_orders[members[0]] == runtime_orders[members[1]]
+            and runtimes[members[0]] == runtimes[members[1]]
+            and cache[members[0]] == cache[members[1]],
+            f"compatibility order pair {order_pair} contract is invalid",
+        )
+    return (
+        ids,
+        runtimes,
+        services,
+        cache,
+        limitations,
+        webroot_disk,
+        order_pairs,
+        runtime_orders,
+    )
 
 
 def validate_compatibility_tree(
@@ -704,9 +1079,14 @@ def validate_compatibility_tree(
         cache_expectations,
         limitations,
         webroot_disk_requirements,
+        order_pairs,
+        runtime_orders,
     ) = _matrix_contract(matrices_path)
     expected = {"summary.json"} | {
         f"{matrix_id}/{name}" for matrix_id in ids for name in COMPAT_MATRIX_FILES
+    }
+    expected |= {
+        f"{matrix_id}/{name}" for matrix_id in ids for name in COMPAT_RAW_HTTP_FILES
     }
     expected |= {
         f"{matrix_id}/{name}"
@@ -720,6 +1100,12 @@ def validate_compatibility_tree(
             f"compatibility inventory differs: missing={sorted(expected-actual)}, unexpected={sorted(actual-expected)}")
     safe_degraded = [matrix_id for matrix_id in ids if cache_expectations[matrix_id] == "safe-degrade"]
     limited = [matrix_id for matrix_id in ids if matrix_id in limitations]
+    expected_pair_checks = {
+        order_pair: True
+        for order_pair in sorted(
+            {value for value in order_pairs.values() if value is not None}
+        )
+    }
     summary = load_object(compat / "summary.json")
     require(summary.get("schemaVersion") == 1, "compatibility summary schema differs")
     summary_expected = {
@@ -735,10 +1121,15 @@ def validate_compatibility_tree(
         "passWithLimitationMatrices": limited,
         "missingPassWithLimitationMatrices": [],
         "unexpectedPassWithLimitationMatrices": [],
+        "pairRuntimeOrderChecks": expected_pair_checks,
     }
     for field, wanted in summary_expected.items():
-        require(summary.get(field) == wanted, f"compatibility summary {field} differs")
+        require(
+            field in summary and exact_json_value(summary[field], wanted),
+            f"compatibility summary {field} differs",
+        )
 
+    retained_results: list[dict[str, Any]] = []
     for matrix_id in ids:
         directory = compat / matrix_id
         static = load_object(directory / "static.json")
@@ -746,6 +1137,7 @@ def validate_compatibility_tree(
         network = load_object(directory / "network.json")
         artifact = load_object(directory / "artifact-verification.json")
         result = load_object(directory / "result.json")
+        retained_results.append(result)
         require(static.get("schemaVersion") == 1 and static.get("allPassed") is True,
                 f"{matrix_id}: static evidence failed")
         require(network.get("schemaVersion") == 1
@@ -787,6 +1179,20 @@ def validate_compatibility_tree(
                 f"{matrix_id}: network isolation identity differs")
         require(result.get("cacheExpectation") == cache_expectations[matrix_id],
                 f"{matrix_id}: result cache expectation differs")
+        expected_runtime_order = runtime_orders[matrix_id]
+        require(
+            "orderPair" in result
+            and "expectedRuntimePluginOrder" in result
+            and "observedRuntimePluginOrder" in result
+            and exact_json_value(result["orderPair"], order_pairs[matrix_id])
+            and exact_json_value(
+                result["expectedRuntimePluginOrder"], expected_runtime_order
+            )
+            and exact_json_value(
+                result["observedRuntimePluginOrder"], expected_runtime_order
+            ),
+            f"{matrix_id}: runtime plugin order proof differs",
+        )
         rows = result.get("limitations")
         require(isinstance(rows, list) and [row.get("artifactId") for row in rows if isinstance(row, dict)]
                 == expected_limitations and len(rows) == len(expected_limitations),
@@ -812,9 +1218,38 @@ def validate_compatibility_tree(
             require("webrootDisk" in result
                     and exact_json_value(result["webrootDisk"], reconstructed),
                     f"{matrix_id}: result webrootDisk differs from retained raw bytes")
-        if cache_expectations[matrix_id] == "safe-degrade":
-            refresh = result.get("refreshKit")
-            cache = refresh.get("cacheEvidence") if isinstance(refresh, dict) else None
+        captures = {
+            name: (directory / name).read_bytes() for name in COMPAT_RAW_HTTP_FILES
+        }
+        reconstructed_cache = reconstruct_compatibility_cache_evidence(
+            captures, result, cache_expectations[matrix_id], matrix_id
+        )
+        refresh = result.get("refreshKit")
+        cache = refresh.get("cacheEvidence") if isinstance(refresh, dict) else None
+        require(
+            isinstance(cache, dict)
+            and all(
+                field in cache
+                and exact_json_value(cache[field], reconstructed_cache[field])
+                for field in (
+                    "expectation",
+                    "primary",
+                    "conditional",
+                    "requiredChecks",
+                    "safeDegradeChecks",
+                )
+            ),
+            f"{matrix_id}: cache evidence differs from retained HTTP bytes",
+        )
+        if cache_expectations[matrix_id] == "required":
+            checks = cache.get("requiredChecks") if isinstance(cache, dict) else None
+            require(
+                isinstance(checks, dict)
+                and set(checks) == REQUIRED_CACHE_CHECK_NAMES
+                and all(value is True for value in checks.values()),
+                f"{matrix_id}: required cache proof is incomplete",
+            )
+        elif cache_expectations[matrix_id] == "safe-degrade":
             checks = cache.get("safeDegradeChecks") if isinstance(cache, dict) else None
             primary = cache.get("primary") if isinstance(cache, dict) else None
             conditional = cache.get("conditional") if isinstance(cache, dict) else None
@@ -825,4 +1260,9 @@ def validate_compatibility_tree(
                     and isinstance(conditional, dict)
                     and conditional.get("framingMode") in ("content-length", "chunked"),
                     f"{matrix_id}: safe-degrade proof is incomplete")
+    require(
+        "results" in summary
+        and exact_json_value(summary["results"], retained_results),
+        "compatibility summary results differ from retained matrix results",
+    )
     return {f"compat/{name}" for name in expected}

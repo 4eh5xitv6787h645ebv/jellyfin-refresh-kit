@@ -132,7 +132,7 @@ remains a positive control for `cache`, not a matrix candidate.
 Provisioning parks independent shell injectors for this leg, so `matrix`
 deliberately exercises Refresh Kit's ordinary final-response ownership and
 strong-validator contract. It is not evidence for a nested outer response
-buffer; the five exact safe-degradation matrices are documented in
+buffer; the three exact safe-degradation matrices are documented in
 `../compat/README.md`.
 
 **`ws`** (`lib/ws.js`) — opens `/socket` through the proxy with the admin token

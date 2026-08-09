@@ -1199,6 +1199,64 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
 
 class CompatibilityEvidenceTests(unittest.TestCase):
     @staticmethod
+    def make_cache_http_fixture(
+        expectation: str,
+    ) -> tuple[dict[str, bytes], dict[str, object], str]:
+        generation = "g-0123456789abcdef"
+        if expectation == "safe-degrade":
+            body = (
+                "<html><body>"
+                '<script plugin="Jellyfin Refresh Kit" '
+                'data-name="RefreshKitPlugin" '
+                f'data-boot-version="{generation}" '
+                f'src="/RefreshKit/kit.js?v={generation}"></script>'
+                "</body></html>"
+            ).encode("utf-8")
+            primary_headers = (
+                "HTTP/1.1 200 OK\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                "Cache-Control: no-store\r\n\r\n"
+            ).encode("ascii")
+            conditional_headers = primary_headers
+            conditional_body = body
+            conditional_status = b"200\n"
+        else:
+            body = b"<html><body>required cache fixture</body></html>"
+            etag = f'"rk-{hashlib.sha256(body).hexdigest()}"'
+            primary_headers = (
+                "HTTP/1.1 200 OK\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                f"ETag: {etag}\r\n\r\n"
+            ).encode("ascii")
+            conditional_headers = (
+                "HTTP/1.1 304 Not Modified\r\n"
+                f"ETag: {etag}\r\n\r\n"
+            ).encode("ascii")
+            conditional_body = b""
+            conditional_status = b"304\n"
+        captures = {
+            "shell-after.html": body,
+            "shell-after.headers": primary_headers,
+            "conditional.html": conditional_body,
+            "conditional.headers": conditional_headers,
+            "conditional-status.txt": conditional_status,
+        }
+        cache = evidence_validation.reconstruct_compatibility_cache_evidence(
+            captures,
+            {"refreshKit": {"generationAfter": generation}},
+            expectation,
+            "fixture",
+        )
+        check_field = (
+            "safeDegradeChecks"
+            if expectation == "safe-degrade"
+            else "requiredChecks"
+        )
+        if not all(cache[check_field].values()):
+            raise AssertionError(cache)
+        return captures, cache, generation
+
+    @staticmethod
     def make_direct_webroot_fixture(root: pathlib.Path) -> dict[str, object]:
         artifact_root = root / "artifacts"
         output = root / "output"
@@ -1213,6 +1271,8 @@ class CompatibilityEvidenceTests(unittest.TestCase):
 
         disk_id = "direct-disk"
         nondisk_id = "ordinary-transform"
+        order_pair = "direct-order"
+        runtime_order = ["direct-plugin", "@refresh-kit"]
         marker = "<!-- direct-raw-marker -->"
         asset_marker = "/DirectWriter/inject.js"
         requirements = {
@@ -1228,6 +1288,8 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 "runtime": "jf10",
                 "service": "jf10-writable",
                 "cacheExpectation": "required",
+                "orderPair": order_pair,
+                "expectedRuntimePluginOrder": runtime_order,
                 "requiredUnversionedOuterArtifacts": [],
                 "webrootDiskRequirements": requirements,
             },
@@ -1236,6 +1298,8 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 "runtime": "jf10",
                 "service": "jf10",
                 "cacheExpectation": "required",
+                "orderPair": order_pair,
+                "expectedRuntimePluginOrder": runtime_order,
                 "requiredUnversionedOuterArtifacts": [],
                 "webrootDiskRequirements": {},
             },
@@ -1255,6 +1319,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             "passWithLimitationMatrices": [],
             "missingPassWithLimitationMatrices": [],
             "unexpectedPassWithLimitationMatrices": [],
+            "pairRuntimeOrderChecks": {order_pair: True},
         }
         artifact_root.mkdir()
         (artifact_root / "summary.json").write_text(
@@ -1273,6 +1338,9 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         )
         webroot_disk = collector.reconstruct_webroot_disk(
             before, after, requirements
+        )
+        http_captures, cache_evidence, generation = (
+            CompatibilityEvidenceTests.make_cache_http_fixture("required")
         )
         for matrix_id, service in (
             (disk_id, "jf10-writable"),
@@ -1320,14 +1388,30 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     "errors": [],
                     "outcome": "pass",
                     "cacheExpectation": "required",
+                    "orderPair": order_pair,
+                    "expectedRuntimePluginOrder": runtime_order,
+                    "observedRuntimePluginOrder": runtime_order,
                     "limitations": [],
                     "webrootDisk": webroot_disk if matrix_id == disk_id else None,
+                    "refreshKit": {
+                        "generationAfter": generation,
+                        "cacheEvidence": cache_evidence,
+                    },
                 },
             }
             for name, value in values.items():
                 (directory / name).write_text(json.dumps(value), encoding="utf-8")
+            for name, raw in http_captures.items():
+                (directory / name).write_bytes(raw)
         (artifact_root / disk_id / "webroot-before.html").write_bytes(before)
         (artifact_root / disk_id / "webroot-after.html").write_bytes(after)
+        summary["results"] = [
+            json.loads((artifact_root / matrix_id / "result.json").read_text())
+            for matrix_id in (disk_id, nondisk_id)
+        ]
+        (artifact_root / "summary.json").write_text(
+            json.dumps(summary), encoding="utf-8"
+        )
         return {
             "artifact_root": artifact_root,
             "output": output,
@@ -1336,6 +1420,8 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             "disk_id": disk_id,
             "nondisk_id": nondisk_id,
             "requirements": requirements,
+            "order_pair": order_pair,
+            "runtime_order": runtime_order,
             "marker": marker,
             "before": before,
             "after": after,
@@ -1371,6 +1457,8 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             _cache,
             _limitations,
             disk_requirements,
+            order_pairs,
+            runtime_orders,
         ) = evidence_validation._matrix_contract(matrices_path)
         direct_ids = {
             "jf10-direct-writers-readonly",
@@ -1378,6 +1466,26 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         }
         self.assertEqual(set(disk_requirements), direct_ids)
         self.assertEqual(services["jf10-direct-writers-writable"], "jf10-writable")
+        self.assertEqual(
+            order_pairs["jf10-response-transformers-forward"],
+            "jf10-response-transformers",
+        )
+        self.assertEqual(
+            runtime_orders["jf10-response-transformers-forward"],
+            runtime_orders["jf10-response-transformers-reverse"],
+        )
+        collector_pairs, collector_orders, pair_members = (
+            collector.compatibility_runtime_order_contract()
+        )
+        self.assertEqual(collector_pairs, order_pairs)
+        self.assertEqual(collector_orders, runtime_orders)
+        self.assertEqual(
+            pair_members["jf10-response-transformers"],
+            [
+                "jf10-response-transformers-forward",
+                "jf10-response-transformers-reverse",
+            ],
+        )
         self.assertEqual(
             set(collector.compatibility_webroot_disk_requirements()), direct_ids
         )
@@ -1399,14 +1507,21 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 "compat/jf10-direct-writers-writable/webroot-after.html",
             },
         )
+        http_paths = {
+            f"compat/{matrix_id}/{name}"
+            for matrix_id in ids
+            for name in evidence_validation.COMPAT_RAW_HTTP_FILES
+        }
         expected_inventory = {"summary.json"} | {
             f"{matrix_id}/{name}"
             for matrix_id in ids
             for name in evidence_validation.COMPAT_MATRIX_FILES
         } | {
             path.removeprefix("compat/") for path in raw_paths
+        } | {
+            path.removeprefix("compat/") for path in http_paths
         }
-        self.assertEqual(len(expected_inventory), 75)
+        self.assertEqual(len(expected_inventory), 145)
         self.assertEqual(
             {
                 path
@@ -1417,6 +1532,10 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         )
         self.assertTrue(
             set(collector.COMPAT_WEBROOT_FILES).isdisjoint(collector.COMPAT_MATRIX_FILES)
+        )
+        self.assertEqual(
+            collector.COMPAT_RAW_HTTP_FILES,
+            evidence_validation.COMPAT_RAW_HTTP_FILES,
         )
 
     def test_raw_webroot_collection_is_byte_exact_and_semantically_bound(self) -> None:
@@ -1484,6 +1603,103 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         )
                     self.assertFalse(target.exists())
 
+    def test_exact_compatibility_http_copy_is_byte_exact_and_fails_closed(self) -> None:
+        cases = {
+            "empty-header": ("shell-after.headers", b""),
+            "invalid-utf8": ("shell-after.html", b"\xff<html></html>"),
+            "authorization": (
+                "shell-after.headers",
+                b"HTTP/1.1 200 OK\r\nAuthorization: Bearer exposed\r\n",
+            ),
+            "fixture-password": (
+                "shell-after.html",
+                b"<html>Compat669Pw!x</html>",
+            ),
+            "literal-token": (
+                "shell-after.html",
+                b'<script>const value = {"Token":"0123456789abcdef0123456789abcdef"}</script>',
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            allowed_empty = root / "conditional.html"
+            allowed_target = root / "conditional.copied.html"
+            allowed_empty.write_bytes(b"")
+            self.assertEqual(
+                collector.copy_exact_compatibility_http(
+                    allowed_empty, allowed_target, "matrix/conditional.html"
+                ),
+                b"",
+            )
+            self.assertEqual(allowed_target.read_bytes(), b"")
+            benign_source = root / "benign-shell-after.html"
+            benign_target = root / "benign.copied.html"
+            benign = (
+                b"<script>var token = ApiClient.accessToken(); "
+                b"const h = { Authorization: `MediaBrowser Token=${token}` };</script>"
+            )
+            benign_source.write_bytes(benign)
+            self.assertEqual(
+                collector.copy_exact_compatibility_http(
+                    benign_source,
+                    benign_target,
+                    "matrix/shell-after.html",
+                ),
+                benign,
+            )
+            for label, (name, raw) in cases.items():
+                with self.subTest(label=label):
+                    source = root / f"{label}-{name}"
+                    target = root / f"{label}.copied"
+                    source.write_bytes(raw)
+                    with self.assertRaises(ValueError):
+                        collector.copy_exact_compatibility_http(
+                            source, target, f"matrix/{name}"
+                        )
+                    self.assertFalse(target.exists())
+
+    def test_raw_http_cache_reconstruction_is_exact_for_both_modes(self) -> None:
+        for expectation in ("required", "safe-degrade"):
+            with self.subTest(expectation=expectation):
+                captures, cache, generation = self.make_cache_http_fixture(expectation)
+                reconstructed = evidence_validation.reconstruct_compatibility_cache_evidence(
+                    captures,
+                    {"refreshKit": {"generationAfter": generation}},
+                    expectation,
+                    "fixture",
+                )
+                self.assertEqual(reconstructed, cache)
+                check_field = (
+                    "safeDegradeChecks"
+                    if expectation == "safe-degrade"
+                    else "requiredChecks"
+                )
+                self.assertTrue(all(reconstructed[check_field].values()))
+
+                mutated = dict(captures)
+                mutated["conditional.html"] = captures["conditional.html"].replace(
+                    b"/RefreshKit/", b"/RefreshKix/"
+                )
+                if expectation == "required":
+                    mutated["conditional.html"] = b"x"
+                failed = evidence_validation.reconstruct_compatibility_cache_evidence(
+                    mutated,
+                    {"refreshKit": {"generationAfter": generation}},
+                    expectation,
+                    "fixture",
+                )
+                if expectation == "required":
+                    self.assertIs(failed[check_field]["conditionalBodyEmpty"], False)
+                else:
+                    self.assertIs(
+                        failed[check_field]["conditionalAssetMultisetMatchesPrimary"],
+                        False,
+                    )
+                    self.assertIs(
+                        failed[check_field]["conditionalGenerationAddressedKit"],
+                        False,
+                    )
+
     def test_collector_rejects_typed_marker_count_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             fixture = self.make_direct_webroot_fixture(pathlib.Path(temporary))
@@ -1503,6 +1719,117 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 any("webrootDisk differs" in error for error in errors), errors
             )
 
+    def test_runtime_order_manifest_contract_fails_closed(self) -> None:
+        scenarios = (
+            "missing-order",
+            "missing-pair",
+            "singleton-pair",
+            "different-order",
+            "different-cache",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                fixture = self.make_direct_webroot_fixture(pathlib.Path(temporary))
+                matrix_path = pathlib.Path(fixture["matrix_path"])
+                manifest = json.loads(matrix_path.read_text(encoding="utf-8"))
+                rows = manifest["matrices"]
+                if scenario == "missing-order":
+                    rows[0].pop("expectedRuntimePluginOrder")
+                elif scenario == "missing-pair":
+                    rows[0].pop("orderPair")
+                elif scenario == "singleton-pair":
+                    rows[1].pop("orderPair")
+                    rows[1].pop("expectedRuntimePluginOrder")
+                elif scenario == "different-order":
+                    rows[1]["expectedRuntimePluginOrder"] = list(
+                        reversed(rows[1]["expectedRuntimePluginOrder"])
+                    )
+                else:
+                    rows[1]["cacheExpectation"] = "observe"
+                matrix_path.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaises(evidence_validation.EvidenceValidationError):
+                    evidence_validation._matrix_contract(matrix_path)
+                with (
+                    mock.patch.object(collector, "COMPAT_MATRICES", matrix_path),
+                    self.assertRaises(ValueError),
+                ):
+                    collector.compatibility_runtime_order_contract()
+
+    def test_collector_rejects_runtime_order_pair_and_required_cache_mutations(
+        self,
+    ) -> None:
+        scenarios = (
+            "result-order-pair",
+            "result-expected-runtime-order",
+            "result-observed-runtime-order",
+            "summary-pair-missing",
+            "summary-pair-false",
+            "summary-result-stale",
+            "required-check-missing",
+            "required-check-not-bool",
+            "required-raw-body",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                fixture = self.make_direct_webroot_fixture(pathlib.Path(temporary))
+                artifact_root = pathlib.Path(fixture["artifact_root"])
+                result_path = artifact_root / str(fixture["disk_id"]) / "result.json"
+                if scenario.startswith("result-"):
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    if scenario == "result-order-pair":
+                        result["orderPair"] = "wrong-order"
+                    elif scenario == "result-expected-runtime-order":
+                        result["expectedRuntimePluginOrder"] = list(
+                            reversed(result["expectedRuntimePluginOrder"])
+                        )
+                    else:
+                        result["observedRuntimePluginOrder"] = list(
+                            reversed(result["observedRuntimePluginOrder"])
+                        )
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                elif scenario.startswith("summary-"):
+                    summary_path = artifact_root / "summary.json"
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    if scenario == "summary-pair-missing":
+                        summary.pop("pairRuntimeOrderChecks")
+                    elif scenario == "summary-result-stale":
+                        summary["results"][0]["service"] = "stale-service"
+                    else:
+                        summary["pairRuntimeOrderChecks"][
+                            str(fixture["order_pair"])
+                        ] = False
+                    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                elif scenario.startswith("required-check-"):
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    required = result["refreshKit"]["cacheEvidence"][
+                        "requiredChecks"
+                    ]
+                    check_name = next(iter(required))
+                    if scenario == "required-check-missing":
+                        required.pop(check_name)
+                    else:
+                        required[check_name] = 1
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                else:
+                    raw_path = artifact_root / str(fixture["disk_id"]) / "shell-after.html"
+                    raw_path.write_bytes(raw_path.read_bytes() + b" ")
+
+                _evidence, errors = self.collect_direct_webroot_fixture(fixture)
+                self.assertTrue(
+                    any(
+                        phrase in error
+                        for phrase in (
+                            "runtime plugin order proof",
+                            "compatibility summary",
+                            "summary results",
+                            "required cache proof",
+                            "retained HTTP bytes",
+                        )
+                        for error in errors
+                    ),
+                    errors,
+                )
+
     def test_retained_webroot_mutations_fail_closed(self) -> None:
         scenarios = (
             "missing",
@@ -1516,6 +1843,15 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             "result-service",
             "network-service",
             "nondisk-null",
+            "result-order-pair",
+            "result-expected-runtime-order",
+            "result-observed-runtime-order",
+            "summary-pair-missing",
+            "summary-pair-false",
+            "summary-result-stale",
+            "required-check-missing",
+            "required-check-not-bool",
+            "required-raw-body",
         )
         for scenario in scenarios:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
@@ -1575,7 +1911,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     network = json.loads(network_path.read_text(encoding="utf-8"))
                     network["service"] = "jf10"
                     network_path.write_text(json.dumps(network), encoding="utf-8")
-                else:
+                elif scenario == "nondisk-null":
                     nondisk_result_path = (
                         output / "compat" / nondisk_id / "result.json"
                     )
@@ -1586,6 +1922,45 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     nondisk_result_path.write_text(
                         json.dumps(nondisk), encoding="utf-8"
                     )
+                elif scenario.startswith("result-"):
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    if scenario == "result-order-pair":
+                        result["orderPair"] = "wrong-order"
+                    elif scenario == "result-expected-runtime-order":
+                        result["expectedRuntimePluginOrder"] = list(
+                            reversed(result["expectedRuntimePluginOrder"])
+                        )
+                    else:
+                        result["observedRuntimePluginOrder"] = list(
+                            reversed(result["observedRuntimePluginOrder"])
+                        )
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                elif scenario.startswith("summary-"):
+                    summary_path = output / "compat" / "summary.json"
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    if scenario == "summary-pair-missing":
+                        summary.pop("pairRuntimeOrderChecks")
+                    elif scenario == "summary-result-stale":
+                        summary["results"][0]["service"] = "stale-service"
+                    else:
+                        summary["pairRuntimeOrderChecks"][
+                            str(fixture["order_pair"])
+                        ] = False
+                    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                elif scenario.startswith("required-check-"):
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    required = result["refreshKit"]["cacheEvidence"][
+                        "requiredChecks"
+                    ]
+                    check_name = next(iter(required))
+                    if scenario == "required-check-missing":
+                        required.pop(check_name)
+                    else:
+                        required[check_name] = 1
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                else:
+                    raw_path = disk_directory / "shell-after.html"
+                    raw_path.write_bytes(raw_path.read_bytes() + b" ")
 
                 with self.assertRaises(evidence_validation.EvidenceValidationError):
                     evidence_validation.validate_compatibility_tree(
@@ -1636,6 +2011,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 "passWithLimitationMatrices": [ids[1]],
                 "missingPassWithLimitationMatrices": [],
                 "unexpectedPassWithLimitationMatrices": [],
+                "pairRuntimeOrderChecks": {},
             }
             (artifact_root).mkdir()
             (artifact_root / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
@@ -1651,6 +2027,12 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 directory = artifact_root / matrix_id
                 directory.mkdir()
                 runtime = runtimes[matrix_id]
+                cache_expectation = (
+                    "safe-degrade" if matrix_id == ids[1] else "required"
+                )
+                http_captures, cache_evidence, generation = (
+                    self.make_cache_http_fixture(cache_expectation)
+                )
                 stage_name = "stage" if runtime == "jf10" else "stage-jf12"
                 stage = build / stage_name
                 values = {
@@ -1689,9 +2071,10 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         "outcome": "pass-with-limitation"
                         if matrix_id == ids[1]
                         else "pass",
-                        "cacheExpectation": "safe-degrade"
-                        if matrix_id == ids[1]
-                        else "required",
+                        "cacheExpectation": cache_expectation,
+                        "orderPair": None,
+                        "expectedRuntimePluginOrder": None,
+                        "observedRuntimePluginOrder": None,
                         "webrootDisk": None,
                         "limitations": [
                             {
@@ -1704,20 +2087,23 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         if matrix_id == ids[1]
                         else [],
                         "refreshKit": {
-                            "cacheEvidence": {
-                                "primary": {"framingMode": "chunked"},
-                                "conditional": {"framingMode": "content-length"},
-                                "safeDegradeChecks": {
-                                    name: True for name in collector.SAFE_DEGRADE_CHECK_NAMES
-                                },
-                            }
-                        }
-                        if matrix_id == ids[1]
-                        else {},
+                            "generationAfter": generation,
+                            "cacheEvidence": cache_evidence,
+                        },
                     },
                 }
                 for name, value in values.items():
                     (directory / name).write_text(json.dumps(value), encoding="utf-8")
+                for name, raw in http_captures.items():
+                    (directory / name).write_bytes(raw)
+
+            summary["results"] = [
+                json.loads((artifact_root / matrix_id / "result.json").read_text())
+                for matrix_id in ids
+            ]
+            (artifact_root / "summary.json").write_text(
+                json.dumps(summary), encoding="utf-8"
+            )
 
             old_artifacts, old_matrices = collector.COMPAT_ARTIFACTS, collector.COMPAT_MATRICES
             collector.COMPAT_ARTIFACTS, collector.COMPAT_MATRICES = artifact_root, matrix_path

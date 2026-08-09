@@ -22,6 +22,7 @@ from evidence_validation import (
     EvidenceValidationError,
     INTEGRATION_LOGS,
     INTEGRATION_TEXT,
+    reconstruct_compatibility_cache_evidence,
     validate_compatibility_tree,
     validate_integration_tree,
 )
@@ -150,6 +151,15 @@ FORBIDDEN_CREDENTIAL = re.compile(
     r'|\b(?:Set-)?Cookie\s*:\s*(?!<redacted>)[^\r\n]+',
     re.I,
 )
+COMPATIBILITY_LITERAL_SECRET = re.compile(
+    r"(?:[?&](?:token|access.?token|refresh.?token|id.?token|x.?emby.?token|"
+    r"api.?key|authorization|password|cookie|session(?:.?id)?)=|"
+    r"[\"']?(?:token|access.?token|refresh.?token|id.?token|x.?emby.?token|"
+    r"api.?key|authorization|password|secret|cookie|session(?:.?id)?)"
+    r"[\"']?\s*[:=]\s*[\"']|\bMediaBrowser\s+Token\s*=\s*[\"']?)"
+    r"[A-Za-z0-9._~+/=-]{16,}",
+    re.I,
+)
 BINARY_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".zip"}
 COMPAT_MATRIX_FILES = (
     "static.json",
@@ -159,6 +169,13 @@ COMPAT_MATRIX_FILES = (
     "result.json",
 )
 COMPAT_WEBROOT_FILES = ("webroot-before.html", "webroot-after.html")
+COMPAT_RAW_HTTP_FILES = (
+    "shell-after.html",
+    "shell-after.headers",
+    "conditional.html",
+    "conditional.headers",
+    "conditional-status.txt",
+)
 SAFE_DEGRADE_CHECK_NAMES = {
     "primaryStatus200",
     "primaryFramingValid",
@@ -177,6 +194,18 @@ SAFE_DEGRADE_CHECK_NAMES = {
     "conditionalBootGeneration",
     "conditionalGenerationAddressedKit",
     "conditionalAssetMultisetMatchesPrimary",
+}
+REQUIRED_CACHE_CHECK_NAMES = {
+    "primaryStatus200",
+    "validFraming",
+    "singleStrongEtag",
+    "etagMatchesBodySha256",
+    "lastModifiedAbsent",
+    "conditionalStatus304",
+    "conditionalBodyEmpty",
+    "conditionalEtagMatches",
+    "conditionalFramingBodyless",
+    "conditionalLastModifiedAbsent",
 }
 FIXTURE_SECRET_DEFAULTS = {
     "RK_LAB_PASSWORD": "Test669Pw!x",
@@ -351,6 +380,43 @@ def copy_exact_compatibility_webroot(
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     # Write the bytes that were inspected, rather than reopening the source.
+    target.write_bytes(raw)
+    return raw
+
+
+def copy_exact_compatibility_http(
+    source: pathlib.Path,
+    target: pathlib.Path,
+    relative: str,
+) -> bytes:
+    """Inspect and retain cache-proof HTTP bytes without rewriting them."""
+    try:
+        raw = source.read_bytes()
+        text = raw.decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ValueError(
+            f"unsafe exact compatibility HTTP evidence {relative}: {error}"
+        ) from error
+    if not raw and pathlib.PurePosixPath(relative).name != "conditional.html":
+        raise ValueError(f"empty exact compatibility HTTP evidence: {relative}")
+    name = pathlib.PurePosixPath(relative).name
+    header_secret = name.endswith(".headers") and any(
+        pattern.search(text) is not None
+        for pattern in (
+            AUTHORIZATION_SECRET,
+            EMBY_SECRET,
+            COOKIE_SECRET,
+        )
+    )
+    if (
+        header_secret
+        or COMPATIBILITY_LITERAL_SECRET.search(text) is not None
+        or any(secret in text for secret in known_fixture_secrets())
+    ):
+        raise ValueError(
+            f"credential-shaped value in exact compatibility HTTP evidence: {relative}"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(raw)
     return raw
 
@@ -696,6 +762,79 @@ def compatibility_cache_expectations() -> dict[str, str]:
     return result
 
 
+def compatibility_runtime_order_contract() -> tuple[
+    dict[str, str | None],
+    dict[str, list[str] | None],
+    dict[str, list[str]],
+]:
+    value = json.loads(COMPAT_MATRICES.read_text(encoding="utf-8"))
+    matrices = value.get("matrices") if isinstance(value, dict) else None
+    if not isinstance(matrices, list):
+        raise ValueError("compatibility matrices.json has no matrices array")
+    order_pairs: dict[str, str | None] = {}
+    runtime_orders: dict[str, list[str] | None] = {}
+    pair_members: dict[str, list[str]] = {}
+    pair_cache_expectations: dict[str, str] = {}
+    pair_runtimes: dict[str, str] = {}
+    for row in matrices:
+        if not isinstance(row, dict):
+            raise ValueError("compatibility matrix row is not an object")
+        matrix_id = row.get("id")
+        order_pair = row.get("orderPair")
+        runtime_order = row.get("expectedRuntimePluginOrder")
+        if (
+            not isinstance(matrix_id, str)
+            or matrix_id in order_pairs
+            or not (
+                (order_pair is None and runtime_order is None)
+                or (
+                    isinstance(order_pair, str)
+                    and re.fullmatch(r"[a-z0-9][a-z0-9-]*", order_pair)
+                    is not None
+                    and isinstance(runtime_order, list)
+                    and bool(runtime_order)
+                    and all(
+                        isinstance(artifact_id, str) and bool(artifact_id)
+                        for artifact_id in runtime_order
+                    )
+                    and len(runtime_order) == len(set(runtime_order))
+                )
+            )
+        ):
+            raise ValueError(
+                f"compatibility matrix {matrix_id!r} has invalid runtime-order contract"
+            )
+        order_pairs[matrix_id] = order_pair
+        runtime_orders[matrix_id] = runtime_order
+        if order_pair is not None:
+            pair_members.setdefault(order_pair, []).append(matrix_id)
+            expectation = row.get("cacheExpectation")
+            runtime = row.get("runtime")
+            if order_pair in pair_cache_expectations:
+                if pair_cache_expectations[order_pair] != expectation:
+                    raise ValueError(
+                        f"compatibility order pair {order_pair} has differing cache expectations"
+                    )
+            elif isinstance(expectation, str):
+                pair_cache_expectations[order_pair] = expectation
+            if order_pair in pair_runtimes:
+                if pair_runtimes[order_pair] != runtime:
+                    raise ValueError(
+                        f"compatibility order pair {order_pair} has differing runtimes"
+                    )
+            elif isinstance(runtime, str):
+                pair_runtimes[order_pair] = runtime
+    for order_pair, members in pair_members.items():
+        if (
+            len(members) != 2
+            or runtime_orders[members[0]] != runtime_orders[members[1]]
+        ):
+            raise ValueError(
+                f"compatibility order pair {order_pair} contract is invalid"
+            )
+    return order_pairs, runtime_orders, pair_members
+
+
 def compatibility_unversioned_outer_limitations() -> dict[str, list[str]]:
     value = json.loads(COMPAT_MATRICES.read_text(encoding="utf-8"))
     matrices = value.get("matrices") if isinstance(value, dict) else None
@@ -761,9 +900,11 @@ def collect_compatibility(
     services = compatibility_services()
     disk_requirements = compatibility_webroot_disk_requirements()
     cache_expectations = compatibility_cache_expectations()
+    order_pairs, runtime_orders, pair_members = compatibility_runtime_order_contract()
     expected_safe_degraded = compatibility_safe_degrade_matrices()
     expected_limitations = compatibility_unversioned_outer_limitations()
     expected_limited_matrices = list(expected_limitations)
+    expected_pair_checks = {order_pair: True for order_pair in sorted(pair_members)}
     if required and compatibility_exit != 0:
         strict_errors.append(
             f"compatibility runner exit status is {compatibility_exit!r}, expected 0"
@@ -775,6 +916,7 @@ def collect_compatibility(
         for name in COMPAT_MATRIX_FILES
     )
     result_values: dict[str, dict[str, Any]] = {}
+    summary_value: dict[str, Any] | None = None
     for relative in relative_paths:
         source = COMPAT_ARTIFACTS / relative
         label = f"compat:{relative.as_posix()}"
@@ -798,6 +940,8 @@ def collect_compatibility(
 
         if relative.name == "result.json" and isinstance(value, dict):
             result_values[relative.parent.name] = value
+        elif relative.as_posix() == "summary.json" and isinstance(value, dict):
+            summary_value = value
 
         if not required or not isinstance(value, dict):
             if required and not isinstance(value, dict):
@@ -819,6 +963,10 @@ def collect_compatibility(
                 or value.get("passWithLimitationMatrices") != expected_limited_matrices
                 or value.get("missingPassWithLimitationMatrices") != []
                 or value.get("unexpectedPassWithLimitationMatrices") != []
+                or "pairRuntimeOrderChecks" not in value
+                or not exact_json_value(
+                    value["pairRuntimeOrderChecks"], expected_pair_checks
+                )
             ):
                 strict_errors.append("compatibility summary does not prove every matrix passed")
         elif relative.name == "result.json":
@@ -845,11 +993,27 @@ def collect_compatibility(
                 )
             )
             expected_disk = disk_requirements.get(matrix_id)
+            expected_runtime_order = runtime_orders[matrix_id]
             if value.get("matrix") != matrix_id or value.get("outcome") != expected_outcome:
                 strict_errors.append(f"compatibility result is not a pass: {relative}")
             elif value.get("runtime") != matrices[matrix_id] or value.get("service") != services[matrix_id]:
                 strict_errors.append(
                     f"compatibility result runtime/service identity is wrong: {relative}"
+                )
+            elif (
+                "orderPair" not in value
+                or "expectedRuntimePluginOrder" not in value
+                or "observedRuntimePluginOrder" not in value
+                or not exact_json_value(value["orderPair"], order_pairs[matrix_id])
+                or not exact_json_value(
+                    value["expectedRuntimePluginOrder"], expected_runtime_order
+                )
+                or not exact_json_value(
+                    value["observedRuntimePluginOrder"], expected_runtime_order
+                )
+            ):
+                strict_errors.append(
+                    f"compatibility result runtime plugin order proof is wrong: {relative}"
                 )
             elif expected_disk is None and (
                 "webrootDisk" not in value or value["webrootDisk"] is not None
@@ -865,6 +1029,26 @@ def collect_compatibility(
                 strict_errors.append(
                     f"compatibility result has wrong cache expectation: {relative}"
                 )
+            elif cache_expectations[matrix_id] == "required":
+                refresh_kit = value.get("refreshKit")
+                cache_evidence = (
+                    refresh_kit.get("cacheEvidence")
+                    if isinstance(refresh_kit, dict)
+                    else None
+                )
+                checks = (
+                    cache_evidence.get("requiredChecks")
+                    if isinstance(cache_evidence, dict)
+                    else None
+                )
+                if (
+                    not isinstance(checks, dict)
+                    or set(checks) != REQUIRED_CACHE_CHECK_NAMES
+                    or any(passed is not True for passed in checks.values())
+                ):
+                    strict_errors.append(
+                        f"compatibility required cache proof is incomplete: {relative}"
+                    )
             elif cache_expectations[matrix_id] == "safe-degrade":
                 refresh_kit = value.get("refreshKit")
                 cache_evidence = (
@@ -949,7 +1133,89 @@ def collect_compatibility(
             if relative_target not in evidence["collected"]:
                 evidence["collected"].append(relative_target)
 
+    retained_http: dict[str, dict[str, bytes]] = {}
+    for matrix_id in matrix_ids:
+        for name in COMPAT_RAW_HTTP_FILES:
+            relative = pathlib.Path(matrix_id) / name
+            source = COMPAT_ARTIFACTS / relative
+            label = f"compat:{relative.as_posix()}"
+            if not source.is_file():
+                evidence["missing"].append(label)
+                if required:
+                    strict_errors.append(
+                        f"missing required compatibility evidence: {relative}"
+                    )
+                continue
+            target = output / "compat" / relative
+            try:
+                raw = copy_exact_compatibility_http(
+                    source, target, relative.as_posix()
+                )
+            except ValueError as error:
+                evidence["missing"].append(f"{label} (unsafe exact bytes)")
+                if required:
+                    strict_errors.append(str(error))
+                continue
+            retained_http.setdefault(matrix_id, {})[name] = raw
+            relative_target = target.relative_to(output).as_posix()
+            if relative_target not in evidence["collected"]:
+                evidence["collected"].append(relative_target)
+
     if required:
+        if (
+            summary_value is None
+            or set(result_values) != set(matrix_ids)
+            or "results" not in summary_value
+            or not exact_json_value(
+                summary_value["results"],
+                [result_values[matrix_id] for matrix_id in matrix_ids]
+                if set(result_values) == set(matrix_ids)
+                else None,
+            )
+        ):
+            strict_errors.append(
+                "compatibility summary results differ from retained matrix results"
+            )
+        for matrix_id in matrix_ids:
+            captures = retained_http.get(matrix_id, {})
+            if set(captures) != set(COMPAT_RAW_HTTP_FILES):
+                continue
+            result = result_values.get(matrix_id)
+            if not isinstance(result, dict):
+                continue
+            try:
+                reconstructed_cache = reconstruct_compatibility_cache_evidence(
+                    captures,
+                    result,
+                    cache_expectations[matrix_id],
+                    matrix_id,
+                )
+            except EvidenceValidationError as error:
+                strict_errors.append(str(error))
+                continue
+            refresh_kit = result.get("refreshKit")
+            cache_evidence = (
+                refresh_kit.get("cacheEvidence")
+                if isinstance(refresh_kit, dict)
+                else None
+            )
+            if not isinstance(cache_evidence, dict) or any(
+                field not in cache_evidence
+                or not exact_json_value(
+                    cache_evidence[field], reconstructed_cache[field]
+                )
+                for field in (
+                    "expectation",
+                    "primary",
+                    "conditional",
+                    "requiredChecks",
+                    "safeDegradeChecks",
+                )
+            ):
+                strict_errors.append(
+                    "compatibility cache evidence differs from retained HTTP bytes: "
+                    f"{matrix_id}"
+                )
         for matrix_id, requirements in disk_requirements.items():
             captures = retained_raw.get(matrix_id, {})
             if set(captures) != set(COMPAT_WEBROOT_FILES):
@@ -1232,9 +1498,16 @@ def main() -> int:
     exact_anonymous_targets = {
         (output / "lab" / relative).resolve() for relative in EXACT_ANONYMOUS_HTTP
     }
+    exact_compatibility_http_targets = {
+        path.resolve()
+        for path in (output / "compat").glob("*/*")
+        if path.is_file() and path.name in COMPAT_RAW_HTTP_FILES
+    }
     for path in sorted(output.rglob("*")):
         if path.is_file() and path.suffix.lower() not in BINARY_SUFFIXES:
-            if path.resolve() in exact_anonymous_targets:
+            if path.resolve() in (
+                exact_anonymous_targets | exact_compatibility_http_targets
+            ):
                 # This byte-preserving path was already checked by
                 # copy_exact_anonymous_http; the general source/log assignment
                 # matcher intentionally has false positives in shipped JS.

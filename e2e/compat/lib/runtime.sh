@@ -284,6 +284,7 @@ PHASE="baseline shell capture"
 curl --fail --silent --show-error -H "${AUTH}" \
     -o "${OUT}/diagnostics-before.json" "${ORIGIN}/RefreshKit/Diagnostics"
 curl --fail --silent --show-error -o "${OUT}/shell-before.html" \
+    -H 'Accept: text/html' \
     "${ORIGIN}/web/index.html"
 
 PHASE="generation mutation probe"
@@ -316,6 +317,7 @@ curl --fail --silent --show-error -H "${AUTH}" -o "${OUT}/plugins.json" \
 curl --fail --silent --show-error -H "${AUTH}" -o "${OUT}/diagnostics-after.json" \
     "${ORIGIN}/RefreshKit/Diagnostics"
 curl --fail --silent --show-error -D "${OUT}/shell-after.headers" \
+    -H 'Accept: text/html' \
     -o "${OUT}/shell-after.html" "${ORIGIN}/web/index.html"
 
 ETAG="$(awk 'BEGIN { IGNORECASE=1 } /^etag:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); value=$0 } END { print value }' "${OUT}/shell-after.headers")"
@@ -330,21 +332,25 @@ fi
 : > "${OUT}/conditional.html"
 CONDITIONAL_STATUS="$(curl --fail --silent --show-error \
     -D "${OUT}/conditional.headers" -o "${OUT}/conditional.html" \
-    --write-out '%{http_code}' -H "If-None-Match: ${CONDITIONAL_ETAG}" \
+    --write-out '%{http_code}' -H 'Accept: text/html' \
+    -H "If-None-Match: ${CONDITIONAL_ETAG}" \
     "${ORIGIN}/web/index.html")"
 printf '%s\n' "${CONDITIONAL_STATUS}" > "${OUT}/conditional-status.txt"
 curl --fail --silent --show-error -D "${OUT}/kit.headers" -o "${OUT}/kit.js" \
     "${ORIGIN}/RefreshKit/kit.js?v=${GENERATION_AFTER}"
 curl --fail --silent --show-error --compressed -H 'Accept-Encoding: gzip' \
+    -H 'Accept: text/html' \
     -D "${OUT}/shell-gzip.headers" -o "${OUT}/shell-gzip.html" \
     "${ORIGIN}/web/index.html"
 curl --fail --silent --show-error --compressed -H 'Accept-Encoding: br' \
+    -H 'Accept: text/html' \
     -D "${OUT}/shell-br.headers" -o "${OUT}/shell-br.html" \
     "${ORIGIN}/web/index.html"
 
 : > "${OUT}/route-status.tsv"
 for route in / /web /web/ /web/index.html; do
-    status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "${ORIGIN}${route}")"
+    status="$(curl --silent --show-error --output /dev/null \
+        --write-out '%{http_code}' -H 'Accept: text/html' "${ORIGIN}${route}")"
     printf '%s\t%s\n' "${route}" "${status}" >> "${OUT}/route-status.tsv"
 done
 

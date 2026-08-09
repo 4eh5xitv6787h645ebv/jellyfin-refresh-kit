@@ -399,7 +399,18 @@
       "id": "jf10-middleware-forward",
       "runtime": "jf10",
       "orderPair": "jf10-middleware",
-      "purpose": "Refresh Kit first/outermost candidate against independent buffering middleware and read-only webroot fallbacks.",
+      "expectedRuntimePluginOrder": [
+        "achievement-badges-jf10",
+        "file-transformation-jf10",
+        "get-avatar-jf10",
+        "jellyfin-enhanced-jf10",
+        "@refresh-kit",
+        "jmsfusion-jf10",
+        "ratings-jf10",
+        "seasonals-jf10",
+        "startrack-jf10"
+      ],
+      "purpose": "Ascending install enumeration for the middleware stack; proves its manifest-name runtime topology, safe degradation, stamping, and read-only fallbacks.",
       "installOrder": [
         "@refresh-kit",
         "jellyfin-enhanced-jf10",
@@ -495,7 +506,18 @@
       "id": "jf10-middleware-reverse",
       "runtime": "jf10",
       "orderPair": "jf10-middleware",
-      "purpose": "Reverse registration candidate; strictly checks Seasonals stamping and records GetAvatar's outer-owner tag as an explicit unversioned limitation.",
+      "expectedRuntimePluginOrder": [
+        "achievement-badges-jf10",
+        "file-transformation-jf10",
+        "get-avatar-jf10",
+        "jellyfin-enhanced-jf10",
+        "@refresh-kit",
+        "jmsfusion-jf10",
+        "ratings-jf10",
+        "seasonals-jf10",
+        "startrack-jf10"
+      ],
+      "purpose": "Descending install enumeration for the middleware stack; proves the same manifest-name runtime topology, safe degradation, Seasonals stamping, and GetAvatar limitation.",
       "installOrder": [
         "seasonals-jf10",
         "file-transformation-jf10",
@@ -714,11 +736,17 @@
       "webrootExpectation": "read-only",
       "generationProbe": "jellyfin-security-jf10",
       "stampingExpectation": "observe",
-      "cacheExpectation": "safe-degrade",
+      "cacheExpectation": "required",
       "requiredStampedArtifacts": [],
       "requiredUnversionedOuterArtifacts": [],
       "requiredPresentArtifacts": [],
       "requiredAbsentArtifacts": [],
+      "requiredAssemblyVersionedArtifacts": [
+        "powertoys-jellytag-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-thumbnail-previews-jf10"
+      ],
       "requiredPreVersionedArtifacts": [
         "jellyfin-security-jf10"
       ],
@@ -731,13 +759,37 @@
         ],
         "powertoys-remote-trailers-jf10": [
           "id = \"powertoysvideoplayer\";"
-        ],
-        "powertoys-thumbnail-previews-jf10": [
-          "const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"
         ]
       },
       "configurationPatches": [],
-      "contentProbes": [],
+      "contentProbes": [
+        {
+          "id": "powertoys-thumbnail-javascript",
+          "path": "/_/9ad69ad4aa6db94bb91ba372701f75f8/59b81a2dc57f3e32ef95fdacfd4cf666.js",
+          "authenticated": false,
+          "markers": {
+            "powertoys-thumbnail-previews-jf10": [
+              "const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"
+            ]
+          }
+        },
+        {
+          "id": "powertoys-remote-trailers-config",
+          "path": "/web/config.json",
+          "authenticated": false,
+          "format": "json-object",
+          "jsonArrayContains": {
+            "plugins": [
+              "powertoys/RemoteTrailers"
+            ]
+          },
+          "markers": {
+            "powertoys-remote-trailers-jf10": [
+              "powertoys/RemoteTrailers"
+            ]
+          }
+        }
+      ],
       "shellRequirements": {
         "jellyfin-security-jf10": {
           "mode": "source-versioned",
@@ -745,16 +797,52 @@
           "selectors": [
             {"tag": "script", "origin": "same-origin", "path": "/TwoFactorAuth/inject", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
           ]
+        },
+        "powertoys-jellytag-jf10": {
+          "mode": "assembly-versioned-path",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/_/3936977dc27b1d5f4a1a23230bf93b00/9aaab5e58c0772b4f9c796f7b47c02d2.css", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "powertoys-privacy-mode-jf10": {
+          "mode": "assembly-versioned-path",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/_/95e039f3e000ef0f7d85cb61a0bad5a5/36a95c4d42479011d16e8df45b3c7102.css", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "powertoys-remote-trailers-jf10": {
+          "mode": "assembly-versioned-path",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/_/d7de205fc13eaad0272342ed1ccb7e1b/b188ba46d7d1d8a8f4bfe1a41e9b6cd5.css", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "powertoys-thumbnail-previews-jf10": {
+          "mode": "assembly-versioned-path",
+          "cardinality": 2,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/_/9ad69ad4aa6db94bb91ba372701f75f8/ef238e529e0bdba93e028ebb9a59dbe4.css", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/_/9ad69ad4aa6db94bb91ba372701f75f8/59b81a2dc57f3e32ef95fdacfd4cf666.js", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1}
+          ]
         }
       },
       "inlineRequirements": {
         "powertoys-jellytag-jf10": {"cardinality": 1, "markers": ["const MARKER_ATTR = \"data-jellytag-injected\";"], "ordered": false},
         "powertoys-privacy-mode-jf10": {"cardinality": 1, "markers": ["const PRIVACY_MODE_CLASS = \"powertoysPrivacyMode\";"], "ordered": false},
-        "powertoys-remote-trailers-jf10": {"cardinality": 1, "markers": ["id = \"powertoysvideoplayer\";"], "ordered": false},
-        "powertoys-thumbnail-previews-jf10": {"cardinality": 1, "markers": ["const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"], "ordered": false}
+        "powertoys-remote-trailers-jf10": {"cardinality": 1, "markers": ["id = \"powertoysvideoplayer\";"], "ordered": false}
       },
       "webrootDiskRequirements": {},
       "orderPair": "jf10-response-transformers",
+      "expectedRuntimePluginOrder": [
+        "@refresh-kit",
+        "jellyfin-security-jf10",
+        "powertoys-jellytag-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-thumbnail-previews-jf10"
+      ],
       "id": "jf10-response-transformers-forward",
       "installOrder": [
         "@refresh-kit",
@@ -764,9 +852,9 @@
         "powertoys-remote-trailers-jf10",
         "powertoys-thumbnail-previews-jf10"
       ],
-      "purpose": "Refresh Kit before independent security and PowerToys response transformers.",
+      "purpose": "Ascending install enumeration for Security and PowerToys; Jellyfin's manifest-name sort keeps the effective response-transformer order deterministic.",
       "quarantinedAssertions": [
-        "Credentialed 2FA/OIDC/email/passkey flows and remote trailer services remain manual; middleware injection and all four inline PowerToys transforms are required."
+        "Credentialed 2FA/OIDC/email/passkey flows and remote trailer services remain manual; middleware injection and all four PowerToys transforms are required (three inline scripts plus Thumbnail's deferred embedded script)."
       ]
     },
     {
@@ -775,11 +863,17 @@
       "webrootExpectation": "read-only",
       "generationProbe": "jellyfin-security-jf10",
       "stampingExpectation": "observe",
-      "cacheExpectation": "safe-degrade",
+      "cacheExpectation": "required",
       "requiredStampedArtifacts": [],
       "requiredUnversionedOuterArtifacts": [],
       "requiredPresentArtifacts": [],
       "requiredAbsentArtifacts": [],
+      "requiredAssemblyVersionedArtifacts": [
+        "powertoys-jellytag-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-thumbnail-previews-jf10"
+      ],
       "requiredPreVersionedArtifacts": [
         "jellyfin-security-jf10"
       ],
@@ -792,13 +886,37 @@
         ],
         "powertoys-remote-trailers-jf10": [
           "id = \"powertoysvideoplayer\";"
-        ],
-        "powertoys-thumbnail-previews-jf10": [
-          "const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"
         ]
       },
       "configurationPatches": [],
-      "contentProbes": [],
+      "contentProbes": [
+        {
+          "id": "powertoys-thumbnail-javascript",
+          "path": "/_/9ad69ad4aa6db94bb91ba372701f75f8/59b81a2dc57f3e32ef95fdacfd4cf666.js",
+          "authenticated": false,
+          "markers": {
+            "powertoys-thumbnail-previews-jf10": [
+              "const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"
+            ]
+          }
+        },
+        {
+          "id": "powertoys-remote-trailers-config",
+          "path": "/web/config.json",
+          "authenticated": false,
+          "format": "json-object",
+          "jsonArrayContains": {
+            "plugins": [
+              "powertoys/RemoteTrailers"
+            ]
+          },
+          "markers": {
+            "powertoys-remote-trailers-jf10": [
+              "powertoys/RemoteTrailers"
+            ]
+          }
+        }
+      ],
       "shellRequirements": {
         "jellyfin-security-jf10": {
           "mode": "source-versioned",
@@ -806,16 +924,52 @@
           "selectors": [
             {"tag": "script", "origin": "same-origin", "path": "/TwoFactorAuth/inject", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
           ]
+        },
+        "powertoys-jellytag-jf10": {
+          "mode": "assembly-versioned-path",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/_/3936977dc27b1d5f4a1a23230bf93b00/9aaab5e58c0772b4f9c796f7b47c02d2.css", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "powertoys-privacy-mode-jf10": {
+          "mode": "assembly-versioned-path",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/_/95e039f3e000ef0f7d85cb61a0bad5a5/36a95c4d42479011d16e8df45b3c7102.css", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "powertoys-remote-trailers-jf10": {
+          "mode": "assembly-versioned-path",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/_/d7de205fc13eaad0272342ed1ccb7e1b/b188ba46d7d1d8a8f4bfe1a41e9b6cd5.css", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "powertoys-thumbnail-previews-jf10": {
+          "mode": "assembly-versioned-path",
+          "cardinality": 2,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/_/9ad69ad4aa6db94bb91ba372701f75f8/ef238e529e0bdba93e028ebb9a59dbe4.css", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/_/9ad69ad4aa6db94bb91ba372701f75f8/59b81a2dc57f3e32ef95fdacfd4cf666.js", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1}
+          ]
         }
       },
       "inlineRequirements": {
         "powertoys-jellytag-jf10": {"cardinality": 1, "markers": ["const MARKER_ATTR = \"data-jellytag-injected\";"], "ordered": false},
         "powertoys-privacy-mode-jf10": {"cardinality": 1, "markers": ["const PRIVACY_MODE_CLASS = \"powertoysPrivacyMode\";"], "ordered": false},
-        "powertoys-remote-trailers-jf10": {"cardinality": 1, "markers": ["id = \"powertoysvideoplayer\";"], "ordered": false},
-        "powertoys-thumbnail-previews-jf10": {"cardinality": 1, "markers": ["const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"], "ordered": false}
+        "powertoys-remote-trailers-jf10": {"cardinality": 1, "markers": ["id = \"powertoysvideoplayer\";"], "ordered": false}
       },
       "webrootDiskRequirements": {},
       "orderPair": "jf10-response-transformers",
+      "expectedRuntimePluginOrder": [
+        "@refresh-kit",
+        "jellyfin-security-jf10",
+        "powertoys-jellytag-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-thumbnail-previews-jf10"
+      ],
       "id": "jf10-response-transformers-reverse",
       "installOrder": [
         "powertoys-thumbnail-previews-jf10",
@@ -825,7 +979,7 @@
         "jellyfin-security-jf10",
         "@refresh-kit"
       ],
-      "purpose": "Exact reverse registration candidate for security and all four PowerToys response transformers.",
+      "purpose": "Descending install enumeration for Security and PowerToys; proves Jellyfin's manifest-name registration and complete shell effects are installation-order invariant.",
       "quarantinedAssertions": [
         "Credentialed security and external-service flows remain manual; local response transformations are still required."
       ]

@@ -22,8 +22,6 @@ DEFAULT_MATRICES = COMPAT_ROOT / "matrices.json"
 SAFE_DEGRADE_MATRIX_IDS = {
     "jf10-middleware-forward",
     "jf10-middleware-reverse",
-    "jf10-response-transformers-forward",
-    "jf10-response-transformers-reverse",
     "jf12-enhanced",
 }
 WRITABLE_WEBROOT_MATRIX_IDS = {"jf10-direct-writers-writable"}
@@ -64,6 +62,20 @@ PREVERSIONED_ARTIFACTS_BY_MATRIX = {
     "jf10-response-transformers-reverse": {"jellyfin-security-jf10"},
     "jf10-direct-writers-writable": {"aniliberty-strm-jf10"},
 }
+ASSEMBLY_VERSIONED_ARTIFACTS_BY_MATRIX = {
+    "jf10-response-transformers-forward": {
+        "powertoys-jellytag-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-thumbnail-previews-jf10",
+    },
+    "jf10-response-transformers-reverse": {
+        "powertoys-jellytag-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-thumbnail-previews-jf10",
+    },
+}
 EXTERNAL_ARTIFACTS_BY_MATRIX = {
     "jf10-transform-core": {"media-bar-jf10"},
 }
@@ -79,6 +91,7 @@ MATRIX_FIELDS = {
     "purpose",
     "installOrder",
     "orderPair",
+    "expectedRuntimePluginOrder",
     "generationProbe",
     "stampingExpectation",
     "cacheExpectation",
@@ -86,6 +99,7 @@ MATRIX_FIELDS = {
     "requiredUnversionedOuterArtifacts",
     "requiredPresentArtifacts",
     "requiredAbsentArtifacts",
+    "requiredAssemblyVersionedArtifacts",
     "requiredPreVersionedArtifacts",
     "requiredBodyMarkers",
     "configurationPatches",
@@ -111,6 +125,46 @@ EXPECTED_MATRIX_SEQUENCE = (
     "jf10-direct-writers-readonly",
     "jf10-direct-writers-writable",
 )
+EXPECTED_RUNTIME_PLUGIN_ORDER = {
+    "jf10-middleware-forward": (
+        "achievement-badges-jf10",
+        "file-transformation-jf10",
+        "get-avatar-jf10",
+        "jellyfin-enhanced-jf10",
+        "@refresh-kit",
+        "jmsfusion-jf10",
+        "ratings-jf10",
+        "seasonals-jf10",
+        "startrack-jf10",
+    ),
+    "jf10-middleware-reverse": (
+        "achievement-badges-jf10",
+        "file-transformation-jf10",
+        "get-avatar-jf10",
+        "jellyfin-enhanced-jf10",
+        "@refresh-kit",
+        "jmsfusion-jf10",
+        "ratings-jf10",
+        "seasonals-jf10",
+        "startrack-jf10",
+    ),
+    "jf10-response-transformers-forward": (
+        "@refresh-kit",
+        "jellyfin-security-jf10",
+        "powertoys-jellytag-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-thumbnail-previews-jf10",
+    ),
+    "jf10-response-transformers-reverse": (
+        "@refresh-kit",
+        "jellyfin-security-jf10",
+        "powertoys-jellytag-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-thumbnail-previews-jf10",
+    ),
+}
 EXPECTED_MATRIX_BASE = {
     "jf10-transform-core": ("jf10", "jf10", "read-only", "letterboxd-sync-jf10", "required", "required", None),
     "jf10-transform-whisper": ("jf10", "jf10", "read-only", "whisper-subs-jf10", "required", "required", None),
@@ -122,8 +176,8 @@ EXPECTED_MATRIX_BASE = {
     "jf10-middleware-reverse": ("jf10", "jf10", "read-only", "get-avatar-jf10", "required", "safe-degrade", "jf10-middleware"),
     "jf10-registration-broker": ("jf10", "jf10", "read-only", "gelato-jf10", "observe", "required", None),
     "jf12-enhanced": ("jf12", "jf12", "read-only", "intro-skipper-jf12", "observe", "safe-degrade", None),
-    "jf10-response-transformers-forward": ("jf10", "jf10", "read-only", "jellyfin-security-jf10", "observe", "safe-degrade", "jf10-response-transformers"),
-    "jf10-response-transformers-reverse": ("jf10", "jf10", "read-only", "jellyfin-security-jf10", "observe", "safe-degrade", "jf10-response-transformers"),
+    "jf10-response-transformers-forward": ("jf10", "jf10", "read-only", "jellyfin-security-jf10", "observe", "required", "jf10-response-transformers"),
+    "jf10-response-transformers-reverse": ("jf10", "jf10", "read-only", "jellyfin-security-jf10", "observe", "required", "jf10-response-transformers"),
     "jf10-direct-writers-readonly": ("jf10", "jf10", "read-only", "stream-limit-jf10", "observe", "required", None),
     "jf10-direct-writers-writable": ("jf10", "jf10-writable", "writable-volume", "stream-limit-jf10", "required", "required", None),
 }
@@ -145,14 +199,16 @@ EXPECTED_INSTALL_ORDER_SHA256 = {
 }
 CONTRACT_FIELDS = (
     "id", "runtime", "service", "webrootExpectation", "purpose", "installOrder",
-    "orderPair", "generationProbe", "stampingExpectation", "cacheExpectation",
+    "orderPair", "expectedRuntimePluginOrder", "generationProbe",
+    "stampingExpectation", "cacheExpectation",
     "requiredStampedArtifacts", "requiredUnversionedOuterArtifacts",
     "requiredPresentArtifacts", "requiredAbsentArtifacts",
+    "requiredAssemblyVersionedArtifacts",
     "requiredPreVersionedArtifacts", "requiredBodyMarkers", "configurationPatches",
     "contentProbes", "shellRequirements", "inlineRequirements",
     "webrootDiskRequirements", "quarantinedAssertions",
 )
-EXPECTED_MATRIX_CONTRACT_SHA256 = "1f8431d97254aba33deb9190ec0c1bd1ffd11e8cbe41c877cbb52a868e93fa32"
+EXPECTED_MATRIX_CONTRACT_SHA256 = "8fab51792f72d5892a45281b88c0d09c45dfb42d7cf4bb834849854c256ae0b1"
 
 
 def reject_unknown_fields(value: dict[str, Any], allowed: set[str], context: str) -> None:
@@ -309,6 +365,23 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
                     f"{matrix_id}: {artifact_id} is for {artifact['runtime']}, not {runtime}"
                 )
             used.add(artifact_id)
+        expected_runtime_order = matrix.get("expectedRuntimePluginOrder")
+        locked_runtime_order = EXPECTED_RUNTIME_PLUGIN_ORDER.get(matrix_id)
+        if locked_runtime_order is None:
+            if expected_runtime_order is not None:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}: runtime plugin order is allowed only on audited order pairs"
+                )
+        elif (
+            not isinstance(expected_runtime_order, list)
+            or tuple(expected_runtime_order) != locked_runtime_order
+            or len(expected_runtime_order) != len(set(expected_runtime_order))
+            or set(expected_runtime_order) != set(order)
+        ):
+            raise artifact_lib.HarnessError(
+                f"{matrix_id}: expected runtime plugin order differs from the "
+                "manifest-name-sorted contract"
+            )
         generation_probe = matrix.get("generationProbe")
         if generation_probe not in order or generation_probe == "@refresh-kit":
             raise artifact_lib.HarnessError(f"{matrix_id}: invalid generationProbe")
@@ -343,12 +416,14 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
             )
         required_present = matrix.get("requiredPresentArtifacts", [])
         required_absent = matrix.get("requiredAbsentArtifacts", [])
+        required_assembly_versioned = matrix.get("requiredAssemblyVersionedArtifacts", [])
         required_preversioned = matrix.get("requiredPreVersionedArtifacts", [])
         shell_requirements = {
             "requiredStampedArtifacts": required,
             "requiredUnversionedOuterArtifacts": required_unversioned,
             "requiredPresentArtifacts": required_present,
             "requiredAbsentArtifacts": required_absent,
+            "requiredAssemblyVersionedArtifacts": required_assembly_versioned,
             "requiredPreVersionedArtifacts": required_preversioned,
         }
         for field, artifact_ids in shell_requirements.items():
@@ -394,6 +469,7 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
             if mode not in {
                 "current-rkv",
                 "source-versioned",
+                "assembly-versioned-path",
                 "external-present",
                 "unversioned-outer",
                 "absent",
@@ -499,6 +575,18 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
                     raise artifact_lib.HarnessError(
                         f"{context}: source-versioned requires one source version query"
                     )
+                if mode == "assembly-versioned-path" and (
+                    origin != "same-origin"
+                    or allowed_keys
+                    or re.fullmatch(
+                        r"/_/[0-9a-f]{32}/[0-9a-f]{32}\.(?:css|js)", path
+                    )
+                    is None
+                ):
+                    raise artifact_lib.HarnessError(
+                        f"{context}: assembly-versioned-path requires an exact same-origin "
+                        "two-digest JS/CSS path with no query"
+                    )
                 if mode == "external-present" and origin == "same-origin":
                     raise artifact_lib.HarnessError(
                         f"{context}: external-present requires an explicit external origin"
@@ -554,6 +642,10 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
             "requiredAbsentArtifacts": {
                 artifact_id for artifact_id, row in structured_requirements.items()
                 if row["mode"] == "absent"
+            },
+            "requiredAssemblyVersionedArtifacts": {
+                artifact_id for artifact_id, row in structured_requirements.items()
+                if row["mode"] == "assembly-versioned-path"
             },
             "requiredPreVersionedArtifacts": {
                 artifact_id for artifact_id, row in structured_requirements.items()
@@ -703,7 +795,14 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
                 raise artifact_lib.HarnessError(f"{matrix_id}: content probe must be an object")
             reject_unknown_fields(
                 probe,
-                {"id", "path", "authenticated", "markers"},
+                {
+                    "id",
+                    "path",
+                    "authenticated",
+                    "format",
+                    "jsonArrayContains",
+                    "markers",
+                },
                 f"{matrix_id} content probe",
             )
             probe_id = str(probe.get("id", ""))
@@ -716,6 +815,28 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
             if not isinstance(probe.get("authenticated"), bool):
                 raise artifact_lib.HarnessError(
                     f"{matrix_id}: content probe authenticated must be boolean"
+                )
+            probe_format = probe.get("format", "text")
+            if probe_format not in {"text", "json-object"}:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}: content probe format must be text or json-object"
+                )
+            json_array_contains = probe.get("jsonArrayContains", {})
+            if (
+                not isinstance(json_array_contains, dict)
+                or (json_array_contains and probe_format != "json-object")
+                or any(
+                    not isinstance(key, str)
+                    or not key
+                    or not isinstance(values, list)
+                    or not values
+                    or len(values) != len(set(values))
+                    or any(not isinstance(value, str) or not value for value in values)
+                    for key, values in json_array_contains.items()
+                )
+            ):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}: invalid JSON array content contract"
                 )
             markers = probe.get("markers")
             if not isinstance(markers, dict) or not markers:
@@ -839,6 +960,17 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
             "required-absent shell assertions must remain exactly the audited "
             f"read-only direct-writer cases; expected={ABSENT_ARTIFACTS_BY_MATRIX}, "
             f"actual={actual_absent}"
+        )
+    actual_assembly_versioned = {
+        str(matrix["id"]): set(matrix.get("requiredAssemblyVersionedArtifacts", []))
+        for matrix in matrices
+        if matrix.get("requiredAssemblyVersionedArtifacts")
+    }
+    if actual_assembly_versioned != ASSEMBLY_VERSIONED_ARTIFACTS_BY_MATRIX:
+        raise artifact_lib.HarnessError(
+            "assembly-versioned shell assertions must remain exactly the audited "
+            f"PowerToys paths; expected={ASSEMBLY_VERSIONED_ARTIFACTS_BY_MATRIX}, "
+            f"actual={actual_assembly_versioned}"
         )
     actual_preversioned = {
         str(matrix["id"]): set(matrix.get("requiredPreVersionedArtifacts", []))

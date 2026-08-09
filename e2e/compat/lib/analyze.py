@@ -320,12 +320,73 @@ def evaluate_safe_degrade(
     }
 
 
+def evaluate_required_cache(
+    primary_status: int | None,
+    primary_headers: dict[str, list[str]],
+    primary_body: bytes,
+    conditional_status: str,
+    conditional_http_status: int | None,
+    conditional_headers: dict[str, list[str]],
+    conditional_body: bytes,
+) -> dict[str, bool]:
+    """Bind a normal transformed response and its bodyless 304 to exact bytes."""
+    primary_etags = primary_headers.get("etag", [])
+    expected_etag = f'"rk-{hashlib.sha256(primary_body).hexdigest()}"'
+    return {
+        "primaryStatus200": primary_status == 200,
+        "validFraming": response_framing_mode(primary_headers, primary_body)
+        is not None,
+        "singleStrongEtag": len(primary_etags) == 1
+        and re.fullmatch(r'"rk-[0-9a-f]{64}"', primary_etags[0]) is not None,
+        "etagMatchesBodySha256": primary_etags == [expected_etag],
+        "lastModifiedAbsent": not primary_headers.get("last-modified"),
+        "conditionalStatus304": conditional_status == "304"
+        and conditional_http_status == 304,
+        "conditionalBodyEmpty": len(conditional_body) == 0,
+        "conditionalEtagMatches": conditional_headers.get("etag", [])
+        == [expected_etag],
+        "conditionalFramingBodyless": not any(
+            conditional_headers.get(name)
+            for name in (
+                "content-length",
+                "transfer-encoding",
+                "content-encoding",
+            )
+        ),
+        "conditionalLastModifiedAbsent": not conditional_headers.get(
+            "last-modified"
+        ),
+    }
+
+
 def generation_from(path: Path) -> str:
     payload = read_json(path)
     value = ci(payload, "CacheKey")
     if not isinstance(value, str) or not re.fullmatch(r"g-[0-9a-f]{16}", value):
         raise artifact_lib.HarnessError(f"invalid Refresh Kit generation in {path}: {value!r}")
     return value
+
+
+def count_exact_json_string(value: Any, marker: str) -> int:
+    if isinstance(value, str):
+        return int(value == marker)
+    if isinstance(value, list):
+        return sum(count_exact_json_string(item, marker) for item in value)
+    if isinstance(value, dict):
+        return sum(count_exact_json_string(item, marker) for item in value.values())
+    return 0
+
+
+def evaluate_json_array_contains(
+    value: Any, requirements: dict[str, list[str]]
+) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {key: False for key in requirements}
+    return {
+        key: isinstance(value.get(key), list)
+        and all(expected in value[key] for expected in expected_values)
+        for key, expected_values in requirements.items()
+    }
 
 
 def eligible_unversioned(
@@ -747,6 +808,26 @@ def evaluate_shell_requirement(
                 ),
             }
         )
+    elif mode == "assembly-versioned-path":
+        checks.update(
+            {
+                "allSameOrigin": bool(tags) and all(row.get("sameOrigin") for row in tags),
+                "refreshKitStampAbsent": bool(tags)
+                and all(not row.get("rkv") for row in tags),
+                "sourceVersionAbsent": bool(tags)
+                and all(not row.get("sourceVersionValues") for row in tags),
+                "everyMatchedPathHasVersionedResourceShape": bool(tags)
+                and all(
+                    CONTENT_HASH_RE.search(PureName(str(row.get("path", ""))))
+                    is not None
+                    for row in tags
+                ),
+                "noneEligibleForRefreshKitStamp": bool(tags)
+                and all(
+                    not row.get("eligibleWithoutRefreshKitStamp") for row in tags
+                ),
+            }
+        )
     elif mode == "external-present":
         checks["allExternal"] = bool(tags) and all(
             not row.get("sameOrigin") and row.get("origin") for row in tags
@@ -971,7 +1052,6 @@ def cmd_runtime(args: argparse.Namespace) -> int:
             errors.append(f"compression check failed: {key}")
 
     headers = parse_headers(evidence / "shell-after.headers")
-    etags = headers.get("etag", [])
     conditional_status = read_text(evidence / "conditional-status.txt").strip()
     conditional_headers = parse_headers(evidence / "conditional.headers")
     shell_body = (evidence / "shell-after.html").read_bytes()
@@ -979,17 +1059,31 @@ def cmd_runtime(args: argparse.Namespace) -> int:
     conditional_text = read_text(evidence / "conditional.html")
     conditional_parser = ShellParser(shell_document_url)
     conditional_parser.feed(conditional_text)
-    cache_checks = {
-        "refreshKitEtag": len(etags) == 1 and "rk-" in etags[0],
-        "conditional304": conditional_status == "304",
-    }
+    cache_checks = evaluate_required_cache(
+        parse_http_status(evidence / "shell-after.headers"),
+        headers,
+        shell_body,
+        conditional_status,
+        parse_http_status(evidence / "conditional.headers"),
+        conditional_headers,
+        conditional_body,
+    )
     if matrix["cacheExpectation"] == "required":
         for key, passed in cache_checks.items():
             if not passed:
                 errors.append(f"cache check failed: {key}")
 
     safe_degrade_checks: dict[str, bool] = {}
-    safe_degrade_framing: dict[str, str | None] = {}
+    cache_framing: dict[str, str | None] = {
+        "primary": response_framing_mode(headers, shell_body),
+        "conditional": (
+            "bodyless-304"
+            if cache_checks["conditionalStatus304"]
+            and cache_checks["conditionalBodyEmpty"]
+            and cache_checks["conditionalFramingBodyless"]
+            else response_framing_mode(conditional_headers, conditional_body)
+        ),
+    }
     if matrix["cacheExpectation"] == "safe-degrade":
         primary_assets = Counter(row["url"] for row in shell_parser.assets)
         conditional_assets = Counter(row["url"] for row in conditional_parser.assets)
@@ -1006,10 +1100,6 @@ def cmd_runtime(args: argparse.Namespace) -> int:
             primary_assets,
             conditional_assets,
         )
-        safe_degrade_framing = {
-            "primary": response_framing_mode(headers, shell_body),
-            "conditional": response_framing_mode(conditional_headers, conditional_body),
-        }
         for key, passed in safe_degrade_checks.items():
             if not passed:
                 errors.append(f"safe-degrade cache check failed: {key}")
@@ -1029,12 +1119,46 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         probe_path = evidence / "content-probes" / f"{probe['id']}.txt"
         require_file(probe_path)
         probe_text = read_text(probe_path)
+        probe_format = probe.get("format", "text")
+        parsed_probe: Any = None
+        format_valid = True
+        if probe_format == "json-object":
+            try:
+                parsed_probe = json.loads(probe_text)
+            except json.JSONDecodeError:
+                format_valid = False
+            if not isinstance(parsed_probe, dict):
+                format_valid = False
+            if not format_valid:
+                errors.append(
+                    f"content probe {probe['id']} did not return a JSON object"
+                )
+
+        def marker_count(marker: str) -> int:
+            if probe_format == "json-object":
+                return (
+                    count_exact_json_string(parsed_probe, marker)
+                    if format_valid
+                    else 0
+                )
+            return probe_text.count(marker)
+
+        json_array_checks = evaluate_json_array_contains(
+            parsed_probe, probe.get("jsonArrayContains", {})
+        )
+        for key, passed in json_array_checks.items():
+            if not passed:
+                errors.append(
+                    f"content probe {probe['id']} JSON array {key!r} "
+                    "does not contain every required value"
+                )
+
         artifact_checks = {
             artifact_id: {
                 marker: {
-                    "count": probe_text.count(marker),
+                    "count": marker_count(marker),
                     "minimum": 1,
-                    "passed": probe_text.count(marker) >= 1,
+                    "passed": marker_count(marker) >= 1,
                 }
                 for marker in markers
             }
@@ -1043,10 +1167,15 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         content_probe_results[probe["id"]] = {
             "path": probe["path"],
             "authenticated": probe["authenticated"],
+            "format": probe_format,
+            "formatValid": format_valid,
+            "jsonArrayContainsChecks": json_array_checks,
             "sha256": sha256(probe_path),
             "bytes": probe_path.stat().st_size,
             "artifactChecks": artifact_checks,
-            "allPassed": all(
+            "allPassed": format_valid
+            and all(json_array_checks.values())
+            and all(
                 check["passed"]
                 for checks in artifact_checks.values()
                 for check in checks.values()
@@ -1071,6 +1200,28 @@ def cmd_runtime(args: argparse.Namespace) -> int:
     installed_order = [row["artifactId"] for row in sorted(installs, key=lambda row: row["ordinal"])]
     if installed_order != requested_order:
         errors.append(f"installed order {installed_order} != requested order {requested_order}")
+
+    expected_runtime_order = matrix.get("expectedRuntimePluginOrder")
+    observed_runtime_order: list[str] | None = None
+    if expected_runtime_order is not None:
+        artifact_by_guid = {normalize_guid(REFRESH_KIT_GUID): "@refresh-kit"}
+        artifact_by_guid.update(
+            {
+                normalize_guid(artifacts[artifact_id]["plugin"]["guid"]): artifact_id
+                for artifact_id in requested_order
+                if artifact_id != "@refresh-kit"
+            }
+        )
+        observed_runtime_order = [
+            artifact_by_guid[plugin_guid]
+            for row in inventory_rows
+            if (plugin_guid := normalize_guid(ci(row, "Id"))) in artifact_by_guid
+        ]
+        if observed_runtime_order != expected_runtime_order:
+            errors.append(
+                "runtime plugin order "
+                f"{observed_runtime_order} != expected {expected_runtime_order}"
+            )
 
     stage = read_json(evidence / "stage.json")
     refresh_inventory = find_by_guid(inventory_rows, REFRESH_KIT_GUID)
@@ -1332,6 +1483,8 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         "image": configured_image,
         "network": {"value": network, "checks": network_checks},
         "requestedInstallOrder": requested_order,
+        "expectedRuntimePluginOrder": expected_runtime_order,
+        "observedRuntimePluginOrder": observed_runtime_order,
         "observedShellTagOrder": observed_shell_order,
         "orderPair": matrix.get("orderPair"),
         "quarantinedAssertions": matrix["quarantinedAssertions"],
@@ -1351,14 +1504,17 @@ def cmd_runtime(args: argparse.Namespace) -> int:
                     "status": parse_http_status(evidence / "shell-after.headers"),
                     "bodyBytes": len(shell_body),
                     "bodySha256": hashlib.sha256(shell_body).hexdigest(),
-                    "framingMode": safe_degrade_framing.get("primary"),
+                    "framingMode": cache_framing.get("primary"),
                 },
                 "conditional": {
                     "status": parse_http_status(evidence / "conditional.headers"),
                     "bodyBytes": len(conditional_body),
                     "bodySha256": hashlib.sha256(conditional_body).hexdigest(),
-                    "framingMode": safe_degrade_framing.get("conditional"),
+                    "framingMode": cache_framing.get("conditional"),
                 },
+                "requiredChecks": cache_checks
+                if matrix["cacheExpectation"] == "required"
+                else {},
                 "safeDegradeChecks": safe_degrade_checks,
             },
             "stage": stage,
@@ -1433,6 +1589,38 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
     missing_safe_degraded = [
         matrix_id for matrix_id in expected_safe_degraded if matrix_id not in safe_degraded
     ]
+    results_by_id = {row.get("matrix"): row for row in results}
+    pair_runtime_order_checks: dict[str, bool] = {}
+    for pair in sorted(
+        {
+            str(matrix["orderPair"])
+            for matrix in matrices["matrices"]
+            if matrix.get("orderPair") is not None
+        }
+    ):
+        pair_matrices = [
+            matrix
+            for matrix in matrices["matrices"]
+            if matrix.get("orderPair") == pair
+        ]
+        pair_rows = [
+            results_by_id.get(matrix["id"]) for matrix in pair_matrices
+        ]
+        pair_runtime_order_checks[pair] = (
+            len(pair_matrices) == 2
+            and len(pair_rows) == 2
+            and all(isinstance(row, dict) for row in pair_rows)
+            and all(
+                isinstance(matrix.get("expectedRuntimePluginOrder"), list)
+                and bool(matrix["expectedRuntimePluginOrder"])
+                and row.get("expectedRuntimePluginOrder")
+                == matrix["expectedRuntimePluginOrder"]
+                and row.get("observedRuntimePluginOrder")
+                == matrix["expectedRuntimePluginOrder"]
+                and row.get("cacheExpectation") == matrix["cacheExpectation"]
+                for matrix, row in zip(pair_matrices, pair_rows)
+            )
+        )
     payload = {
         "schemaVersion": 1,
         "coverage": lock["coverageExpectations"],
@@ -1447,6 +1635,7 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
         "expectedSafeDegradedMatrices": expected_safe_degraded,
         "safeDegradedMatrices": safe_degraded,
         "missingSafeDegradedMatrices": missing_safe_degraded,
+        "pairRuntimeOrderChecks": pair_runtime_order_checks,
         "results": results,
         "outcome": "pass-with-limitation"
         if not missing
@@ -1454,6 +1643,7 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
         and not missing_limited
         and not unexpected_limited
         and not missing_safe_degraded
+        and all(pair_runtime_order_checks.values())
         and limited
         else "pass"
         if not missing
@@ -1461,6 +1651,7 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
         and not missing_limited
         and not unexpected_limited
         and not missing_safe_degraded
+        and all(pair_runtime_order_checks.values())
         else "fail",
     }
     write_json(args.output, payload)

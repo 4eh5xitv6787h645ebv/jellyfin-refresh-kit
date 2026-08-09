@@ -126,7 +126,7 @@ and install order live in `e2e/compat/ecosystem.lock.json` and
 `e2e/compat/matrices.json`. `e2e/compat/README.md` documents how a retained
 runtime result is produced and analyzed.
 
-## Cache and middleware-order contract
+## Cache and response-ownership contract
 
 There are two valid cache outcomes; they must not be conflated.
 
@@ -139,14 +139,12 @@ ETag. Matching `If-None-Match` can return `304`, a failed `If-Match` can return
 
 ### Nested outer-response-buffer ownership
 
-Exactly five locked matrices contain a known outer response owner and use the
+Exactly three locked matrices contain a known outer response owner and use the
 statically enforced `safe-degrade` expectation:
 
 - `jf10-middleware-forward`
 - `jf10-middleware-reverse`
 - `jf12-enhanced`
-- `jf10-response-transformers-forward`
-- `jf10-response-transformers-reverse`
 
 The complete injected/stamped body must still be returned, but Refresh Kit must
 not claim a validator for bytes the outer middleware owns. Primary and stale
@@ -154,6 +152,13 @@ conditional responses are therefore full `200` responses with
 `Cache-Control: no-store`, no `ETag` or `Last-Modified`, and no stale digest,
 signature, trailer, or connection-nominated entity metadata. The outer owner's
 final content type and coding remain authoritative.
+
+The `forward` and `reverse` suffixes describe opposite on-disk installation
+enumeration only. Jellyfin 10.11 sorts discovered plugins by manifest name,
+then ID/version, before loading assemblies and registering services. Each pair
+therefore asserts one explicit runtime plugin order and proves that its
+shell/cache result is independent of numeric folder prefixes; it does not claim
+that reversing folder creation reverses middleware.
 
 For the lab's captured HTTP/1.1 responses, the analyzer additionally requires
 exactly one unambiguous framing mode: a single decimal `Content-Length` equal to
@@ -163,7 +168,7 @@ are not represented by this header-level check.
 
 ### Candid outer-owner limitation
 
-In both Jellyfin 10 middleware-order matrices, Seasonals' eligible tags must be
+In both Jellyfin 10 middleware install-order matrices, Seasonals' eligible tags must be
 stamped with the current `rkv`. GetAvatar adds one eligible tag after Refresh
 Kit's transform boundary; the analyzer requires that tag to be present exactly
 once and unstamped, and reports the matrix as `PASS WITH LIMITATION`. An
