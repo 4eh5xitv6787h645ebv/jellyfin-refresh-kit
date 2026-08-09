@@ -141,21 +141,29 @@ The `compat` command is a deliberately bounded ABI experiment: it installs the J
 the in-place host-upgrade scenarios. Its profile-only service owns a dedicated
 internal Compose network, loopback port, token, config/cache volumes, and
 `artifacts/abi-floor/` tree. The
-runner resets only volumes carrying both this Compose project's label and the
-two exact ABI-floor volume labels.
+runner refuses foreign or ambiguously labelled resources, then resets only the
+two exact project-qualified ABI-floor volumes. The live container must retain
+those exact read/write mounts, the exact internal network name/labels, and the
+same image ID resolved from the digest-pinned reference.
 
 The smoke installs the verified immutable snapshot's `net9.0` stage on the exact
 10.11.0 image. Success requires server version `10.11.0`, the candidate plugin
-to be uniquely `Active` and loaded, generation/diagnostics identities to agree,
-the transformed shell and versioned runtime cache contracts to hold, and the
-server log to contain the exact assembly/plugin load without an incompatible
-shared-library error. Raw public-info, generation, diagnostics, inventory,
-headers, runtime, transformed-shell, and server-log responses are retained and
-cross-checked by `scripts/abi_floor_evidence.py` against the same snapshot's
-stage metadata, DLL, and package bytes. The no-Docker negative command mutates
-these identities and fails unless every mismatch is rejected. This describes
-the proof contract; a passing live result must come from an actual `abi-floor`
-run and is not inferred from the harness itself.
+to be uniquely `Active` and loaded without truncated, unavailable, last-good,
+or last-known-record diagnostics. The container DLL is re-hashed after restart;
+its managed MVID is used to derive the expected public `BuildId` and diagnostic
+`LoadedModuleIdentity` from the pinned snapshot rather than trusting runtime
+claims. The direct responses must have singleton cache policies and unambiguous
+framing, while the shell ETag must equal the SHA-256 of its exact body and the
+conditional response must carry the matching validator with a bodyless `304`
+shape. Exact scoped log lines prove one assembly and plugin load with no scoped
+warning/error. Raw anonymous HTTP proof is copied byte-for-byte only after a
+fail-closed credential scan; authenticated diagnostics/inventory and the
+sanitized server log remain separately retained. `scripts/abi_floor_evidence.py`
+cross-checks all of it against the same snapshot's stage metadata, DLL, MVID,
+and package bytes. The no-Docker negative command and validator mutation suite
+fail unless every mismatch is rejected. This describes the proof contract; a
+passing live result must come from an actual `abi-floor` run and is not inferred
+from the harness itself.
 
 ## In-place Jellyfin host upgrades and live load coverage
 

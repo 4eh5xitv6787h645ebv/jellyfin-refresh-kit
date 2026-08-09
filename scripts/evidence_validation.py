@@ -50,6 +50,7 @@ INTEGRATION_TEXT = (
     "abi-floor/server/kit.js",
     "abi-floor/server/shell.headers",
     "abi-floor/server/conditional.headers",
+    "abi-floor/server/conditional.body",
     "abi-floor/server/index.html",
     "abi-floor/server.log",
 )

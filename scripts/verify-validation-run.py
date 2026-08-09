@@ -53,6 +53,7 @@ REQUIRED_COLLECTED = {
     "lab/abi-floor/server/kit.js",
     "lab/abi-floor/server/shell.headers",
     "lab/abi-floor/server/conditional.headers",
+    "lab/abi-floor/server/conditional.body",
     "lab/abi-floor/server/index.html",
     "lab/abi-floor/server.log",
     "lab/jf10/server/result.json",

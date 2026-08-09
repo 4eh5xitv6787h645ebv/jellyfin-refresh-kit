@@ -930,13 +930,18 @@ class AbiFloorEvidenceTests(unittest.TestCase):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             abi_floor.self_test()
-        self.assertIn("12/12 PASS", output.getvalue())
+        match = re.search(r"([0-9]+)/\1 PASS", output.getvalue())
+        self.assertIsNotNone(match)
+        self.assertGreaterEqual(int(match.group(1)), 38)
 
-    def test_collector_redaction_preserves_strict_raw_evidence(self) -> None:
+    def test_collector_redaction_preserves_nonanonymous_strict_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             evidence, build = abi_floor.fixture(pathlib.Path(temporary))
             for path in evidence.rglob("*"):
                 if not path.is_file():
+                    continue
+                relative = path.relative_to(evidence).as_posix()
+                if f"abi-floor/{relative}" in collector.EXACT_ANONYMOUS_HTTP:
                     continue
                 if path.suffix == ".json":
                     value = json.loads(path.read_text(encoding="utf-8"))
@@ -950,6 +955,75 @@ class AbiFloorEvidenceTests(unittest.TestCase):
                     )
             abi_floor.validate_evidence(evidence, build)
 
+    def test_anonymous_http_collector_is_exact_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / "source.headers"
+            target = root / "target.headers"
+            raw = b"HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\n\r\n"
+            source.write_bytes(raw)
+            collector.copy_exact_anonymous_http(
+                source,
+                target,
+                "abi-floor/server/shell.headers",
+            )
+            self.assertEqual(target.read_bytes(), raw)
+
+            source.write_bytes(b"")
+            collector.copy_exact_anonymous_http(
+                source,
+                target,
+                "abi-floor/server/conditional.body",
+            )
+            self.assertEqual(target.read_bytes(), b"")
+            with self.assertRaises(ValueError):
+                collector.copy_exact_anonymous_http(
+                    source,
+                    target,
+                    "abi-floor/server/shell.headers",
+                )
+
+            source.write_text(
+                "HTTP/1.1 200 OK\r\nAuthorization: Bearer exposed\r\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                collector.copy_exact_anonymous_http(
+                    source,
+                    target,
+                    "abi-floor/server/shell.headers",
+                )
+            source.write_text("password=exposed\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                collector.copy_exact_anonymous_http(
+                    source,
+                    target,
+                    "abi-floor/server/index.html",
+                )
+            source.write_bytes(b"\xff\xfe")
+            with self.assertRaises(ValueError):
+                collector.copy_exact_anonymous_http(
+                    source,
+                    target,
+                    "abi-floor/server/shell.headers",
+                )
+
+            runtime = (ROOT / "jellyfin-refresh-kit.js").read_bytes()
+            source.write_bytes(runtime)
+            collector.copy_exact_anonymous_http(
+                source,
+                target,
+                "abi-floor/server/kit.js",
+            )
+            self.assertEqual(target.read_bytes(), runtime)
+            source.write_bytes(runtime + b"\n// unexpected served byte\n")
+            with self.assertRaises(ValueError):
+                collector.copy_exact_anonymous_http(
+                    source,
+                    target,
+                    "abi-floor/server/kit.js",
+                )
+
     def test_collector_release_inventory_and_runner_wiring_are_explicit(self) -> None:
         expected_json = {
             "abi-floor/result.json",
@@ -959,17 +1033,27 @@ class AbiFloorEvidenceTests(unittest.TestCase):
             "abi-floor/server/diagnostics.json",
             "abi-floor/server/plugins.json",
         }
-        self.assertTrue(expected_json.issubset(set(collector.SAFE_JSON)))
+        collector_inventory = set(collector.SAFE_JSON) | set(collector.EXACT_ANONYMOUS_HTTP)
+        self.assertTrue(expected_json.issubset(collector_inventory))
         expected_text = {
             "abi-floor/server/generation.headers",
             "abi-floor/server/kit.headers",
             "abi-floor/server/kit.js",
             "abi-floor/server/shell.headers",
             "abi-floor/server/conditional.headers",
+            "abi-floor/server/conditional.body",
             "abi-floor/server/index.html",
             "abi-floor/server.log",
         }
-        self.assertTrue(expected_text.issubset(set(collector.SAFE_TEXT)))
+        collector_inventory |= set(collector.SAFE_TEXT)
+        self.assertTrue(expected_text.issubset(collector_inventory))
+        self.assertEqual(
+            set(collector.EXACT_ANONYMOUS_HTTP),
+            expected_text - {"abi-floor/server.log"} | {
+                "abi-floor/server/public.json",
+                "abi-floor/server/generation.json",
+            },
+        )
         self.assertEqual(validation_run.REQUIRED_EXIT_STATUS["abiFloorLab"], 0)
         self.assertTrue(
             {

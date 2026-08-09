@@ -48,15 +48,24 @@ SAFE_JSON = (
     "compat-jf10-on-jf12/public.json",
     "abi-floor/result.json",
     "abi-floor/server/result.json",
-    "abi-floor/server/public.json",
-    "abi-floor/server/generation.json",
     "abi-floor/server/diagnostics.json",
     "abi-floor/server/plugins.json",
     "host-upgrade/result.json",
     "host-upgrade/jf10/result.json",
     "host-upgrade/jf12/result.json",
 )
-SAFE_TEXT = INTEGRATION_TEXT
+EXACT_ANONYMOUS_HTTP = (
+    "abi-floor/server/public.json",
+    "abi-floor/server/generation.json",
+    "abi-floor/server/generation.headers",
+    "abi-floor/server/kit.headers",
+    "abi-floor/server/kit.js",
+    "abi-floor/server/shell.headers",
+    "abi-floor/server/conditional.headers",
+    "abi-floor/server/conditional.body",
+    "abi-floor/server/index.html",
+)
+SAFE_TEXT = tuple(path for path in INTEGRATION_TEXT if path not in EXACT_ANONYMOUS_HTTP)
 INTEGRATION_LIFECYCLE_RESULTS = {
     "jf10/lifecycle/result.json": ("jf10", "self"),
     "jf10/third-party-lifecycle/result.json": ("jf10", "third-party"),
@@ -273,6 +282,50 @@ def contains_forbidden_secret(value: str) -> bool:
         )
         or any(secret in value for secret in known_fixture_secrets())
     )
+
+
+def copy_exact_anonymous_http(
+    source: pathlib.Path,
+    target: pathlib.Path,
+    relative: str,
+) -> None:
+    """Retain anonymous HTTP proof byte-for-byte or refuse it as unsafe.
+
+    Rewriting a header/body would invalidate Content-Length, the body-derived
+    ETag, or the evidence checksum.  These paths therefore take a stricter
+    copy-only path: invalid UTF-8, known fixture credentials, credential-shaped
+    wire values, and a served runtime that differs from its repository source
+    all abort collection instead of being redacted.
+    """
+    try:
+        raw = source.read_bytes()
+        text = raw.decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ValueError(f"unsafe exact anonymous HTTP evidence {relative}: {error}") from error
+    empty_body_proof = relative == "abi-floor/server/conditional.body"
+    if not raw and not empty_body_proof:
+        raise ValueError(f"empty exact anonymous HTTP evidence: {relative}")
+    forbidden_patterns = (
+        QUERY_SECRET,
+        JSON_SECRET,
+        HEADER_SECRET,
+        AUTHORIZATION_SECRET,
+        EMBY_SECRET,
+        COOKIE_SECRET,
+        LOG_TOKEN,
+    )
+    wire_secret = any(pattern.search(text) is not None for pattern in forbidden_patterns) \
+        or any(secret in text for secret in known_fixture_secrets())
+    if wire_secret:
+        raise ValueError(f"credential-shaped value in exact anonymous HTTP evidence: {relative}")
+    if relative.endswith("/kit.js"):
+        expected = (ROOT / "jellyfin-refresh-kit.js").read_bytes()
+        if raw != expected:
+            raise ValueError("served ABI-floor kit.js differs from repository runtime bytes")
+    elif contains_forbidden_secret(text) or sanitize_text(text) != text:
+        raise ValueError(f"redaction would alter exact anonymous HTTP evidence: {relative}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
 
 
 def file_hash(path: pathlib.Path) -> str:
@@ -812,6 +865,25 @@ def main() -> int:
         if relative_target not in evidence["collected"]:
             evidence["collected"].append(relative_target)
 
+    for relative in (EXACT_ANONYMOUS_HTTP if collect_integration else ()):
+        source = LAB_ARTIFACTS / relative
+        if not source.is_file():
+            evidence["missing"].append(relative)
+            if args.require_integration_evidence:
+                strict_errors.append(f"missing required integration evidence: {relative}")
+            continue
+        target = output / "lab" / relative
+        try:
+            copy_exact_anonymous_http(source, target, relative)
+        except ValueError as error:
+            evidence["missing"].append(f"{relative} (unsafe exact bytes)")
+            if args.require_integration_evidence:
+                strict_errors.append(str(error))
+            continue
+        relative_target = target.relative_to(output).as_posix()
+        if relative_target not in evidence["collected"]:
+            evidence["collected"].append(relative_target)
+
     for relative in (SAFE_TEXT if collect_integration else ()):
         source = LAB_ARTIFACTS / relative
         if not source.is_file():
@@ -921,8 +993,16 @@ def main() -> int:
     write_json(run_path, evidence)
 
     # Refuse known unredacted credential forms before the workflow can upload.
+    exact_anonymous_targets = {
+        (output / "lab" / relative).resolve() for relative in EXACT_ANONYMOUS_HTTP
+    }
     for path in sorted(output.rglob("*")):
         if path.is_file() and path.suffix.lower() not in BINARY_SUFFIXES:
+            if path.resolve() in exact_anonymous_targets:
+                # This byte-preserving path was already checked by
+                # copy_exact_anonymous_http; the general source/log assignment
+                # matcher intentionally has false positives in shipped JS.
+                continue
             content = path.read_text(encoding="utf-8", errors="replace")
             if contains_forbidden_secret(content):
                 raise SystemExit(f"FATAL: unredacted credential pattern in evidence: {path}")

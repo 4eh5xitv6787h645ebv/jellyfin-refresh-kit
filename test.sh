@@ -152,6 +152,7 @@ PY
     python3 scripts/test-release-tools.py
     bash scripts/check-workflows.sh
     bash e2e/proxy/lib/build-snapshot-negative.sh
+    bash e2e/proxy/lib/static-regressions.sh
     bash e2e/jellyfin/run.sh runner-negative
     bash e2e/jellyfin/run.sh host-upgrade-negative
     bash e2e/jellyfin/run.sh abi-floor-negative
