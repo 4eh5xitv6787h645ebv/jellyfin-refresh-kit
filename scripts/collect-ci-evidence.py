@@ -171,7 +171,7 @@ COMPATIBILITY_LITERAL_SECRET = re.compile(
     r"(?:[?&](?:token|access.?token|refresh.?token|id.?token|x.?emby.?token|"
     r"api.?key|authorization|password|cookie|session(?:.?id)?)=)"
     + COMPATIBILITY_CONCRETE_ATOM
-    + r"|(?:[\"']?(?:token|access.?token|refresh.?token|id.?token|"
+    + r"|(?<!\w)(?:[\"']?(?:token|access.?token|refresh.?token|id.?token|"
     r"x.?emby.?token|api.?key|authorization|password|secret|cookie|"
     r"session(?:.?id)?)[\"']?\s*[:=]\s*[\"'])"
     r"[A-Za-z0-9._~+/=-]+"
@@ -1515,7 +1515,10 @@ def collect_compatibility(
                 )
             result_probes = result.get("contentProbes")
             probes = content_probes[matrix_id]
-            expected_probe_ids = [probe["id"] for probe in probes]
+            # Results are written canonically with sort_keys=True. Manifest
+            # order drives capture, but JSON object-member order is not an
+            # execution-order proof; require the exact canonical inventory.
+            expected_probe_ids = sorted(probe["id"] for probe in probes)
             if (
                 not isinstance(result_probes, dict)
                 or list(result_probes) != expected_probe_ids

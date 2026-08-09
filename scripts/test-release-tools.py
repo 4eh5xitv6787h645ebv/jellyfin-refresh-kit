@@ -1620,25 +1620,69 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 ]
             },
         }
+        secondary_marker = "SECOND-EXACT-SEMANTIC-PROBE-MARKER"
+        secondary_body = (
+            f"fixture secondary prefix {secondary_marker} fixture suffix"
+        ).encode("utf-8")
+        secondary_probe = {
+            "id": "aaa-fixture-content-javascript",
+            "path": "/Fixture/alternate.js",
+            "authenticated": False,
+            "request": {"accept": "text/javascript"},
+            "response": {
+                "status": 200,
+                "mediaType": "text/javascript",
+                "body": {
+                    "mode": "semantic",
+                    "minBytes": 32,
+                    "maxBytes": 1024,
+                },
+            },
+            "format": "text",
+            "markers": {
+                "direct-plugin": [
+                    {"value": secondary_marker, "cardinality": 1}
+                ]
+            },
+        }
+        probes = [probe, secondary_probe]
         manifest = json.loads(matrix_path.read_text(encoding="utf-8"))
         matrix = next(row for row in manifest["matrices"] if row["id"] == matrix_id)
-        matrix["contentProbes"] = [probe]
+        # Deliberately keep declaration order nonlexical. Production result
+        # JSON is canonicalized with sort_keys=True, so this fixture proves
+        # that validators bind the exact canonical inventory rather than
+        # treating object-member order as execution order.
+        matrix["contentProbes"] = probes
         matrix_path.write_text(json.dumps(manifest), encoding="utf-8")
 
         directory = artifact_root / matrix_id
-        captures = {
-            ".txt": body,
-            ".headers": (
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/javascript; charset=utf-8\r\n"
-                f"Content-Length: {len(body)}\r\n\r\n"
-            ).encode("ascii"),
-            ".status": f"200\t{origin}{probe['path']}\n".encode("ascii"),
-        }
+        def captures_for(
+            current_probe: dict[str, object], current_body: bytes
+        ) -> dict[str, bytes]:
+            return {
+                ".txt": current_body,
+                ".headers": (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/javascript; charset=utf-8\r\n"
+                    f"Content-Length: {len(current_body)}\r\n\r\n"
+                ).encode("ascii"),
+                ".status": (
+                    f"200\t{origin}{current_probe['path']}\n".encode("ascii")
+                ),
+            }
+
+        captures = captures_for(probe, body)
+        secondary_captures = captures_for(secondary_probe, secondary_body)
         probe_directory = directory / "content-probes"
         probe_directory.mkdir()
-        for suffix, raw in captures.items():
-            (probe_directory / f"{probe['id']}{suffix}").write_bytes(raw)
+        for current_probe, current_captures in (
+            (probe, captures),
+            (secondary_probe, secondary_captures),
+        ):
+            for suffix, raw in current_captures.items():
+                (
+                    probe_directory / f"{current_probe['id']}{suffix}"
+                ).write_bytes(raw)
 
         network_path = directory / "network.json"
         network = json.loads(network_path.read_text(encoding="utf-8"))
@@ -1657,8 +1701,20 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         )
         if projection["allPassed"] is not True:
             raise AssertionError(projection)
-        result["contentProbes"] = {probe["id"]: projection}
-        result_path.write_text(json.dumps(result), encoding="utf-8")
+        secondary_projection = (
+            evidence_validation.reconstruct_compatibility_content_probe(
+                secondary_captures, secondary_probe, matrix_id, origin
+            )
+        )
+        if secondary_projection["allPassed"] is not True:
+            raise AssertionError(secondary_projection)
+        result["contentProbes"] = {
+            probe["id"]: projection,
+            secondary_probe["id"]: secondary_projection,
+        }
+        result_path.write_text(
+            json.dumps(result, sort_keys=True), encoding="utf-8"
+        )
 
         summary_path = artifact_root / "summary.json"
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -1678,6 +1734,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         fixture.update(
             {
                 "probe": probe,
+                "probes": probes,
                 "probe_body": body,
                 "probe_captures": captures,
                 "probe_origin": origin,
@@ -2121,6 +2178,14 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 "shell-after.html",
                 b'<script>const value = {"Token":"0123456789abcdef0123456789abcdef"}</script>',
             ),
+            "literal-short-api-key": (
+                "shell-after.html",
+                b'<script>const API_KEY = "x";</script>',
+            ),
+            "literal-dollar-api-key": (
+                "shell-after.html",
+                b'<script>const $API_KEY = "x";</script>',
+            ),
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -2148,6 +2213,10 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 b"<script>const h = { Authorization: MediaBrowser Token=ApiClient.accessToken() };</script>",
                 b"<script>const url = `/x?api_key=${apiKey}`;</script>",
                 b"<script>const h = { Cookie: cookieHeader };</script>",
+                (
+                    b'<script>const PROGRESS_API_KEY = '
+                    b'"__JMS_CUSTOM_SPLASH_PROGRESS__";</script>'
+                ),
             )
             for index, benign_value in enumerate(benign_values):
                 with self.subTest(benign=index):
@@ -2261,6 +2330,13 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                 (output / "compat" / matrix_id / "result.json").read_text(
                     encoding="utf-8"
                 )
+            )
+            declared_probe_ids = [
+                current_probe["id"] for current_probe in fixture["probes"]
+            ]
+            self.assertNotEqual(declared_probe_ids, sorted(declared_probe_ids))
+            self.assertEqual(
+                list(result["contentProbes"]), sorted(declared_probe_ids)
             )
             projection = result["contentProbes"][probe["id"]]
             self.assertTrue(projection["allPassed"])

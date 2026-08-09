@@ -2430,7 +2430,11 @@ def validate_compatibility_tree(
             f"{matrix_id}: runtime plugin order proof differs",
         )
         result_probes = result.get("contentProbes")
-        expected_probe_ids = [probe["id"] for probe in content_probes[matrix_id]]
+        # Analyzer result maps use canonical sort_keys=True serialization, so
+        # their key order is lexical rather than manifest declaration order.
+        expected_probe_ids = sorted(
+            probe["id"] for probe in content_probes[matrix_id]
+        )
         require(
             isinstance(result_probes, dict)
             and list(result_probes) == expected_probe_ids,
