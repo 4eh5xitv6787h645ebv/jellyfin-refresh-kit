@@ -341,6 +341,28 @@ def evaluate_unversioned_outer_limitation(shell: dict[str, Any]) -> dict[str, bo
     }
 
 
+def evaluate_current_stamped(shell: dict[str, Any]) -> dict[str, bool]:
+    tag_count = shell.get("tagCount")
+    return {
+        "tagPresent": isinstance(tag_count, int) and tag_count > 0,
+        "everyMatchedTagHasCurrentStamp": isinstance(tag_count, int)
+        and tag_count > 0
+        and shell.get("currentStampCount") == tag_count,
+    }
+
+
+def evaluate_source_preversioned(shell: dict[str, Any]) -> dict[str, bool]:
+    tags = shell.get("tags")
+    return {
+        "tagPresent": isinstance(tags, list) and len(tags) > 0,
+        "refreshKitStampAbsent": isinstance(tags, list)
+        and bool(tags)
+        and all(not row.get("rkv") for row in tags if isinstance(row, dict))
+        and all(isinstance(row, dict) for row in tags),
+        "sourceVersionMakesStampIneligible": shell.get("unstampedEligibleCount") == 0,
+    }
+
+
 def cmd_runtime(args: argparse.Namespace) -> int:
     lock, matrices = manifest_lib.load_and_validate(LOCK_PATH, MATRICES_PATH)
     matrix = manifest_lib.get_matrix(matrices, args.matrix)
@@ -602,6 +624,8 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         matrix.get("requiredUnversionedOuterArtifacts", [])
     )
     required_present = set(matrix.get("requiredPresentArtifacts", []))
+    required_absent = set(matrix.get("requiredAbsentArtifacts", []))
+    required_preversioned = set(matrix.get("requiredPreVersionedArtifacts", []))
     observed_shell_order: list[str] = []
     for asset in shell_parser.assets:
         for artifact_id in requested_order:
@@ -662,10 +686,23 @@ def cmd_runtime(args: argparse.Namespace) -> int:
                 plugin_errors.append(f"runtime meta check failed: {key}")
 
         shell = shell_attribution(shell_parser.assets, artifact, generation_after)
-        if artifact_id in matrix["requiredStampedArtifacts"] and shell["currentStampCount"] < 1:
-            plugin_errors.append("required generation stamp was not observed in the shell")
+        shell_requirement_checks: dict[str, bool] = {}
+        if artifact_id in matrix["requiredStampedArtifacts"]:
+            shell_requirement_checks = evaluate_current_stamped(shell)
+            for key, passed in shell_requirement_checks.items():
+                if not passed:
+                    plugin_errors.append(f"required generation-stamp check failed: {key}")
         if artifact_id in required_present and shell["tagCount"] < 1:
             plugin_errors.append("required shell tag was not observed")
+        if artifact_id in required_absent:
+            shell_requirement_checks = {"tagAbsent": shell["tagCount"] == 0}
+            if not shell_requirement_checks["tagAbsent"]:
+                plugin_errors.append("forbidden read-only direct-writer tag was observed")
+        if artifact_id in required_preversioned:
+            shell_requirement_checks = evaluate_source_preversioned(shell)
+            for key, passed in shell_requirement_checks.items():
+                if not passed:
+                    plugin_errors.append(f"source-preversioned shell check failed: {key}")
         body_markers = {
             marker: marker in shell_text
             for marker in matrix.get("requiredBodyMarkers", {}).get(artifact_id, [])
@@ -720,6 +757,7 @@ def cmd_runtime(args: argparse.Namespace) -> int:
                 "diagnostics": diagnostics_row,
                 "assetGeneration": asset_generation,
                 "shell": shell,
+                "shellRequirementChecks": shell_requirement_checks,
                 "bodyMarkers": body_markers,
                 "limitation": limitation,
                 "install": install,

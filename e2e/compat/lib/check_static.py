@@ -53,6 +53,26 @@ def main() -> int:
             "unversioned outer-owner limitations must remain limited to both "
             "audited GetAvatar order matrices",
         )
+        actual_absent = {
+            matrix["id"]: set(matrix.get("requiredAbsentArtifacts", []))
+            for matrix in matrices["matrices"]
+            if matrix.get("requiredAbsentArtifacts")
+        }
+        require(
+            actual_absent == manifest_lib.ABSENT_ARTIFACTS_BY_MATRIX,
+            "required-absent checks must remain limited to the audited read-only "
+            "direct-writer cases",
+        )
+        actual_preversioned = {
+            matrix["id"]: set(matrix.get("requiredPreVersionedArtifacts", []))
+            for matrix in matrices["matrices"]
+            if matrix.get("requiredPreVersionedArtifacts")
+        }
+        require(
+            actual_preversioned == manifest_lib.PREVERSIONED_ARTIFACTS_BY_MATRIX,
+            "source-preversioned checks must remain limited to the audited "
+            "Security/AniLiberty cases",
+        )
         require(
             locked_artifacts["actor-plus-jf10"]["plugin"]["name"] == "Actor Plus",
             "Actor Plus lock name must match the exact upstream Plugin.PluginName",
@@ -336,6 +356,41 @@ def main() -> int:
                 "missing, stamped, or duplicate outer-owner tag limitation was accepted",
             )
 
+        require(
+            all(
+                analyze_lib.evaluate_current_stamped(
+                    {"tagCount": 2, "currentStampCount": 2}
+                ).values()
+            ),
+            "two fully current generation-stamped tags were rejected",
+        )
+        for bad_shell in (
+            {"tagCount": 0, "currentStampCount": 0},
+            {"tagCount": 2, "currentStampCount": 1},
+            {"tagCount": 2, "currentStampCount": 0},
+        ):
+            require(
+                not all(analyze_lib.evaluate_current_stamped(bad_shell).values()),
+                "missing or partly stale required-stamp evidence was accepted",
+            )
+
+        valid_preversioned = analyze_lib.evaluate_source_preversioned(
+            {"tags": [{"rkv": []}], "unstampedEligibleCount": 0}
+        )
+        require(
+            all(valid_preversioned.values()),
+            "valid source-preversioned shell tag was rejected",
+        )
+        for bad_shell in (
+            {"tags": [], "unstampedEligibleCount": 0},
+            {"tags": [{"rkv": [generation]}], "unstampedEligibleCount": 0},
+            {"tags": [{"rkv": []}], "unstampedEligibleCount": 1},
+        ):
+            require(
+                not all(analyze_lib.evaluate_source_preversioned(bad_shell).values()),
+                "missing, Refresh-Kit-stamped, or unversioned source tag was accepted",
+            )
+
         negative_catalog_checks: list[str] = []
         with tempfile.TemporaryDirectory(prefix="rk-compat-lock-negative-") as temporary:
             negative_root = Path(temporary)
@@ -453,6 +508,14 @@ def main() -> int:
             "unversionedOuterLimitations": {
                 matrix_id: sorted(artifact_ids)
                 for matrix_id, artifact_ids in sorted(actual_unversioned_outer.items())
+            },
+            "requiredAbsentArtifacts": {
+                matrix_id: sorted(artifact_ids)
+                for matrix_id, artifact_ids in sorted(actual_absent.items())
+            },
+            "requiredPreVersionedArtifacts": {
+                matrix_id: sorted(artifact_ids)
+                for matrix_id, artifact_ids in sorted(actual_preversioned.items())
             },
             "allPassed": True,
         }

@@ -48,19 +48,46 @@
         "notify-sync-jf10",
         "jellyfin-tweaks-jf10"
       ],
+      "requiredBodyMarkers": {
+        "mdblist-ratings-jf10": [
+          "<!-- MDBListRatings:rating-source-icons:start -->"
+        ]
+      },
+      "configurationPatches": [
+        {
+          "artifactId": "intro-skipper-jf10",
+          "payload": {
+            "UseFileTransformationPlugin": true,
+            "SkipbuttonHideDelay": 13
+          }
+        }
+      ],
+      "contentProbes": [
+        {
+          "id": "intro-skipper-bundle",
+          "path": "/web/main.jellyfin.bundle.js",
+          "authenticated": false,
+          "markers": {
+            "intro-skipper-jf10": [
+              "false||(t.hideTimeout=setTimeout(t.hideSkipButton.bind(t),13000))",
+              ":false||this.hideTimeout||this.hideSkipButton()",
+              "isCurrentlyFocusable(document.activeElement)&&t.playbackManager.currentTime()>1000"
+            ]
+          }
+        }
+      ],
       "quarantinedAssertions": [
         "Seerr API behavior is not asserted because the lab intentionally has no external Seerr service.",
         "CDN/font delivery is represented by static hostile fixtures because the runtime network is internal-only.",
-        "Intro Skipper core-bundle behavior is represented by real load/registration plus its existing hostile bundle fixture; this shell slice does not seed playback media.",
-        "MDBList Ratings injects an inline block, so URL stamping is not applicable; load/coexistence remains required.",
+        "Intro Skipper playback behavior is not asserted because this shell slice does not seed playback media; its real configured core-bundle callback is still required.",
+        "MDBList Ratings injects an inline block, so URL stamping is not applicable; its deterministic body marker remains required.",
         "WhisperSubs is isolated in jf10-transform-whisper because File Transformation 2.5.11 selects an exact index.html pipeline ahead of a separately registered regex pipeline; combining them would silently omit WhisperSubs rather than exercise its callback."
       ],
       "service": "jf10",
       "webrootExpectation": "read-only",
       "requiredPresentArtifacts": [],
-      "requiredBodyMarkers": {},
-      "configurationPatches": [],
-      "contentProbes": []
+      "requiredAbsentArtifacts": [],
+      "requiredPreVersionedArtifacts": []
     },
     {
       "id": "jf10-transform-whisper",
@@ -83,6 +110,8 @@
       "service": "jf10",
       "webrootExpectation": "read-only",
       "requiredPresentArtifacts": [],
+      "requiredAbsentArtifacts": [],
+      "requiredPreVersionedArtifacts": [],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
       "contentProbes": []
@@ -342,6 +371,10 @@
       "service": "jf12",
       "webrootExpectation": "read-only",
       "requiredPresentArtifacts": [],
+      "requiredAbsentArtifacts": [
+        "stream-limit-jf12"
+      ],
+      "requiredPreVersionedArtifacts": [],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
       "contentProbes": []
@@ -355,7 +388,9 @@
       "cacheExpectation": "safe-degrade",
       "requiredStampedArtifacts": [],
       "requiredUnversionedOuterArtifacts": [],
-      "requiredPresentArtifacts": [
+      "requiredPresentArtifacts": [],
+      "requiredAbsentArtifacts": [],
+      "requiredPreVersionedArtifacts": [
         "jellyfin-security-jf10"
       ],
       "requiredBodyMarkers": {
@@ -398,7 +433,9 @@
       "cacheExpectation": "safe-degrade",
       "requiredStampedArtifacts": [],
       "requiredUnversionedOuterArtifacts": [],
-      "requiredPresentArtifacts": [
+      "requiredPresentArtifacts": [],
+      "requiredAbsentArtifacts": [],
+      "requiredPreVersionedArtifacts": [
         "jellyfin-security-jf10"
       ],
       "requiredBodyMarkers": {
@@ -451,6 +488,13 @@
       "requiredStampedArtifacts": [],
       "requiredUnversionedOuterArtifacts": [],
       "requiredPresentArtifacts": [],
+      "requiredAbsentArtifacts": [
+        "stream-limit-jf10",
+        "aniliberty-strm-jf10",
+        "jellyfin-tweaks-jf10",
+        "whisper-subs-jf10"
+      ],
+      "requiredPreVersionedArtifacts": [],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
       "contentProbes": [],
@@ -480,7 +524,9 @@
         "whisper-subs-jf10"
       ],
       "requiredUnversionedOuterArtifacts": [],
-      "requiredPresentArtifacts": [
+      "requiredPresentArtifacts": [],
+      "requiredAbsentArtifacts": [],
+      "requiredPreVersionedArtifacts": [
         "aniliberty-strm-jf10"
       ],
       "requiredBodyMarkers": {},

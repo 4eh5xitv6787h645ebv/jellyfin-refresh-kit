@@ -30,6 +30,20 @@ UNVERSIONED_OUTER_ARTIFACTS_BY_MATRIX = {
     "jf10-middleware-forward": {"get-avatar-jf10"},
     "jf10-middleware-reverse": {"get-avatar-jf10"},
 }
+ABSENT_ARTIFACTS_BY_MATRIX = {
+    "jf10-direct-writers-readonly": {
+        "stream-limit-jf10",
+        "aniliberty-strm-jf10",
+        "jellyfin-tweaks-jf10",
+        "whisper-subs-jf10",
+    },
+    "jf12-enhanced": {"stream-limit-jf12"},
+}
+PREVERSIONED_ARTIFACTS_BY_MATRIX = {
+    "jf10-response-transformers-forward": {"jellyfin-security-jf10"},
+    "jf10-response-transformers-reverse": {"jellyfin-security-jf10"},
+    "jf10-direct-writers-writable": {"aniliberty-strm-jf10"},
+}
 
 
 def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -119,7 +133,11 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
         if matrix.get("cacheExpectation") not in {"required", "observe", "safe-degrade"}:
             raise artifact_lib.HarnessError(f"{matrix_id}: invalid cacheExpectation")
         required = matrix.get("requiredStampedArtifacts")
-        if not isinstance(required, list) or any(artifact_id not in order for artifact_id in required):
+        if (
+            not isinstance(required, list)
+            or len(required) != len(set(required))
+            or any(artifact_id not in order for artifact_id in required)
+        ):
             raise artifact_lib.HarnessError(f"{matrix_id}: invalid requiredStampedArtifacts")
         required_unversioned = matrix.get("requiredUnversionedOuterArtifacts", [])
         if (
@@ -139,15 +157,32 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
                 f"{matrix_id}: observe-only matrix cannot require stamped artifacts"
             )
         required_present = matrix.get("requiredPresentArtifacts", [])
-        if (
-            not isinstance(required_present, list)
-            or len(required_present) != len(set(required_present))
-            or any(artifact_id not in order for artifact_id in required_present)
-        ):
-            raise artifact_lib.HarnessError(
-                f"{matrix_id}: invalid requiredPresentArtifacts"
-            )
-        for artifact_id in (*required, *required_unversioned, *required_present):
+        required_absent = matrix.get("requiredAbsentArtifacts", [])
+        required_preversioned = matrix.get("requiredPreVersionedArtifacts", [])
+        shell_requirements = {
+            "requiredStampedArtifacts": required,
+            "requiredUnversionedOuterArtifacts": required_unversioned,
+            "requiredPresentArtifacts": required_present,
+            "requiredAbsentArtifacts": required_absent,
+            "requiredPreVersionedArtifacts": required_preversioned,
+        }
+        for field, artifact_ids in shell_requirements.items():
+            if (
+                not isinstance(artifact_ids, list)
+                or len(artifact_ids) != len(set(artifact_ids))
+                or any(artifact_id not in order for artifact_id in artifact_ids)
+            ):
+                raise artifact_lib.HarnessError(f"{matrix_id}: invalid {field}")
+        requirement_owners: dict[str, str] = {}
+        for field, artifact_ids in shell_requirements.items():
+            for artifact_id in artifact_ids:
+                previous = requirement_owners.setdefault(artifact_id, field)
+                if previous != field:
+                    raise artifact_lib.HarnessError(
+                        f"{matrix_id}: {artifact_id} cannot be required by both "
+                        f"{previous} and {field}"
+                    )
+        for artifact_id in requirement_owners:
             if not artifacts[artifact_id]["shellUrlNeedles"]:
                 raise artifact_lib.HarnessError(
                     f"{matrix_id}: required shell artifact {artifact_id} has no URL matcher"
@@ -286,6 +321,28 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
             "unversioned outer-owner limitations must remain exactly the audited "
             f"GetAvatar cases; expected={UNVERSIONED_OUTER_ARTIFACTS_BY_MATRIX}, "
             f"actual={actual_unversioned_outer}"
+        )
+    actual_absent = {
+        str(matrix["id"]): set(matrix.get("requiredAbsentArtifacts", []))
+        for matrix in matrices
+        if matrix.get("requiredAbsentArtifacts")
+    }
+    if actual_absent != ABSENT_ARTIFACTS_BY_MATRIX:
+        raise artifact_lib.HarnessError(
+            "required-absent shell assertions must remain exactly the audited "
+            f"read-only direct-writer cases; expected={ABSENT_ARTIFACTS_BY_MATRIX}, "
+            f"actual={actual_absent}"
+        )
+    actual_preversioned = {
+        str(matrix["id"]): set(matrix.get("requiredPreVersionedArtifacts", []))
+        for matrix in matrices
+        if matrix.get("requiredPreVersionedArtifacts")
+    }
+    if actual_preversioned != PREVERSIONED_ARTIFACTS_BY_MATRIX:
+        raise artifact_lib.HarnessError(
+            "source-preversioned shell assertions must remain exactly the audited "
+            f"Security/AniLiberty cases; expected={PREVERSIONED_ARTIFACTS_BY_MATRIX}, "
+            f"actual={actual_preversioned}"
         )
     expected_used = {
         item["id"] for item in lock["artifacts"] if item["disposition"] == "testable"
