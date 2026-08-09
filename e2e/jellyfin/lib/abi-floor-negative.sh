@@ -178,6 +178,7 @@ for token in (
     '"public, max-age=31536000, immutable"',
     'conditional_cache = one(',
     '"Cache-Control",\n    "no-cache",',
+    ': > "${OUT}/conditional.body"',
     'conditional_body = conditional_body_path.read_bytes()',
     '"Expires",\n    "Pragma",',
     '"Content-Length"',

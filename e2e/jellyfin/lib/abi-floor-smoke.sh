@@ -441,17 +441,17 @@ PY
 }
 
 start_floor_relay() {
-    [ -n "${ABI_FLOOR_CONTAINER}" ] \
-        && [ -n "${ABI_FLOOR_NETWORK}" ] \
-        && [ -n "${ABI_FLOOR_TARGET_IP}" ] || {
+    if [ -z "${ABI_FLOOR_CONTAINER}" ] \
+        || [ -z "${ABI_FLOOR_NETWORK}" ] \
+        || [ -z "${ABI_FLOOR_TARGET_IP}" ]; then
         printf 'FATAL: ABI-floor relay target identity is incomplete\n' >&2
         return 1
-    }
-    [ ! -e "${ABI_FLOOR_RELAY_RECEIPT}" ] \
-        && [ ! -L "${ABI_FLOOR_RELAY_RECEIPT}" ] || {
+    fi
+    if [ -e "${ABI_FLOOR_RELAY_RECEIPT}" ] \
+        || [ -L "${ABI_FLOOR_RELAY_RECEIPT}" ]; then
         printf 'FATAL: ABI-floor relay receipt path is not fresh\n' >&2
         return 1
-    }
+    fi
     python3 "${ABI_FLOOR_RELAY_SCRIPT}" \
         --bind-port "${RK_ABI_FLOOR_PORT}" \
         --target-host "${ABI_FLOOR_TARGET_IP}" \

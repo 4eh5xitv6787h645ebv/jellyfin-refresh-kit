@@ -79,6 +79,10 @@ print('"rk-' + hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest(
 PY
 )"
 
+# curl does not create --output for a bodyless 304 on every supported build.
+# Pre-create the exact retained proof so absence and non-empty bytes both fail
+# deterministically in the validator below.
+: > "${OUT}/conditional.body"
 CONDITIONAL_STATUS="$(curl --silent --show-error \
     -D "${OUT}/conditional.headers" --output "${OUT}/conditional.body" \
     --write-out '%{http_code}' \
