@@ -2734,6 +2734,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 "Traceparent",
                 "Tracestate",
                 "X-Request-ID",
+                "X-Response-Time-ms",
 
                 // Replaying these as a newly generated response would repeat
                 // origin-wide browser side effects or restart a freshness clock.

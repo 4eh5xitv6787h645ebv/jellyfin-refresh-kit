@@ -89,8 +89,10 @@ class MatrixHandler(BaseHTTPRequestHandler):
             if self.headers.get("If-None-Match") == etag:
                 self.send_response(304)
                 self.send_header("ETag", etag)
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Vary", "Accept-Encoding")
+                # Directive and field-name tokens are case-insensitive. Exercise
+                # semantic comparison rather than accidentally pinning wire case.
+                self.send_header("Cache-Control", "NO-CACHE")
+                self.send_header("Vary", "accept-encoding")
                 if name == "gzip":
                     # RFC 9110 permits these optional fields when they describe
                     # the selected response, including its hypothetical length.

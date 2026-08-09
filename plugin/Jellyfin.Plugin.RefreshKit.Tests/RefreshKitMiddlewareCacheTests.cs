@@ -408,6 +408,64 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Fact]
+        public async Task PerRequestResponseTimeHeader_IsCurrentAndDoesNotEvictTheShell()
+        {
+            var invocations = 0;
+            var fullResponses = 0;
+            var conditionalResponses = 0;
+            using var application = CreateApplication(async context =>
+            {
+                const string SourceETag = "\"response-time-source\"";
+                var invocation = Interlocked.Increment(ref invocations);
+                context.Response.ContentType = "text/html; charset=utf-8";
+                context.Response.Headers["Cache-Control"] = "no-cache";
+                context.Response.Headers["ETag"] = SourceETag;
+                context.Response.Headers["X-Response-Time-ms"] = invocation.ToString();
+                if (context.Request.Headers["If-None-Match"].ToString().Contains(
+                    SourceETag,
+                    StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref conditionalResponses);
+                    context.Response.StatusCode = StatusCodes.Status304NotModified;
+                    return;
+                }
+
+                Interlocked.Increment(ref fullResponses);
+                var body = Encoding.UTF8.GetBytes(
+                    "<html><body><main>stable shell</main></body></html>");
+                context.Response.ContentLength = body.Length;
+                await context.Response.Body.WriteAsync(body).ConfigureAwait(false);
+            });
+
+            var first = await application.SendAsync(headers: new Dictionary<string, string>
+            {
+                ["Accept-Encoding"] = "identity",
+            });
+            var notModified = await application.SendAsync(headers: new Dictionary<string, string>
+            {
+                ["Accept-Encoding"] = "identity",
+                ["If-None-Match"] = first.Header("ETag"),
+            });
+            var revalidated = await application.SendAsync(headers: new Dictionary<string, string>
+            {
+                ["Accept-Encoding"] = "identity",
+            });
+
+            Assert.Equal(StatusCodes.Status304NotModified, notModified.StatusCode);
+            Assert.Empty(notModified.Body);
+            Assert.Equal(first.Header("ETag"), notModified.Header("ETag"));
+            Assert.Equal(first.Body, revalidated.Body);
+            Assert.Equal("1", first.Header("X-Response-Time-ms"));
+            Assert.Equal("2", notModified.Header("X-Response-Time-ms"));
+            Assert.Equal("3", revalidated.Header("X-Response-Time-ms"));
+            Assert.Equal("no-cache", notModified.Header("Cache-Control"));
+            Assert.Equal("no-cache", revalidated.Header("Cache-Control"));
+            Assert.Equal(3, Volatile.Read(ref invocations));
+            Assert.Equal(1, Volatile.Read(ref fullResponses));
+            Assert.Equal(2, Volatile.Read(ref conditionalResponses));
+        }
+
+        [Fact]
         public async Task ClearSiteDataIntroducedBySource304_IsDeliveredOnceAndEvictsTheBase()
         {
             var invocations = 0;
