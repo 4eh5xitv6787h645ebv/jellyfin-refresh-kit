@@ -121,8 +121,9 @@ never reported as preserving strong end-to-end validators. Its separate cache
 and browser legs still prove that respecting origin `Cache-Control` keeps users
 fresh.
 
-Both contracts also require a valid single gzip/Brotli coding (or an exact
-identity fallback), independently decodable HTML, public generation endpoints,
+Both contracts require gzip negotiation to remain encoded. Brotli must be a
+valid single coding when available and may otherwise use the exact identity
+fallback. They also require independently decodable HTML, public generation endpoints,
 agreement between `Generation` and `Generation.txt`, a non-empty `kit.js`, and a
 shell script tag stamped with the live generation. A request, decoder or header
 check that cannot be completed is a failure; the deliberately stale port 8122
