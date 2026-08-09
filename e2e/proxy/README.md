@@ -47,10 +47,10 @@ Every default port can be overridden with the corresponding variable in
 | 8120 | `rk-traefik` | Traefik v3 |
 | 8121 | `rk-haproxy` | HAProxy |
 | 8122 | `rk-nginx-cache-naive` | **adversarial**: `proxy_cache` + `proxy_ignore_headers Cache-Control` |
-| 8124 | `rk-nginx-cache-respect` | `proxy_cache` that honours the origin's `Cache-Control` |
+| 8124 | `rk-nginx-cache-respect` | freshness control: `proxy_cache` honours origin `Cache-Control`, but consumes client conditionals |
 | 8125 | `rk-nginx-subpath` | subpath: `location /jellyfin` + Jellyfin `BaseUrl=/jellyfin` |
-| 8126 | `rk-nginx-cache-fix1` | remedy 1 — the ignore-headers line removed |
-| 8127 | `rk-nginx-cache-fix2` | remedy 1 + the shell and `/RefreshKit/` exempted from the cache |
+| 8126 | `rk-nginx-cache-fix1` | remedy 1 — origin freshness restored; active nginx cache still consumes client conditionals |
+| 8127 | `rk-nginx-cache-fix2` | remedy 1 + validator-sensitive paths exempted, preserving strict 304/412 behaviour |
 
 Port 8123 is simply unassigned by this project. Credentials are `rk_admin` /
 `Test669Pw!x`; the admin token
@@ -75,17 +75,30 @@ labels:
 
 ## What each leg checks
 
-**`matrix`** (`lib/matrix.sh`, one run per proxy) — 17 or 18 assertions against
-the app shell and the kit's endpoints, depending on whether the proxy offers a
-Brotli representation: a `rk-` ETag arrives through the proxy; a matching
-`If-None-Match` gets a real `304`; a stale one gets `200`; a bad `If-Match` gets
-`412`; gzip comes back with one matching `Content-Encoding` and a decodable body
-(the double-compression trap); Brotli is either one valid `br` representation or
-an intact identity response with no content coding; each coding actually offered
-revalidates on its own representation ETag;
-`/RefreshKit/Generation`, `Generation.txt` and `kit.js` are reachable
-unauthenticated; and the shell's injected `<script>` tag carries the generation
-the endpoint is reporting right now.
+**`matrix`** (`lib/matrix.sh`) applies one of two explicit, fail-closed
+contracts. The strict contract covers the origin, the ordinary nginx/NPM/Caddy/
+Traefik/HAProxy proxies and remedy 2 (plus the subpath proxy during `subpath`). It
+requires matching identity/gzip/Brotli `If-None-Match` requests to produce a
+bodyless `304`, a bad `If-Match` to produce a bodyless, metadata-free `412`, and
+ordinary `200` responses to retain an exact complete representation, ETag,
+content coding and byte-accurate `Content-Length`.
+
+The two active-nginx-cache freshness controls (ports 8124 and 8126) use the
+`nginx-cache-suppresses-conditionals` contract. nginx does not pass a client's
+`If-None-Match`, `If-Match`, `Range` or `If-Range` fields upstream while caching
+is enabled. Matching and failing client preconditions must therefore return the
+exact complete cached `200` representation with the expected ETag, coding and
+length. Those are asserted observations, not ignored failures, and this group is
+never reported as preserving strong end-to-end validators. Its separate cache
+and browser legs still prove that respecting origin `Cache-Control` keeps users
+fresh.
+
+Both contracts also require a valid single gzip/Brotli coding (or an exact
+identity fallback), independently decodable HTML, public generation endpoints,
+agreement between `Generation` and `Generation.txt`, a non-empty `kit.js`, and a
+shell script tag stamped with the live generation. A request, decoder or header
+check that cannot be completed is a failure; the deliberately stale port 8122
+remains a positive control for `cache`, not a matrix candidate.
 
 Provisioning parks independent shell injectors for this leg, so `matrix`
 deliberately exercises Refresh Kit's ordinary final-response ownership and
@@ -119,14 +132,30 @@ password field still must.
 `POST /System/Configuration/network` (**not** `/System/Configuration`, where the
 field is silently ignored on 10.11), restarts, runs matrix + ws + e2e against
 the configured subpath port (default `8125`) at `/jellyfin`, and puts `BaseUrl`
-back.
+back. Every restart readiness request uses the active BaseUrl. A failed restart
+or readiness probe stops dependent checks, returns failure, and still attempts
+to restore both parked injectors and the empty BaseUrl.
+
+## Third-party fixture lock
+
+The Jellyfin Enhanced jf10 fixture has no independent proxy-suite version,
+URL, ABI, framework or digest default. `run.sh` and provisioning load the
+`jellyfin-enhanced-jf10` row from `../compat/ecosystem.lock.json`, currently
+version `12.2.0.0`, and reject a conflicting `RK_JE_VERSION`. The locked archive
+is downloaded to a temporary file, SHA-256 verified, atomically promoted into
+the local cache, extracted into an isolated staging directory, and only then
+installed. Provisioning replaces every older Jellyfin Enhanced plugin directory
+with the verified staged directory before restart, so a persistent test volume
+cannot accidentally load 12.1 beside 12.2.
 
 ## Requirements
 
 * Docker with the compose plugin. Images are pulled on first run.
 * Node.js matching `.node-version`, with the repository's locked packages
   installed by `npm ci`.
-* `python3` (used only to edit two JSON config blobs).
+* `python3` (lock validation, fixture metadata and two JSON config blobs), plus
+  either the `brotli` command or Python's `brotli` module when a proxy offers a
+  Brotli representation. `gzip` is required for the equivalent gzip check.
 * The repository-pinned .NET SDK. The runner builds, resolves, and verifies one
   immutable plugin snapshot before it creates Docker resources. Provisioning is
   passed that canonical directory and never re-resolves the mutable
@@ -163,6 +192,6 @@ origin is still on `/jellyfin`; `./run.sh down` removes it either way.
 | `RK_PROXY_CACHE_FIX2_PORT` | `8127` | second-remedy loopback port |
 | `RK_USER` / `RK_PASS` | `rk_admin` / `Test669Pw!x` | admin credentials |
 | `RK_BUMP_FILE` | `rk-e2e-generation.js` in the Jellyfin Enhanced plugin folder | the loose client asset whose contents are changed to move the generation |
-| `RK_JE_VERSION` | `12.1.0.0` | folder version for the downloaded Jellyfin Enhanced |
+| `RK_JE_VERSION` | lock-derived (`12.2.0.0` currently) | normally unset; if supplied it must exactly match `../compat/ecosystem.lock.json` |
 | `RK_SKIP_BUILD` | `0` | set to `1` only to reuse an explicitly selected immutable snapshot |
 | `RK_BUILD_SNAPSHOT` | unset | canonical directory directly under `plugin/.builds`; required with `RK_SKIP_BUILD=1`, verified again at the provisioning boundary |

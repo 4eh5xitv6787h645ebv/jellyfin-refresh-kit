@@ -11,7 +11,11 @@
 set -euo pipefail
 
 CONTAINER="${RK_CONTAINER:?RK_CONTAINER must be the verified project-scoped origin id}"
-JE_VERSION="${RK_JE_VERSION:-12.1.0.0}"
+JE_VERSION="${RK_JE_VERSION:?run.sh must export the ecosystem-locked Jellyfin Enhanced version}"
+if ! [[ "$JE_VERSION" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+    echo "FATAL: invalid locked Jellyfin Enhanced version: $JE_VERSION" >&2
+    exit 2
+fi
 BUMP="${RK_BUMP_FILE:-/config/plugins/Jellyfin Enhanced_${JE_VERSION}/rk-e2e-generation.js}"
 
 NAIVE="${RK_PROXY_CACHE_NAIVE_PORT:-8122}"

@@ -12,6 +12,10 @@ REPO="$(cd "$SUITE/../.." && pwd)"
 # Resolved from this script's directory at runtime.
 # shellcheck disable=SC1091
 source "$HERE/build-snapshot.sh"
+# shellcheck source=je-fixture.sh
+# Resolved from this script's directory at runtime.
+# shellcheck disable=SC1091
+source "$HERE/je-fixture.sh"
 
 ORIGIN="${RK_ORIGIN:-http://127.0.0.1:8116}"
 CONTAINER="${RK_CONTAINER:?RK_CONTAINER must be the verified project-scoped origin id}"
@@ -30,6 +34,7 @@ AUTH_NO_TOKEN='Authorization: MediaBrowser Client="t", Device="t", DeviceId="t",
 # this process boundary so invoking provision.sh directly cannot fall back to
 # the mutable plugin/build symlink or copy unverified package metadata.
 rk_proxy_require_pinned_build_snapshot "$REPO"
+rk_proxy_load_je_fixture "$REPO"
 BUILD_SNAPSHOT="$RK_BUILD_SNAPSHOT"
 STAGE="$BUILD_SNAPSHOT/stage"
 
@@ -67,11 +72,26 @@ docker cp "$STAGE/meta.json"                      "$CONTAINER:/config/plugins/Je
 
 # ── a real web-injecting third-party plugin, so the rig is not a lab vacuum ──
 JE_DIR="$SUITE/.je"
-JE_VERSION="12.1.0.0"
-JE_URL="https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.1.0.0/Jellyfin.Plugin.JellyfinEnhanced_10.11.0.zip"
-JE_SHA256="ef27604cb7711ade70a2ea659db1528fdbda9420b98d259a4f404b135079a24b"
-JE_ARCHIVE="$JE_DIR/Jellyfin.Plugin.JellyfinEnhanced_10.11.0.zip"
-JE_PART="$JE_ARCHIVE.part"
+JE_VERSION="$RK_PROXY_JE_VERSION"
+JE_URL="$RK_PROXY_JE_URL"
+JE_SHA256="$RK_PROXY_JE_SHA256"
+JE_ARCHIVE="$JE_DIR/$RK_PROXY_JE_ARCHIVE_NAME"
+JE_ASSEMBLY="$RK_PROXY_JE_ASSEMBLY"
+JE_PART=''
+JE_EXTRACT_DIR=''
+
+cleanup_je_fixture() {
+    if [ -n "$JE_PART" ]; then
+        rm -f -- "$JE_PART"
+    fi
+    if [ -n "$JE_EXTRACT_DIR" ]; then
+        case "$JE_EXTRACT_DIR" in
+            "$JE_DIR"/.extract.*) rm -rf -- "$JE_EXTRACT_DIR" ;;
+            *) echo "FATAL: refusing unexpected fixture cleanup path: $JE_EXTRACT_DIR" >&2 ;;
+        esac
+    fi
+}
+trap cleanup_je_fixture EXIT
 
 mkdir -p "$JE_DIR"
 archive_sha256() {
@@ -85,7 +105,7 @@ PY
 
 if [ ! -f "$JE_ARCHIVE" ] || [ "$(archive_sha256 "$JE_ARCHIVE")" != "$JE_SHA256" ]; then
     echo "==> downloading pinned Jellyfin Enhanced $JE_VERSION fixture"
-    rm -f -- "$JE_PART"
+    JE_PART="$(mktemp "$JE_DIR/${RK_PROXY_JE_ARCHIVE_NAME}.part.XXXXXX")"
     curl --fail --show-error --silent --location -o "$JE_PART" "$JE_URL"
     ACTUAL_JE_SHA256="$(archive_sha256 "$JE_PART")"
     if [ "$ACTUAL_JE_SHA256" != "$JE_SHA256" ]; then
@@ -94,6 +114,7 @@ if [ ! -f "$JE_ARCHIVE" ] || [ "$(archive_sha256 "$JE_ARCHIVE")" != "$JE_SHA256"
         exit 1
     fi
     mv -- "$JE_PART" "$JE_ARCHIVE"
+    JE_PART=''
 fi
 
 ACTUAL_JE_SHA256="$(archive_sha256 "$JE_ARCHIVE")"
@@ -102,23 +123,29 @@ ACTUAL_JE_SHA256="$(archive_sha256 "$JE_ARCHIVE")"
     exit 1
 }
 echo "==> extracting verified Jellyfin Enhanced $JE_VERSION fixture"
-unzip -oq "$JE_ARCHIVE" -d "$JE_DIR"
+JE_EXTRACT_DIR="$(mktemp -d "$JE_DIR/.extract.XXXXXX")"
+unzip -oq "$JE_ARCHIVE" -d "$JE_EXTRACT_DIR"
+[ -f "$JE_EXTRACT_DIR/$JE_ASSEMBLY" ] || {
+    echo "FATAL: locked Jellyfin Enhanced archive has no $JE_ASSEMBLY" >&2
+    exit 1
+}
 
 # The fixture zip ships the DLL alone; the loader also needs meta.json.
-python3 - "$JE_DIR/meta.json" "$JE_VERSION" <<'PY'
+python3 - "$JE_EXTRACT_DIR/meta.json" "$JE_VERSION" "$RK_PROXY_JE_GUID" \
+    "$RK_PROXY_JE_NAME" "$RK_PROXY_JE_TARGET_ABI" "$RK_PROXY_JE_FRAMEWORK" <<'PY'
 import json
 import sys
 
-path, version = sys.argv[1:]
+path, version, guid, name, target_abi, framework = sys.argv[1:]
 metadata = {
     "category": "General",
-    "guid": "f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b",
-    "name": "Jellyfin Enhanced",
-    "overview": "Jellyfin Enhanced",
-    "description": "Jellyfin Enhanced",
+    "guid": guid,
+    "name": name,
+    "overview": name,
+    "description": name,
     "owner": "n00bcodr",
-    "targetAbi": "10.11.0.0",
-    "framework": "net8.0",
+    "targetAbi": target_abi,
+    "framework": framework,
     "version": version,
     "changelog": "",
     "timestamp": "2026-01-01T00:00:00Z",
@@ -131,9 +158,25 @@ with open(path, "w", encoding="utf-8", newline="\n") as handle:
     handle.write("\n")
 PY
 echo "==> installing Jellyfin Enhanced $JE_VERSION"
-docker exec "$CONTAINER" mkdir -p "/config/plugins/Jellyfin Enhanced_${JE_VERSION}"
-docker cp "$JE_DIR/Jellyfin.Plugin.JellyfinEnhanced.dll" "$CONTAINER:/config/plugins/Jellyfin Enhanced_${JE_VERSION}/"
-docker cp "$JE_DIR/meta.json"                            "$CONTAINER:/config/plugins/Jellyfin Enhanced_${JE_VERSION}/"
+JE_CONTAINER_STAGE="/config/plugins/.rk-je-${JE_VERSION}.part"
+JE_CONTAINER_TARGET="/config/plugins/Jellyfin Enhanced_${JE_VERSION}"
+docker exec "$CONTAINER" rm -rf -- "$JE_CONTAINER_STAGE"
+docker exec "$CONTAINER" mkdir -p "$JE_CONTAINER_STAGE"
+docker cp "$JE_EXTRACT_DIR/$JE_ASSEMBLY" "$CONTAINER:$JE_CONTAINER_STAGE/"
+docker cp "$JE_EXTRACT_DIR/meta.json" "$CONTAINER:$JE_CONTAINER_STAGE/"
+docker exec "$CONTAINER" sh -c '
+    set -eu
+    stage="$1"
+    target="$2"
+    assembly="$3"
+    [ -f "$stage/$assembly" ]
+    [ -f "$stage/meta.json" ]
+    for directory in "/config/plugins/Jellyfin Enhanced_"*; do
+        [ -d "$directory" ] || continue
+        rm -rf -- "$directory"
+    done
+    mv -- "$stage" "$target"
+' sh "$JE_CONTAINER_STAGE" "$JE_CONTAINER_TARGET" "$JE_ASSEMBLY"
 
 docker restart "$CONTAINER" >/dev/null
 wait_for "$ORIGIN/RefreshKit/Generation" 120 >/dev/null

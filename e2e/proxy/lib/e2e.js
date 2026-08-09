@@ -19,7 +19,10 @@ if (!/^[/a-zA-Z0-9_.-]+$/.test(CONTAINER || '')) {
 // models a live JS/CSS deployment and remains meaningful when binary identity is
 // correctly tied to the assembly loaded in the current server process (merely
 // touching or staging a DLL must not publish an update before restart).
-const JE_VERSION = process.env.RK_JE_VERSION || '12.1.0.0';
+const JE_VERSION = process.env.RK_JE_VERSION;
+if (!/^\d+(?:\.\d+){3}$/.test(JE_VERSION || '')) {
+  throw new Error('RK_JE_VERSION must be the four-part ecosystem-locked Jellyfin Enhanced version exported by run.sh');
+}
 const BUMP = process.env.RK_BUMP_FILE || `/config/plugins/Jellyfin Enhanced_${JE_VERSION}/rk-e2e-generation.js`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
