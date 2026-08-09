@@ -938,7 +938,7 @@ class AbiFloorEvidenceTests(unittest.TestCase):
             abi_floor.self_test()
         match = re.search(r"([0-9]+)/\1 PASS", output.getvalue())
         self.assertIsNotNone(match)
-        self.assertGreaterEqual(int(match.group(1)), 38)
+        self.assertGreaterEqual(int(match.group(1)), 56)
 
     def test_collector_redaction_preserves_nonanonymous_strict_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1033,6 +1033,7 @@ class AbiFloorEvidenceTests(unittest.TestCase):
     def test_collector_release_inventory_and_runner_wiring_are_explicit(self) -> None:
         expected_json = {
             "abi-floor/result.json",
+            "abi-floor/relay.json",
             "abi-floor/server/result.json",
             "abi-floor/server/public.json",
             "abi-floor/server/generation.json",
@@ -1074,7 +1075,9 @@ class AbiFloorEvidenceTests(unittest.TestCase):
         self.assertIn('--log "abi-floor=${abi_floor_log}"', runner)
         compose = (ROOT / "e2e/jellyfin/docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn('profiles: ["abi-floor"]', compose)
-        self.assertIn("127.0.0.1:${RK_ABI_FLOOR_PORT:-18119}:8096", compose)
+        abi_service = compose.split("  abi-floor:\n", 1)[1].split("\n  host-upgrade:\n", 1)[0]
+        self.assertNotIn("ports:", abi_service)
+        self.assertNotIn("RK_ABI_FLOOR_PORT", abi_service)
         self.assertIn("abi-floor-internal:", compose)
         self.assertIn("internal: true", compose)
         self.assertIn(abi_floor.IMAGE_REFERENCE, compose)

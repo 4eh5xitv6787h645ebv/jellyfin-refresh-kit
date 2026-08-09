@@ -35,6 +35,7 @@ INTEGRATION_JSON = (
     "compat-jf10-on-jf12/plugin-record.json",
     "compat-jf10-on-jf12/public.json",
     "abi-floor/result.json",
+    "abi-floor/relay.json",
     "abi-floor/server/result.json",
     "abi-floor/server/public.json",
     "abi-floor/server/generation.json",

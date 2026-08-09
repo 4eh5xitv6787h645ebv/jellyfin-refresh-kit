@@ -43,6 +43,7 @@ REQUIRED_EXIT_STATUS = {
 }
 REQUIRED_COLLECTED = {
     "lab/abi-floor/result.json",
+    "lab/abi-floor/relay.json",
     "lab/abi-floor/server/result.json",
     "lab/abi-floor/server/public.json",
     "lab/abi-floor/server/generation.json",

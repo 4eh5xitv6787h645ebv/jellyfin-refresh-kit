@@ -51,12 +51,12 @@ services:
 
   # The advertised Jellyfin 10.11.x floor is exercised independently from the
   # current-host and in-place-upgrade labs so it cannot reuse their state or
-  # accidentally pass on their newer server image.
+  # accidentally pass on their newer server image. It intentionally has no
+  # published port: Docker suppresses publishing for an internal-only network.
+  # The runner provides a bounded host-loopback relay to the verified endpoint.
   abi-floor:
     image: ${RK_ABI_FLOOR_IMAGE:-jellyfin/jellyfin:10.11.0@sha256:59417f441213e236a9f907d4e71a13472042409d85f9e9310dbdd87ee33d7bd4}
     profiles: ["abi-floor"]
-    ports:
-      - "127.0.0.1:${RK_ABI_FLOOR_PORT:-18119}:8096"
     volumes:
       - abi-floor-config:/config
       - abi-floor-cache:/cache

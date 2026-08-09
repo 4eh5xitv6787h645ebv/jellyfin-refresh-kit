@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import copy
+import datetime
 import hashlib
+import ipaddress
 import json
 import pathlib
 import re
@@ -20,8 +22,12 @@ IMAGE_DIGEST = "59417f441213e236a9f907d4e71a13472042409d85f9e9310dbdd87ee33d7bd4
 IMAGE_REFERENCE = f"jellyfin/jellyfin:10.11.0@sha256:{IMAGE_DIGEST}"
 PLUGIN_GUID = "515255fe333249b0b4710be58c8221d8"
 SCENARIO = "jellyfin-10.11.0-abi-floor"
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+RELAY_IMPLEMENTATION = REPO_ROOT / "e2e" / "jellyfin" / "lib" / "abi-floor-relay.py"
+RELAY_IMPLEMENTATION_PATH = "e2e/jellyfin/lib/abi-floor-relay.py"
 REQUIRED_FILES = (
     "result.json",
+    "relay.json",
     "server/result.json",
     "server/public.json",
     "server/generation.json",
@@ -440,14 +446,10 @@ def validate_container(value: Any) -> None:
             and labels.get("com.docker.compose.project") == project
             and labels.get("com.docker.compose.service") == "abi-floor",
             "ABI-floor container labels differ")
-    binding = value.get("portBinding")
-    require(isinstance(binding, dict)
-            and binding.get("containerPort") == "8096/tcp"
-            and binding.get("hostIp") == "127.0.0.1"
-            and isinstance(binding.get("hostPort"), str)
-            and re.fullmatch(r"[1-9][0-9]{3,4}", binding["hostPort"])
-            and 1024 <= int(binding["hostPort"]) <= 65535,
-            "ABI-floor service is not bound to one safe loopback port")
+    require("portBinding" not in value
+            and value.get("publishedPorts") == []
+            and value.get("publishAllPorts") is False,
+            "ABI-floor service must have zero Docker-published ports")
     volumes = value.get("volumes")
     require(isinstance(volumes, list) and len(volumes) == 2
             and all(isinstance(row, dict) for row in volumes),
@@ -476,11 +478,104 @@ def validate_container(value: Any) -> None:
             and network.get("attachedContainerIds") == [container_id]
             and network.get("internal") is True,
             "ABI-floor service is not attached to one dedicated internal network")
+    address = network.get("ipv4Address")
+    prefix = network.get("prefixLength")
+    try:
+        parsed_address = ipaddress.ip_address(address) if isinstance(address, str) else None
+    except ValueError as error:
+        raise AbiFloorEvidenceError(
+            f"ABI-floor internal endpoint address is invalid: {error}"
+        ) from error
+    require(isinstance(address, str)
+            and isinstance(parsed_address, ipaddress.IPv4Address)
+            and str(parsed_address) == address
+            and parsed_address.is_private
+            and not parsed_address.is_loopback
+            and not parsed_address.is_link_local
+            and not parsed_address.is_multicast
+            and not parsed_address.is_unspecified
+            and not parsed_address.is_reserved
+            and isinstance(prefix, int) and not isinstance(prefix, bool)
+            and 1 <= prefix <= 32,
+            "ABI-floor internal endpoint is not an exact private IPv4 address")
     network_labels = network.get("labels")
     require(isinstance(network_labels, dict)
             and network_labels.get("com.docker.compose.project") == project
             and network_labels.get("com.docker.compose.network") == "abi-floor-internal",
             "ABI-floor internal-network labels differ")
+
+
+def validate_relay(value: Any, container: Any) -> None:
+    require(isinstance(value, dict), "ABI-floor host-loopback relay evidence is missing")
+    require(isinstance(container, dict), "ABI-floor relay has no container identity")
+    require(value.get("schemaVersion") == 1
+            and value.get("transport") == "host-loopback-tcp-relay"
+            and value.get("ready") is True
+            and value.get("completed") is True,
+            "ABI-floor relay lifecycle evidence differs")
+    implementation = value.get("implementation")
+    require(RELAY_IMPLEMENTATION.is_file(), "ABI-floor relay implementation is missing")
+    require(implementation == {
+        "path": RELAY_IMPLEMENTATION_PATH,
+        "sha256": file_hash(RELAY_IMPLEMENTATION),
+    }, "ABI-floor relay implementation identity differs")
+    require(value.get("limits") == {
+        "maxActiveConnections": 32,
+        "maxBufferedBytesPerDirection": 262144,
+    }, "ABI-floor relay resource limits differ")
+    process_id = value.get("processId")
+    require(isinstance(process_id, int) and not isinstance(process_id, bool) and process_id > 1,
+            "ABI-floor relay process identity is invalid")
+    binding = value.get("bind")
+    require(isinstance(binding, dict)
+            and binding.get("host") == "127.0.0.1"
+            and isinstance(binding.get("port"), int)
+            and not isinstance(binding.get("port"), bool)
+            and 1024 <= binding["port"] <= 65535,
+            "ABI-floor relay is not bound to one safe IPv4 loopback port")
+    network = container.get("network")
+    target = value.get("target")
+    require(isinstance(network, dict) and target == {
+        "host": network.get("ipv4Address"),
+        "port": 8096,
+        "containerId": container.get("id"),
+        "network": network.get("name"),
+    }, "ABI-floor relay target is not the retained internal-network endpoint")
+    started, finished = value.get("startedUtc"), value.get("finishedUtc")
+    require(isinstance(started, str) and UTC_TIMESTAMP.fullmatch(started) is not None
+            and isinstance(finished, str) and UTC_TIMESTAMP.fullmatch(finished) is not None,
+            "ABI-floor relay timestamps are invalid")
+    try:
+        started_time = datetime.datetime.fromisoformat(started.replace("Z", "+00:00"))
+        finished_time = datetime.datetime.fromisoformat(finished.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AbiFloorEvidenceError(f"ABI-floor relay timestamp is invalid: {error}") from error
+    require(finished_time >= started_time, "ABI-floor relay finished before it started")
+    counters = value.get("counters")
+    names = {
+        "connectionsAccepted",
+        "connectionsRejected",
+        "targetConnectionsSucceeded",
+        "targetConnectionsFailed",
+        "connectionsCompleted",
+        "bytesClientToTarget",
+        "bytesTargetToClient",
+        "peakBufferedBytes",
+    }
+    require(isinstance(counters, dict) and set(counters) == names
+            and all(isinstance(counters[name], int)
+                    and not isinstance(counters[name], bool)
+                    and counters[name] >= 0 for name in names),
+            "ABI-floor relay counters are malformed")
+    require(counters["connectionsAccepted"] > 0
+            and counters["connectionsRejected"] == 0
+            and counters["targetConnectionsFailed"] == 0
+            and counters["targetConnectionsSucceeded"] == counters["connectionsAccepted"]
+            and counters["connectionsCompleted"] == counters["connectionsAccepted"]
+            and counters["bytesClientToTarget"] > 0
+            and counters["bytesTargetToClient"] > 0
+            and 0 < counters["peakBufferedBytes"] <= 262144,
+            "ABI-floor relay did not carry the exact fail-closed host-origin exchange")
 
 
 def validate_evidence(root: pathlib.Path, build: pathlib.Path) -> None:
@@ -497,6 +592,7 @@ def validate_evidence(root: pathlib.Path, build: pathlib.Path) -> None:
             f"missing={sorted(set(REQUIRED_FILES)-actual)}, "
             f"unexpected={sorted(actual-set(REQUIRED_FILES))}")
     result = load_object(root / "result.json")
+    relay = load_object(root / "relay.json")
     server = load_object(root / "server" / "result.json")
     public = load_object(root / "server" / "public.json")
     generation = load_object(root / "server" / "generation.json")
@@ -511,7 +607,7 @@ def validate_evidence(root: pathlib.Path, build: pathlib.Path) -> None:
     shell = load_text(root / "server" / "index.html")
     log = load_text(root / "server.log")
 
-    require(result.get("schemaVersion") == 1 and result.get("scenario") == SCENARIO,
+    require(result.get("schemaVersion") == 2 and result.get("scenario") == SCENARIO,
             "ABI-floor result schema/scenario differs")
     require(result.get("completed") is True and result.get("failures") == [],
             "ABI-floor result did not complete cleanly")
@@ -550,6 +646,11 @@ def validate_evidence(root: pathlib.Path, build: pathlib.Path) -> None:
                     for row in image["repoDigests"]),
             "ABI-floor exact image identity differs")
     validate_container(result.get("container"))
+    validate_relay(relay, result.get("container"))
+    require(result.get("relay") == relay,
+            "ABI-floor normalized relay does not match its retained receipt")
+    require(result.get("hostOrigin") == f"http://127.0.0.1:{relay['bind']['port']}",
+            "ABI-floor host-origin identity does not match the retained loopback relay")
 
     managed = stage["managedIdentity"]
     require(field(public, "Version") == "10.11.0"
@@ -904,8 +1005,42 @@ def fixture(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
             "sha256": file_hash(package),
         },
     }
-    result = {
+    relay = {
         "schemaVersion": 1,
+        "transport": "host-loopback-tcp-relay",
+        "implementation": {
+            "path": RELAY_IMPLEMENTATION_PATH,
+            "sha256": file_hash(RELAY_IMPLEMENTATION),
+        },
+        "limits": {
+            "maxActiveConnections": 32,
+            "maxBufferedBytesPerDirection": 262144,
+        },
+        "processId": 12345,
+        "bind": {"host": "127.0.0.1", "port": 18119},
+        "target": {
+            "host": "172.30.0.2",
+            "port": 8096,
+            "containerId": "a" * 64,
+            "network": "rk-jellyfin-fixture_abi-floor-internal",
+        },
+        "ready": True,
+        "completed": True,
+        "startedUtc": "2026-08-09T01:01:00Z",
+        "finishedUtc": "2026-08-09T01:02:00Z",
+        "counters": {
+            "connectionsAccepted": 12,
+            "connectionsRejected": 0,
+            "targetConnectionsSucceeded": 12,
+            "targetConnectionsFailed": 0,
+            "connectionsCompleted": 12,
+            "bytesClientToTarget": 4096,
+            "bytesTargetToClient": 65536,
+            "peakBufferedBytes": 32768,
+        },
+    }
+    result = {
+        "schemaVersion": 2,
         "scenario": SCENARIO,
         "completed": True,
         "failures": [],
@@ -934,11 +1069,8 @@ def fixture(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
                 "com.docker.compose.project": "rk-jellyfin-fixture",
                 "com.docker.compose.service": "abi-floor",
             },
-            "portBinding": {
-                "containerPort": "8096/tcp",
-                "hostIp": "127.0.0.1",
-                "hostPort": "18119",
-            },
+            "publishedPorts": [],
+            "publishAllPorts": False,
             "volumes": [
                 {
                     "destination": "/cache",
@@ -965,6 +1097,8 @@ def fixture(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
                 "name": "rk-jellyfin-fixture_abi-floor-internal",
                 "id": "f" * 64,
                 "endpointId": "1" * 64,
+                "ipv4Address": "172.30.0.2",
+                "prefixLength": 16,
                 "attachedContainerIds": ["a" * 64],
                 "internal": True,
                 "labels": {
@@ -973,6 +1107,8 @@ def fixture(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
                 },
             },
         },
+        "hostOrigin": "http://127.0.0.1:18119",
+        "relay": relay,
         "server": server,
         "generation": generation,
         "plugin": plugin,
@@ -985,6 +1121,7 @@ def fixture(root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
     }
     for name, value in (
         ("result.json", result),
+        ("relay.json", relay),
         ("server/result.json", server),
         ("server/public.json", {"Version": "10.11.0"}),
         ("server/generation.json", generation),
@@ -1063,6 +1200,8 @@ def self_test() -> None:
             ("result.json", ("immutableSnapshot",), "stale"),
             ("result.json", ("stage", "containerDll", "sha256"), "0" * 64),
             ("result.json", ("stage", "managedIdentity", "buildId"), "1" * 64),
+            ("result.json", ("container", "publishedPorts"), ["8096/tcp"]),
+            ("result.json", ("hostOrigin",), "http://172.30.0.2:8096"),
             ("result.json", ("container", "volumes", 0, "name"), "foreign_cache"),
             (
                 "result.json",
@@ -1080,6 +1219,12 @@ def self_test() -> None:
                 "result.json",
                 ("container", "network", "labels", "com.docker.compose.network"),
                 "default",
+            ),
+            ("result.json", ("relay", "target", "host"), "172.30.0.3"),
+            (
+                "result.json",
+                ("relay", "limits", "maxActiveConnections"),
+                1024,
             ),
             ("result.json", ("logChecks", "assemblyLoadMatches"), 2),
             ("server/result.json", ("serverVersion",), "10.11.1"),
@@ -1135,10 +1280,30 @@ def self_test() -> None:
         log_path.write_text(clean_log, encoding="utf-8")
 
         result_path = evidence / "result.json"
+        relay_path = evidence / "relay.json"
         result = load_object(result_path)
+        relay = load_object(relay_path)
         changed_result = copy.deepcopy(result)
-        changed_result["container"]["portBinding"]["hostIp"] = "0.0.0.0"
+        changed_result["container"]["portBinding"] = {
+            "containerPort": "8096/tcp",
+            "hostIp": "127.0.0.1",
+            "hostPort": "18119",
+        }
         result_path.write_text(json.dumps(changed_result), encoding="utf-8")
+        try:
+            validate_evidence(evidence, build)
+        except AbiFloorEvidenceError:
+            checks += 1
+        else:
+            raise AssertionError("ABI-floor validator accepted a legacy Docker port binding")
+        result_path.write_text(json.dumps(result), encoding="utf-8")
+
+        changed_result = copy.deepcopy(result)
+        changed_relay = copy.deepcopy(relay)
+        changed_result["relay"]["bind"]["host"] = "0.0.0.0"
+        changed_relay["bind"]["host"] = "0.0.0.0"
+        result_path.write_text(json.dumps(changed_result), encoding="utf-8")
+        relay_path.write_text(json.dumps(changed_relay), encoding="utf-8")
         try:
             validate_evidence(evidence, build)
         except AbiFloorEvidenceError:
@@ -1146,6 +1311,53 @@ def self_test() -> None:
         else:
             raise AssertionError("ABI-floor validator accepted a non-loopback binding")
         result_path.write_text(json.dumps(result), encoding="utf-8")
+        relay_path.write_text(json.dumps(relay), encoding="utf-8")
+
+        changed_result = copy.deepcopy(result)
+        changed_relay = copy.deepcopy(relay)
+        changed_result["relay"]["counters"]["targetConnectionsFailed"] = 1
+        changed_relay["counters"]["targetConnectionsFailed"] = 1
+        result_path.write_text(json.dumps(changed_result), encoding="utf-8")
+        relay_path.write_text(json.dumps(changed_relay), encoding="utf-8")
+        try:
+            validate_evidence(evidence, build)
+        except AbiFloorEvidenceError:
+            checks += 1
+        else:
+            raise AssertionError("ABI-floor validator accepted a relay target failure")
+        result_path.write_text(json.dumps(result), encoding="utf-8")
+        relay_path.write_text(json.dumps(relay), encoding="utf-8")
+
+        mirrored_relay_mutations = (
+            (("implementation", "sha256"), "0" * 64, "changed relay implementation"),
+            (("target", "host"), "172.30.0.3", "changed relay endpoint"),
+            (("target", "containerId"), "b" * 64, "changed relay container"),
+            (("target", "network"), "rk-jellyfin-foreign", "changed relay network"),
+            (("completed",), False, "incomplete relay"),
+            (("finishedUtc",), "2026-08-09T01:00:00Z", "reversed relay timestamps"),
+            (("limits", "maxActiveConnections"), 1024, "unbounded relay admission"),
+            (("counters", "connectionsAccepted"), 13, "incoherent relay counters"),
+            (("counters", "connectionsRejected"), 1, "relay overflow"),
+            (("counters", "peakBufferedBytes"), 262145, "relay buffer overflow"),
+        )
+        for keys, changed, label in mirrored_relay_mutations:
+            changed_result = copy.deepcopy(result)
+            changed_relay = copy.deepcopy(relay)
+            for document in (changed_result["relay"], changed_relay):
+                target = document
+                for key in keys[:-1]:
+                    target = target[key]
+                target[keys[-1]] = changed
+            result_path.write_text(json.dumps(changed_result), encoding="utf-8")
+            relay_path.write_text(json.dumps(changed_relay), encoding="utf-8")
+            try:
+                validate_evidence(evidence, build)
+            except AbiFloorEvidenceError:
+                checks += 1
+            else:
+                raise AssertionError(f"ABI-floor validator accepted {label}")
+            result_path.write_text(json.dumps(result), encoding="utf-8")
+            relay_path.write_text(json.dumps(relay), encoding="utf-8")
 
         changed_result = copy.deepcopy(result)
         changed_result["container"]["network"]["internal"] = False

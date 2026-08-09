@@ -8,14 +8,17 @@ This lab provisions independent, project-scoped instances of:
 - Jellyfin **12.0.0-rc4** (published image tag `12.0-rc4`) with the Refresh Kit `net10.0` package
 
 All Jellyfin container images are pinned by digest in `docker-compose.yml`.
-Ports bind only to loopback (`127.0.0.1:18119`, `127.0.0.1:18116`, and
-`127.0.0.1:18117` by default), and each run resolves one verified immutable
-plugin-build snapshot before copying any files. The lifecycle-only repository
-helper image is digest-pinned as well.
+The ordinary lab ports bind only to loopback (`127.0.0.1:18116` and
+`127.0.0.1:18117` by default). The ABI-floor container has no published port;
+its runner temporarily binds a host relay to `127.0.0.1:18119`. Each run
+resolves one verified immutable plugin-build snapshot before copying any files.
+The lifecycle-only repository helper image is digest-pinned as well.
 
 ## Prerequisites
 
 - Docker with Docker Compose v2
+- the ABI-floor live smoke requires a rootful Linux Docker Engine whose host can
+  route to its local internal bridge (the no-Docker negative gate has no such requirement)
 - Node.js 20 or newer and the repository dependencies installed with `npm ci`
 - the repository-pinned .NET SDK from `global.json`
 - Bash, curl, Python 3, SHA-256 utilities, and GNU `timeout`
@@ -139,12 +142,20 @@ The `compat` command is a deliberately bounded ABI experiment: it installs the J
 
 `abi-floor` is deliberately separate from the current Jellyfin 10 lifecycle and
 the in-place host-upgrade scenarios. Its profile-only service owns a dedicated
-internal Compose network, loopback port, token, config/cache volumes, and
-`artifacts/abi-floor/` tree. The
+internal Compose network, token, config/cache volumes, and
+`artifacts/abi-floor/` tree. Docker does not publish a port for a container
+attached only to an `internal: true` bridge, so the service deliberately requests
+no Docker port binding. Instead, a bounded Python relay owned by the runner binds
+only `127.0.0.1:${RK_ABI_FLOOR_PORT}` and forwards to port 8096 at the exact
+private IPv4 endpoint retained by Docker for that container and network. This is
+not an arbitrary container-IP fallback: the runner cross-checks the endpoint
+against the sole network member, container ID, endpoint ID, prefix, network ID,
+and Compose labels before the relay starts. The
 runner refuses foreign or ambiguously labelled resources, then resets only the
 two exact project-qualified ABI-floor volumes. The live container must retain
 those exact read/write mounts, the exact internal network name/labels, and the
-same image ID resolved from the digest-pinned reference.
+same image ID resolved from the digest-pinned reference, with both requested and
+effective published-port inventories empty.
 
 The smoke installs the verified immutable snapshot's `net9.0` stage on the exact
 10.11.0 image. Success requires server version `10.11.0`, the candidate plugin
@@ -159,8 +170,13 @@ shape. Exact scoped log lines prove one assembly and plugin load with no scoped
 warning/error. Raw anonymous HTTP proof is copied byte-for-byte only after a
 fail-closed credential scan; authenticated diagnostics/inventory and the
 sanitized server log remain separately retained. `scripts/abi_floor_evidence.py`
-cross-checks all of it against the same snapshot's stage metadata, DLL, MVID,
-and package bytes. The no-Docker negative command and validator mutation suite
+also cross-checks the relay's loopback bind, fixed target, implementation hash,
+parent-scoped lifecycle, connection/buffer limits, zero rejections or target
+failures, coherent traffic counters, and atomic completion receipt against the
+same internal-network evidence. Bootstrap traffic is finalized separately, then
+the stable endpoint/shell checks use a fresh retained relay receipt. The validator
+cross-checks all proof against the same snapshot's stage metadata, DLL, MVID, and
+package bytes. The no-Docker negative command and validator mutation suite
 fail unless every mismatch is rejected. This describes the proof contract; a
 passing live result must come from an actual `abi-floor` run and is not inferred
 from the harness itself.
@@ -247,6 +263,9 @@ The default credentials are disposable lab credentials. Access tokens are writte
 Structured results, redacted network/console/WebSocket captures, screenshots,
 and selected server evidence are written below `artifacts/`; tokens remain below
 `.state/`. ABI-floor evidence is isolated at `artifacts/abi-floor/`.
+The ABI-floor relay is a child of the foreground smoke command, stops before
+successful evidence is finalized, and also has shell-exit and Linux parent-death
+cleanup; cleanup commands never search for or signal unrelated host processes.
 Host-upgrade results are kept separately at
 `artifacts/host-upgrade/jf10/result.json` and
 `artifacts/host-upgrade/jf12/result.json`, with

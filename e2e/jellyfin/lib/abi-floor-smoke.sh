@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Isolated exact Jellyfin 10.11.0 load smoke for the declared net9 ABI floor.
-# It owns a profile-only service, loopback port, volumes, token, and artifact tree.
+# It owns a profile-only service, host-loopback relay, volumes, token, and artifact tree.
 
 set -euo pipefail
 umask 077
@@ -17,8 +17,13 @@ ABI_FLOOR_SERVICE='abi-floor'
 ABI_FLOOR_OUT="${RK_ARTIFACT_DIR}/abi-floor"
 ABI_FLOOR_RESULT="${ABI_FLOOR_OUT}/result.json"
 ABI_FLOOR_TOKEN="$(rk_token_file abi-floor)"
+ABI_FLOOR_RELAY_SCRIPT="${ABI_FLOOR_HERE}/abi-floor-relay.py"
+ABI_FLOOR_RELAY_RECEIPT="${ABI_FLOOR_OUT}/relay.json"
 ABI_FLOOR_CONTAINER=''
 ABI_FLOOR_REFERENCE_IMAGE_ID=''
+ABI_FLOOR_NETWORK=''
+ABI_FLOOR_TARGET_IP=''
+ABI_FLOOR_RELAY_PID=''
 
 abi_floor_compose() {
     RK_ABI_FLOOR_IMAGE="${ABI_FLOOR_IMAGE}" rk_compose --profile abi-floor "$@"
@@ -47,13 +52,39 @@ validate_runtime_controls() {
     }
 }
 
+validate_relay_host() {
+    [ "$(uname -s)" = "Linux" ] || {
+        printf 'FATAL: ABI-floor host relay requires Linux\n' >&2
+        return 1
+    }
+    local os_type operating_system security
+    os_type="$(docker info --format '{{.OSType}}')" || return $?
+    operating_system="$(docker info --format '{{.OperatingSystem}}')" || return $?
+    security="$(docker info --format '{{json .SecurityOptions}}')" || return $?
+    python3 - "${os_type}" "${operating_system}" "${security}" <<'PY'
+import json
+import sys
+
+os_type, operating_system, security_raw = sys.argv[1:]
+security = json.loads(security_raw)
+if os_type.lower() != "linux":
+    raise SystemExit("FATAL: ABI-floor host relay requires a Linux Docker Engine")
+if not isinstance(security, list) or any("rootless" in str(row).lower() for row in security):
+    raise SystemExit("FATAL: ABI-floor host relay requires a rootful Docker Engine")
+if "docker desktop" in operating_system.lower():
+    raise SystemExit("FATAL: ABI-floor host relay requires a local native Linux Docker Engine")
+PY
+}
+
 prepare_output() {
     if [ -d "${ABI_FLOOR_OUT}" ]; then
         mv -- "${ABI_FLOOR_OUT}" \
             "${ABI_FLOOR_OUT}.previous-$(date -u +%Y%m%dT%H%M%SZ)-$$" || return $?
     fi
-    mkdir -p "${ABI_FLOOR_OUT}/server"
-    rm -f -- "${ABI_FLOOR_TOKEN}" "${ABI_FLOOR_TOKEN}.part"
+    mkdir -p "${ABI_FLOOR_OUT}/server" || return $?
+    rm -f -- \
+        "${ABI_FLOOR_TOKEN}" "${ABI_FLOOR_TOKEN}.part" \
+        "${ABI_FLOOR_RELAY_RECEIPT}" "${ABI_FLOOR_RELAY_RECEIPT}.part" || return $?
 }
 
 floor_container_id() {
@@ -72,6 +103,16 @@ capture_server_log() {
     docker logs "${ABI_FLOOR_CONTAINER}" > "${ABI_FLOOR_OUT}/server.log" 2>&1 || true
 }
 
+cleanup_floor_relay() {
+    local pid="${ABI_FLOOR_RELAY_PID:-}"
+    [ -n "${pid}" ] || return 0
+    ABI_FLOOR_RELAY_PID=''
+    if kill -0 "${pid}" >/dev/null 2>&1; then
+        kill -TERM "${pid}" >/dev/null 2>&1 || true
+    fi
+    wait "${pid}" >/dev/null 2>&1 || true
+}
+
 write_failure() {
     local message="$1"
     capture_server_log
@@ -83,7 +124,7 @@ import sys
 
 path, message = sys.argv[1:]
 value = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "scenario": "jellyfin-10.11.0-abi-floor",
     "completed": False,
     "failures": [message],
@@ -265,7 +306,8 @@ start_floor_service() {
     abi_floor_compose up -d --wait --pull never --no-deps --force-recreate \
         "${ABI_FLOOR_SERVICE}" || return $?
     ABI_FLOOR_CONTAINER="$(floor_container_id)" || return $?
-    local configured labels running_image_id mounts networks network_name network_internal network_labels
+    local configured labels running_image_id mounts host_ports runtime_ports publish_all
+    local networks network_name network_id network_internal network_labels
     local network_containers
     local logical expected volume_labels
     configured="$(docker inspect --format '{{.Config.Image}}' "${ABI_FLOOR_CONTAINER}")" || return $?
@@ -295,7 +337,7 @@ start_floor_service() {
     done
     mounts="$(docker inspect --format '{{json .Mounts}}' "${ABI_FLOOR_CONTAINER}")" \
         || return $?
-    python3 - "${mounts}" "${RK_PROJECT}" <<'PY'
+    python3 - "${mounts}" "${RK_PROJECT}" <<'PY' || return $?
 import json
 import sys
 
@@ -312,6 +354,28 @@ actual = {
 if actual != expected or len(mounts) != 2:
     raise SystemExit(f"FATAL: refusing ABI-floor mount inventory: {mounts!r}")
 PY
+    host_ports="$(docker inspect --format '{{json .HostConfig.PortBindings}}' \
+        "${ABI_FLOOR_CONTAINER}")" || return $?
+    runtime_ports="$(docker inspect --format '{{json .NetworkSettings.Ports}}' \
+        "${ABI_FLOOR_CONTAINER}")" || return $?
+    publish_all="$(docker inspect --format '{{json .HostConfig.PublishAllPorts}}' \
+        "${ABI_FLOOR_CONTAINER}")" || return $?
+    python3 - "${host_ports}" "${runtime_ports}" "${publish_all}" <<'PY' || return $?
+import json
+import sys
+
+host, runtime, publish_all = (json.loads(value) for value in sys.argv[1:])
+if host not in (None, {}) or publish_all is not False:
+    raise SystemExit(
+        "FATAL: ABI-floor container requested published ports: "
+        f"bindings={host!r}, publishAll={publish_all!r}"
+    )
+if runtime is not None and (
+    not isinstance(runtime, dict)
+    or any(value not in (None, []) for value in runtime.values())
+):
+    raise SystemExit(f"FATAL: ABI-floor container has active published ports: {runtime!r}")
+PY
     networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' \
         "${ABI_FLOOR_CONTAINER}")" || return $?
     network_name="$(python3 - "${networks}" <<'PY'
@@ -326,26 +390,199 @@ PY
 )" || return $?
     network_internal="$(docker network inspect --format '{{.Internal}}' "${network_name}")" \
         || return $?
+    network_id="$(docker network inspect --format '{{.Id}}' "${network_name}")" || return $?
     network_labels="$(docker network inspect --format '{{json .Labels}}' "${network_name}")" \
         || return $?
     validate_floor_network_identity \
         "${network_name}" "${network_internal}" "${network_labels}" || return $?
     network_containers="$(docker network inspect --format '{{json .Containers}}' \
         "${network_name}")" || return $?
-    python3 - "${network_containers}" "${ABI_FLOOR_CONTAINER}" <<'PY'
+    ABI_FLOOR_TARGET_IP="$(python3 - \
+        "${networks}" "${network_name}" "${network_containers}" \
+        "${ABI_FLOOR_CONTAINER}" "${network_id}" <<'PY'
+import ipaddress
 import json
 import sys
 
-containers, expected = json.loads(sys.argv[1]), sys.argv[2]
+networks, network_name, containers, expected, network_id = (
+    json.loads(sys.argv[1]), sys.argv[2], json.loads(sys.argv[3]), sys.argv[4], sys.argv[5]
+)
 if not isinstance(containers, dict) or set(containers) != {expected}:
     raise SystemExit(
         f"FATAL: ABI-floor network membership is not exclusive: {sorted(containers)!r}"
     )
+endpoint = networks.get(network_name)
+membership = containers.get(expected)
+if not isinstance(endpoint, dict) or not isinstance(membership, dict):
+    raise SystemExit("FATAL: ABI-floor network endpoint evidence is malformed")
+address = endpoint.get("IPAddress")
+prefix = endpoint.get("IPPrefixLen")
+try:
+    parsed = ipaddress.ip_address(address)
+except (TypeError, ValueError) as error:
+    raise SystemExit(f"FATAL: ABI-floor endpoint address is invalid: {error}") from error
+if not isinstance(address, str) or not isinstance(parsed, ipaddress.IPv4Address) \
+        or str(parsed) != address or not parsed.is_private or parsed.is_reserved \
+        or parsed.is_loopback or parsed.is_link_local or parsed.is_multicast \
+        or parsed.is_unspecified \
+        or not isinstance(prefix, int) or isinstance(prefix, bool) \
+        or not 1 <= prefix <= 32 \
+        or membership.get("IPv4Address") != f"{address}/{prefix}" \
+        or membership.get("EndpointID") != endpoint.get("EndpointID") \
+        or endpoint.get("NetworkID") != network_id:
+    raise SystemExit(
+        "FATAL: ABI-floor target is not the exact private internal-network endpoint: "
+        f"endpoint={address!r}, membership={membership.get('IPv4Address')!r}"
+    )
+print(address)
+PY
+)" || return $?
+    ABI_FLOOR_NETWORK="${network_name}"
+}
+
+start_floor_relay() {
+    [ -n "${ABI_FLOOR_CONTAINER}" ] \
+        && [ -n "${ABI_FLOOR_NETWORK}" ] \
+        && [ -n "${ABI_FLOOR_TARGET_IP}" ] || {
+        printf 'FATAL: ABI-floor relay target identity is incomplete\n' >&2
+        return 1
+    }
+    [ ! -e "${ABI_FLOOR_RELAY_RECEIPT}" ] \
+        && [ ! -L "${ABI_FLOOR_RELAY_RECEIPT}" ] || {
+        printf 'FATAL: ABI-floor relay receipt path is not fresh\n' >&2
+        return 1
+    }
+    python3 "${ABI_FLOOR_RELAY_SCRIPT}" \
+        --bind-port "${RK_ABI_FLOOR_PORT}" \
+        --target-host "${ABI_FLOOR_TARGET_IP}" \
+        --target-port 8096 \
+        --target-container-id "${ABI_FLOOR_CONTAINER}" \
+        --target-network "${ABI_FLOOR_NETWORK}" \
+        --receipt "${ABI_FLOOR_RELAY_RECEIPT}" &
+    ABI_FLOOR_RELAY_PID=$!
+
+    local attempt
+    for ((attempt = 1; attempt <= 200; attempt++)); do
+        if [ -s "${ABI_FLOOR_RELAY_RECEIPT}" ]; then
+            if ! python3 - \
+                "${ABI_FLOOR_RELAY_RECEIPT}" "${ABI_FLOOR_RELAY_SCRIPT}" \
+                "${ABI_FLOOR_RELAY_PID}" "${RK_ABI_FLOOR_PORT}" \
+                "${ABI_FLOOR_TARGET_IP}" "${ABI_FLOOR_CONTAINER}" \
+                "${ABI_FLOOR_NETWORK}" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+receipt_path, script_path, pid, port, target, container, network = sys.argv[1:]
+receipt = json.loads(pathlib.Path(receipt_path).read_text(encoding="utf-8"))
+script_sha = hashlib.sha256(pathlib.Path(script_path).read_bytes()).hexdigest()
+if receipt.get("schemaVersion") != 1 \
+        or receipt.get("transport") != "host-loopback-tcp-relay" \
+        or receipt.get("processId") != int(pid) \
+        or receipt.get("bind") != {"host": "127.0.0.1", "port": int(port)} \
+        or receipt.get("target") != {
+            "host": target,
+            "port": 8096,
+            "containerId": container,
+            "network": network,
+        } \
+        or receipt.get("implementation") != {
+            "path": "e2e/jellyfin/lib/abi-floor-relay.py",
+            "sha256": script_sha,
+        } \
+        or receipt.get("limits") != {
+            "maxActiveConnections": 32,
+            "maxBufferedBytesPerDirection": 262144,
+        } \
+        or receipt.get("ready") is not True \
+        or receipt.get("completed") is not False:
+    raise SystemExit(f"FATAL: ABI-floor relay ready receipt differs: {receipt!r}")
+PY
+            then
+                cleanup_floor_relay
+                return 1
+            fi
+            kill -0 "${ABI_FLOOR_RELAY_PID}" >/dev/null 2>&1 || {
+                printf 'FATAL: ABI-floor relay exited after writing readiness\n' >&2
+                cleanup_floor_relay
+                return 1
+            }
+            return 0
+        fi
+        if ! kill -0 "${ABI_FLOOR_RELAY_PID}" >/dev/null 2>&1; then
+            wait "${ABI_FLOOR_RELAY_PID}" || true
+            ABI_FLOOR_RELAY_PID=''
+            printf 'FATAL: ABI-floor relay exited before readiness\n' >&2
+            return 1
+        fi
+        sleep 0.05
+    done
+    printf 'FATAL: ABI-floor relay did not become ready\n' >&2
+    cleanup_floor_relay
+    return 1
+}
+
+stop_floor_relay() {
+    local phase="${1:-evidence}" pid="${ABI_FLOOR_RELAY_PID:-}"
+    case "${phase}" in bootstrap|evidence) ;; *) return 2 ;; esac
+    [ -n "${pid}" ] || {
+        printf 'FATAL: ABI-floor relay PID is missing\n' >&2
+        return 1
+    }
+    kill -0 "${pid}" >/dev/null 2>&1 || {
+        wait "${pid}" >/dev/null 2>&1 || true
+        ABI_FLOOR_RELAY_PID=''
+        printf 'FATAL: ABI-floor relay exited before evidence finalization\n' >&2
+        return 1
+    }
+    kill -TERM "${pid}" || return $?
+    if ! wait "${pid}"; then
+        ABI_FLOOR_RELAY_PID=''
+        printf 'FATAL: ABI-floor relay did not stop cleanly\n' >&2
+        return 1
+    fi
+    ABI_FLOOR_RELAY_PID=''
+    python3 - "${ABI_FLOOR_RELAY_RECEIPT}" "${phase}" <<'PY'
+import json
+import pathlib
+import sys
+
+receipt = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+phase = sys.argv[2]
+counters = receipt.get("counters")
+names = (
+    "connectionsAccepted",
+    "connectionsRejected",
+    "targetConnectionsSucceeded",
+    "targetConnectionsFailed",
+    "connectionsCompleted",
+    "bytesClientToTarget",
+    "bytesTargetToClient",
+    "peakBufferedBytes",
+)
+if receipt.get("ready") is not True or receipt.get("completed") is not True \
+        or not isinstance(counters, dict) \
+        or set(counters) != set(names) \
+        or any(not isinstance(counters.get(name), int) or isinstance(counters.get(name), bool)
+               or counters[name] < 0 for name in names) \
+        or counters.get("connectionsAccepted", 0) <= 0 \
+        or counters.get("targetConnectionsSucceeded", 0) <= 0 \
+        or counters.get("connectionsRejected") != 0 \
+        or counters.get("targetConnectionsSucceeded") \
+        + counters.get("targetConnectionsFailed") \
+        != counters.get("connectionsAccepted") \
+        or counters.get("connectionsCompleted") != counters.get("connectionsAccepted") \
+        or counters.get("bytesClientToTarget", 0) <= 0 \
+        or counters.get("bytesTargetToClient", 0) <= 0 \
+        or not 0 < counters.get("peakBufferedBytes", 0) <= 262144 \
+        or (phase == "evidence" and counters.get("targetConnectionsFailed") != 0):
+    raise SystemExit(f"FATAL: ABI-floor relay completion receipt differs: {receipt!r}")
 PY
 }
 
 write_success() {
-    local configured image_id repo_digests labels mounts ports networks
+    local configured image_id repo_digests labels mounts host_ports runtime_ports publish_all networks
     local network_name network_id network_internal network_labels network_containers
     local config_volume cache_volume config_volume_labels cache_volume_labels
     local plugin_version container_dll_path container_dll_sha stage_dll_sha managed_identity
@@ -354,7 +591,12 @@ write_success() {
     repo_digests="$(docker image inspect --format '{{json .RepoDigests}}' "${ABI_FLOOR_IMAGE}")" || return $?
     labels="$(docker inspect --format '{{json .Config.Labels}}' "${ABI_FLOOR_CONTAINER}")" || return $?
     mounts="$(docker inspect --format '{{json .Mounts}}' "${ABI_FLOOR_CONTAINER}")" || return $?
-    ports="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "${ABI_FLOOR_CONTAINER}")" || return $?
+    host_ports="$(docker inspect --format '{{json .HostConfig.PortBindings}}' \
+        "${ABI_FLOOR_CONTAINER}")" || return $?
+    runtime_ports="$(docker inspect --format '{{json .NetworkSettings.Ports}}' \
+        "${ABI_FLOOR_CONTAINER}")" || return $?
+    publish_all="$(docker inspect --format '{{json .HostConfig.PublishAllPorts}}' \
+        "${ABI_FLOOR_CONTAINER}")" || return $?
     networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' "${ABI_FLOOR_CONTAINER}")" || return $?
     network_name="$(python3 - "${networks}" <<'PY'
 import json
@@ -409,12 +651,14 @@ PY
         "${ABI_FLOOR_OUT}/server/result.json" "${ABI_FLOOR_OUT}/server/generation.json" \
         "${ABI_FLOOR_OUT}/server/diagnostics.json" "${ABI_FLOOR_OUT}/server/plugins.json" \
         "${ABI_FLOOR_OUT}/server.log" "${ABI_FLOOR_IMAGE}" "${configured}" \
-        "${image_id}" "${repo_digests}" "${labels}" "${mounts}" "${ports}" \
+        "${image_id}" "${repo_digests}" "${labels}" "${mounts}" \
+        "${host_ports}" "${runtime_ports}" "${publish_all}" \
         "${networks}" "${network_name}" "${network_id}" "${network_internal}" \
         "${network_labels}" "${RK_PROJECT}" "${ABI_FLOOR_REFERENCE_IMAGE_ID}" \
         "${config_volume_labels}" "${cache_volume_labels}" \
         "${container_dll_path}" "${container_dll_sha}" "${managed_identity}" \
-        "${network_containers}" "${ABI_FLOOR_CONTAINER}" <<'PY'
+        "${network_containers}" "${ABI_FLOOR_CONTAINER}" \
+        "${ABI_FLOOR_RELAY_RECEIPT}" <<'PY'
 import datetime
 import hashlib
 import json
@@ -426,11 +670,12 @@ import sys
 (
     output, snapshot, meta_path, dll_path, server_path, generation_path,
     diagnostics_path, plugins_path, log_path, image, configured, image_id,
-    repo_digests_raw, labels_raw, mounts_raw, ports_raw, networks_raw,
+    repo_digests_raw, labels_raw, mounts_raw, host_ports_raw, runtime_ports_raw,
+    publish_all_raw, networks_raw,
     network_name, network_id, network_internal, network_labels_raw, project,
     reference_image_id, config_volume_labels_raw, cache_volume_labels_raw,
     container_dll_path, container_dll_sha, managed_identity_raw,
-    network_containers_raw, container_id,
+    network_containers_raw, container_id, relay_path,
 ) = sys.argv[1:]
 
 def load(path):
@@ -467,7 +712,9 @@ if len(matches) != 1 or len(diagnostic_matches) != 1:
 
 labels = json.loads(labels_raw)
 mounts = json.loads(mounts_raw)
-ports = json.loads(ports_raw)
+host_ports = json.loads(host_ports_raw)
+runtime_ports = json.loads(runtime_ports_raw)
+publish_all = json.loads(publish_all_raw)
 networks = json.loads(networks_raw)
 network_labels = json.loads(network_labels_raw)
 volume_labels = {
@@ -476,15 +723,20 @@ volume_labels = {
 }
 managed_identity = json.loads(managed_identity_raw)
 network_containers = json.loads(network_containers_raw)
+relay = load(relay_path)
 if not isinstance(labels, dict) or not isinstance(mounts, list) \
         or not isinstance(networks, dict) or not isinstance(network_labels, dict):
     raise SystemExit("FATAL: ABI-floor container labels/mounts/networks are malformed")
-if not isinstance(ports, dict) or set(ports) != {"8096/tcp"}:
-    raise SystemExit(f"FATAL: ABI-floor published-port inventory differs: {ports!r}")
-bindings = ports.get("8096/tcp") if isinstance(ports, dict) else None
-if not isinstance(bindings, list) or len(bindings) != 1:
-    raise SystemExit(f"FATAL: ABI-floor port binding differs: {ports!r}")
-binding = bindings[0]
+if host_ports not in (None, {}) or publish_all is not False:
+    raise SystemExit(
+        "FATAL: ABI-floor container requested published ports: "
+        f"bindings={host_ports!r}, publishAll={publish_all!r}"
+    )
+if runtime_ports is not None and (
+    not isinstance(runtime_ports, dict)
+    or any(value not in (None, []) for value in runtime_ports.values())
+):
+    raise SystemExit(f"FATAL: ABI-floor container has active published ports: {runtime_ports!r}")
 volume_rows = sorted(({
     "destination": row.get("Destination"),
     "name": row.get("Name"),
@@ -530,6 +782,25 @@ if not isinstance(network_endpoint, dict):
     raise SystemExit("FATAL: ABI-floor network endpoint is malformed")
 if not isinstance(network_containers, dict) or set(network_containers) != {container_id}:
     raise SystemExit(f"FATAL: ABI-floor network membership differs: {network_containers!r}")
+membership = network_containers[container_id]
+endpoint_ip = network_endpoint.get("IPAddress")
+prefix_length = network_endpoint.get("IPPrefixLen")
+if not isinstance(membership, dict) \
+        or not isinstance(endpoint_ip, str) \
+        or not isinstance(prefix_length, int) or isinstance(prefix_length, bool) \
+        or not 1 <= prefix_length <= 32 \
+        or membership.get("IPv4Address") != f"{endpoint_ip}/{prefix_length}" \
+        or membership.get("EndpointID") != network_endpoint.get("EndpointID") \
+        or network_endpoint.get("NetworkID") != network_id:
+    raise SystemExit("FATAL: ABI-floor endpoint/network membership identities differ")
+if relay.get("target") != {
+    "host": endpoint_ip,
+    "port": 8096,
+    "containerId": container_id,
+    "network": network_name,
+} or relay.get("bind", {}).get("host") != "127.0.0.1" \
+        or relay.get("completed") is not True:
+    raise SystemExit(f"FATAL: ABI-floor relay is not bound to the exact endpoint: {relay!r}")
 
 log = pathlib.Path(log_path).read_text(encoding="utf-8", errors="replace")
 assembly_text = f"Loaded assembly {managed_identity['assemblyFullName']} from {container_dll_path}"
@@ -558,7 +829,7 @@ package = {
     "sha256": digest(package_path),
 }
 result = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "scenario": "jellyfin-10.11.0-abi-floor",
     "completed": True,
     "failures": [],
@@ -596,16 +867,15 @@ result = {
             "com.docker.compose.project": labels.get("com.docker.compose.project"),
             "com.docker.compose.service": labels.get("com.docker.compose.service"),
         },
-        "portBinding": {
-            "containerPort": "8096/tcp",
-            "hostIp": binding.get("HostIp"),
-            "hostPort": binding.get("HostPort"),
-        },
+        "publishedPorts": [],
+        "publishAllPorts": False,
         "volumes": volume_rows,
         "network": {
             "name": network_name,
             "id": network_id,
             "endpointId": network_endpoint.get("EndpointID"),
+            "ipv4Address": endpoint_ip,
+            "prefixLength": prefix_length,
             "attachedContainerIds": sorted(network_containers),
             "internal": True,
             "labels": {
@@ -614,6 +884,8 @@ result = {
             },
         },
     },
+    "hostOrigin": f"http://{relay['bind']['host']}:{relay['bind']['port']}",
+    "relay": relay,
     "server": server,
     "generation": generation,
     "plugin": matches[0],
@@ -636,13 +908,16 @@ run_smoke() {
     validate_runtime_controls "${ABI_FLOOR_IMAGE}" || {
         write_failure 'runtime control validation failed'; return 1;
     }
-    for required in awk curl docker python3 readlink sha256sum timeout; do
+    for required in awk curl docker python3 readlink sha256sum timeout uname; do
         command -v "${required}" >/dev/null 2>&1 || {
             write_failure "required command not found: ${required}"; return 1;
         }
     done
     docker info >/dev/null 2>&1 || {
         write_failure 'Docker daemon is unavailable'; return 1;
+    }
+    validate_relay_host || {
+        write_failure 'Docker host cannot provide the verified loopback relay'; return 1;
     }
     docker compose version >/dev/null 2>&1 || {
         write_failure 'Docker Compose is unavailable'; return 1;
@@ -659,14 +934,29 @@ run_smoke() {
     start_floor_service || {
         write_failure 'exact Jellyfin 10.11.0 service did not start'; return 1;
     }
+    start_floor_relay || {
+        write_failure 'verified ABI-floor loopback relay did not start'; return 1;
+    }
     RK_BUILD_SNAPSHOT="${RK_BUILD_SNAPSHOT}" RK_ABI_FLOOR_IMAGE="${ABI_FLOOR_IMAGE}" \
         bash "${ABI_FLOOR_HERE}/provision.sh" abi-floor jf10 || {
             write_failure 'net9 plugin provisioning failed on Jellyfin 10.11.0'; return 1;
         }
+    stop_floor_relay bootstrap || {
+        write_failure 'ABI-floor provisioning relay did not finalize cleanly'; return 1;
+    }
+    rm -f -- "${ABI_FLOOR_RELAY_RECEIPT}" "${ABI_FLOOR_RELAY_RECEIPT}.part" || {
+        write_failure 'ABI-floor relay evidence reset failed'; return 1;
+    }
+    start_floor_relay || {
+        write_failure 'verified ABI-floor evidence relay did not restart'; return 1;
+    }
     RK_BUILD_SNAPSHOT="${RK_BUILD_SNAPSHOT}" RK_ABI_FLOOR_IMAGE="${ABI_FLOOR_IMAGE}" \
         bash "${ABI_FLOOR_HERE}/check.sh" abi-floor || {
             write_failure 'endpoint/shell checks failed on Jellyfin 10.11.0'; return 1;
         }
+    stop_floor_relay evidence || {
+        write_failure 'ABI-floor evidence relay did not finalize cleanly'; return 1;
+    }
     capture_server_log
     [ -s "${ABI_FLOOR_OUT}/server.log" ] || {
         write_failure 'Jellyfin 10.11.0 server log is missing'; return 1;
@@ -687,6 +977,9 @@ main() {
         return 2
     }
     prepare_output || return $?
+    trap cleanup_floor_relay EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     run_smoke
 }
 

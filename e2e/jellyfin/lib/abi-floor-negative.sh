@@ -17,6 +17,8 @@ for script in \
     bash -n "${script}"
 done
 python3 -m py_compile "${ROOT}/scripts/abi_floor_evidence.py"
+python3 -m py_compile "${NEGATIVE_HERE}/abi-floor-relay.py"
+python3 "${NEGATIVE_HERE}/abi-floor-relay.py" --self-test
 python3 "${ROOT}/scripts/abi_floor_evidence.py" --self-test
 
 (
@@ -69,6 +71,7 @@ python3 - \
     "${LAB}/docker-compose.yml" \
     "${NEGATIVE_HERE}/common.sh" \
     "${NEGATIVE_HERE}/abi-floor-smoke.sh" \
+    "${NEGATIVE_HERE}/abi-floor-relay.py" \
     "${NEGATIVE_HERE}/provision.sh" \
     "${NEGATIVE_HERE}/check.sh" \
     "${LAB}/run.sh" \
@@ -76,12 +79,13 @@ python3 - \
 import pathlib
 import sys
 
-compose_path, common_path, runner_path, provision_path, check_path, run_path, validator_path = map(
+compose_path, common_path, runner_path, relay_path, provision_path, check_path, run_path, validator_path = map(
     pathlib.Path, sys.argv[1:]
 )
 compose = compose_path.read_text(encoding="utf-8")
 common = common_path.read_text(encoding="utf-8")
 runner = runner_path.read_text(encoding="utf-8")
+relay = relay_path.read_text(encoding="utf-8")
 provision = provision_path.read_text(encoding="utf-8")
 check = check_path.read_text(encoding="utf-8")
 run = run_path.read_text(encoding="utf-8")
@@ -102,7 +106,6 @@ if "RK_ABI_FLOOR_DIGEST" not in common or image.rsplit("sha256:", 1)[1] not in c
 compose_tokens = (
     "abi-floor:",
     'profiles: ["abi-floor"]',
-    '127.0.0.1:${RK_ABI_FLOOR_PORT:-18119}:8096',
     "abi-floor-config:/config",
     "abi-floor-cache:/cache",
     "abi-floor-internal:",
@@ -111,10 +114,17 @@ compose_tokens = (
 for token in compose_tokens:
     if token not in compose:
         raise SystemExit(f"FATAL: isolated ABI-floor Compose token is missing: {token}")
+abi_service = compose.split("  abi-floor:\n", 1)[1].split("\n  host-upgrade:\n", 1)[0]
+if "ports:" in abi_service or "RK_ABI_FLOOR_PORT" in abi_service:
+    raise SystemExit("FATAL: internal-only ABI-floor container still requests a host port")
 
 runner_tokens = (
     "ABI_FLOOR_OUT=\"${RK_ARTIFACT_DIR}/abi-floor\"",
     "ABI_FLOOR_TOKEN=\"$(rk_token_file abi-floor)\"",
+    "ABI_FLOOR_RELAY_SCRIPT=",
+    "ABI_FLOOR_RELAY_RECEIPT=",
+    "validate_relay_host",
+    "rootful Docker Engine",
     "--pull never",
     'docker pull "${image}"',
     "RepoDigests",
@@ -124,6 +134,14 @@ runner_tokens = (
     "container_dll_sha",
     "--managed-identity",
     "com.docker.compose.network",
+    "HostConfig.PortBindings",
+    "NetworkSettings.Ports",
+    "HostConfig.PublishAllPorts",
+    "start_floor_relay",
+    "stop_floor_relay bootstrap",
+    "stop_floor_relay evidence",
+    "trap cleanup_floor_relay EXIT",
+    '"publishedPorts": []',
     "for logical in abi-floor-config abi-floor-cache",
     "provision.sh\" abi-floor jf10",
     "check.sh\" abi-floor",
@@ -132,6 +150,18 @@ runner_tokens = (
 for token in runner_tokens:
     if token not in runner:
         raise SystemExit(f"FATAL: ABI-floor runner contract is missing: {token}")
+for token in (
+    'self.bind_host = "127.0.0.1"',
+    "MAX_ACTIVE_CONNECTIONS = 32",
+    "MAX_BUFFERED_BYTES_PER_DIRECTION = 256 * 1024",
+    "PR_SET_PDEATHSIG",
+    "targetConnectionsFailed",
+    "connectionsRejected",
+    "select.select(",
+    "relay truncated slow-reader response",
+):
+    if token not in relay:
+        raise SystemExit(f"FATAL: ABI-floor host relay contract is missing: {token}")
 if "host-upgrade-config" in runner or "host-upgrade-cache" in runner:
     raise SystemExit("FATAL: ABI-floor runner references host-upgrade storage")
 for unsafe in ("docker volume prune", "docker system prune", "docker compose down", "rm -rf /config"):
@@ -167,6 +197,7 @@ for token in ("cmd_abi_floor", "abi-floor-negative", "--profile abi-floor"):
 
 required_evidence = (
     '"result.json"',
+    '"relay.json"',
     '"server/result.json"',
     '"server/public.json"',
     '"server/generation.json"',
@@ -182,6 +213,10 @@ required_evidence = (
     '"scopedErrorLines": []',
     'expected_etag =',
     'referenceImageId',
+    '"publishedPorts"',
+    '"hostOrigin"',
+    '"host-loopback-tcp-relay"',
+    '"targetConnectionsFailed"',
 )
 for token in required_evidence:
     if token not in validator:
