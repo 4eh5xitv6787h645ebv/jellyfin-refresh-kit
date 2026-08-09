@@ -1,9 +1,24 @@
 http:
   routers:
-    jellyfin:
-      rule: "PathPrefix(`/`)"
+    jellyfin-explicit-accept-encoding:
+      rule: "PathPrefix(`/`) && HeaderRegexp(`Accept-Encoding`, `.+`)"
+      priority: 100
       entryPoints: [web]
       service: jellyfin
+    jellyfin-identity-default:
+      rule: "PathPrefix(`/`)"
+      priority: 10
+      entryPoints: [web]
+      middlewares: [jellyfin-force-identity]
+      service: jellyfin
+  middlewares:
+    jellyfin-force-identity:
+      headers:
+        # Traefik's Go transport synthesizes gzip only when this field is
+        # absent. Preserve every explicit client value on the higher-priority
+        # router and normalize only the absent-field path to identity here.
+        customRequestHeaders:
+          Accept-Encoding: identity
   services:
     jellyfin:
       loadBalancer:

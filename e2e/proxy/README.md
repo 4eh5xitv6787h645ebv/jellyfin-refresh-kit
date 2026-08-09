@@ -23,6 +23,7 @@ cd e2e/proxy
 ./run.sh e2e       # puppeteer: login -> bump -> exactly one smart reload
 ./run.sh subpath   # BaseUrl=/jellyfin, test the subpath proxy, restore
 ./run.sh down      # destroy everything
+./lib/static-regressions.sh  # no-Docker contract/configuration checks
 ```
 
 `./run.sh all` does the lot in order. A full pass takes roughly 25 minutes,
@@ -43,8 +44,8 @@ Every default port can be overridden with the corresponding variable in
 | 8116 | `rk-jf` | the origin — Jellyfin 10.11.11, no proxy (baseline) |
 | 8117 | `rk-nginx-official` | the official jellyfin.org/docs nginx config |
 | 8118 | `rk-nginx-npm` | Nginx Proxy Manager-style (websocket upgrade + "Cache Assets") |
-| 8119 | `rk-caddy` | Caddy, the docs' two-line `reverse_proxy` |
-| 8120 | `rk-traefik` | Traefik v3 |
+| 8119 | `rk-caddy` | Caddy, with synthetic upstream gzip disabled |
+| 8120 | `rk-traefik` | Traefik v3, with absent `Accept-Encoding` normalized to identity |
 | 8121 | `rk-haproxy` | HAProxy |
 | 8122 | `rk-nginx-cache-naive` | **adversarial**: `proxy_cache` + `proxy_ignore_headers Cache-Control` |
 | 8124 | `rk-nginx-cache-respect` | freshness control: `proxy_cache` honours origin `Cache-Control`, but consumes client conditionals |
@@ -59,17 +60,32 @@ created under `umask 077`, and removed by `down`).
 
 ### Traefik uses the file provider, not the docker provider
 
-`conf/traefik-dyn.yml` declares the router and service directly. Traefik v3's
-docker provider negotiates Docker API 1.24, which Docker Engine 28 rejects
-outright (`client version 1.24 is too old`), so the label-driven form cannot
-start on a current engine. The proxy behaviour under test is identical. The
-equivalent labels, for a rig on an older engine:
+`conf/traefik-dyn.yml` declares the routers, middleware and service directly.
+Its higher-priority router preserves every explicit client `Accept-Encoding`;
+the fallback router sets `Accept-Encoding: identity` only when the field was
+absent. This prevents Go's HTTP transport from silently requesting and decoding
+gzip while retaining the coded representation's strong ETag. Caddy's equivalent
+guard is `transport http { compression off }`; explicit gzip and Brotli requests
+still pass through both proxies unchanged.
+
+Traefik v3's docker provider negotiates Docker API 1.24, which Docker Engine 28
+rejects outright (`client version 1.24 is too old`), so the label-driven form
+cannot start on a current engine. The proxy behaviour under test is identical.
+The equivalent labels, for a rig on an older engine:
 
 ```yaml
 labels:
   - traefik.enable=true
-  - "traefik.http.routers.jf.rule=PathPrefix(`/`)"
-  - traefik.http.routers.jf.entrypoints=web
+  - "traefik.http.routers.jf-explicit.rule=PathPrefix(`/`) && HeaderRegexp(`Accept-Encoding`, `.+`)"
+  - traefik.http.routers.jf-explicit.priority=100
+  - traefik.http.routers.jf-explicit.entrypoints=web
+  - traefik.http.routers.jf-explicit.service=jf
+  - "traefik.http.routers.jf-default.rule=PathPrefix(`/`)"
+  - traefik.http.routers.jf-default.priority=10
+  - traefik.http.routers.jf-default.entrypoints=web
+  - traefik.http.routers.jf-default.middlewares=jf-force-identity
+  - traefik.http.routers.jf-default.service=jf
+  - traefik.http.middlewares.jf-force-identity.headers.customrequestheaders.Accept-Encoding=identity
   - traefik.http.services.jf.loadbalancer.server.port=8096
 ```
 
@@ -79,9 +95,21 @@ labels:
 contracts. The strict contract covers the origin, the ordinary nginx/NPM/Caddy/
 Traefik/HAProxy proxies and remedy 2 (plus the subpath proxy during `subpath`). It
 requires matching identity/gzip/Brotli `If-None-Match` requests to produce a
-bodyless `304`, a bad `If-Match` to produce a bodyless, metadata-free `412`, and
-ordinary `200` responses to retain an exact complete representation, ETag,
-content coding and byte-accurate `Content-Length`.
+bodyless `304`, a bad `If-Match` to produce a bodyless, no-store `412` without
+representation metadata, and ordinary `200` responses to retain an exact
+complete representation, ETag, content coding and byte-accurate
+`Content-Length`. Every `rk-` ETag must be
+strong. Every pair among identity, gzip and Brotli whose transferred bytes
+differ must carry distinct validators.
+
+Identity checks send `Accept-Encoding: identity` explicitly. A separate request
+with the field absent must resolve to the exact identity response; this catches
+transparent decoding that leaves a coded representation's ETag behind. A `304`
+must repeat the selected ETag, `Cache-Control` and `Vary` and have no content.
+`Content-Type` and `Content-Encoding` may be omitted; if present they must match
+the selected `200`. `Content-Length` may be omitted or equal that selected
+representation's length, as RFC 9110 permits. A bodyless `412` may similarly
+omit `Content-Length` or send one `Content-Length: 0`.
 
 The two active-nginx-cache freshness controls (ports 8124 and 8126) use the
 `nginx-cache-suppresses-conditionals` contract. nginx does not pass a client's
@@ -132,9 +160,24 @@ password field still must.
 `POST /System/Configuration/network` (**not** `/System/Configuration`, where the
 field is silently ignored on 10.11), restarts, runs matrix + ws + e2e against
 the configured subpath port (default `8125`) at `/jellyfin`, and puts `BaseUrl`
-back. Every restart readiness request uses the active BaseUrl. A failed restart
-or readiness probe stops dependent checks, returns failure, and still attempts
-to restore both parked injectors and the empty BaseUrl.
+back. Every restart readiness request uses the active BaseUrl. Before mutation,
+the exact original network document is retained in a mode-0600 temporary file.
+EXIT, INT and TERM all replay it through whichever route is active and restore
+injectors before temporary state is removed. Injector parking uses exclusive
+state creation, refuses stale state or same-name restore collisions, and never
+suppresses a move failure. A failed restart or readiness probe stops dependent
+checks and returns failure. If scoped rollback still cannot complete, the suite
+fails closed by removing its throwaway Compose project and volume rather than
+leaving a changed BaseUrl or parked injector behind.
+
+## Container-free regressions
+
+`./lib/static-regressions.sh` needs Bash, Python and curl, but does not
+invoke Docker. It syntax-checks the runner, checks the Traefik split-router
+configuration, checks Caddy's transport guard, exercises successful/stale/
+collision injector state transitions in a temporary directory, and runs both
+matrix contracts against a loopback HTTP fixture. Negative fixtures prove that
+weak validators and shared identity/gzip/Brotli validators fail the matrix.
 
 ## Third-party fixture lock
 
@@ -170,8 +213,10 @@ cannot accidentally load 12.1 beside 12.2.
 ./run.sh down     # project-scoped compose down -v, plus its token file
 ```
 
-If a run was interrupted before `run.sh subpath` restored the base URL, the
-origin is still on `/jellyfin`; `./run.sh down` removes it either way.
+Catchable EXIT/INT/TERM paths restore active injector/BaseUrl state. If rollback
+cannot be verified, the runner removes the project and its volume. `SIGKILL` and
+an unavailable Docker daemon cannot be handled in-process; once Docker is
+available, `./run.sh down` removes the project-scoped fixture either way.
 
 ## Knobs
 

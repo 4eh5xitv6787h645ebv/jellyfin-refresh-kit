@@ -68,12 +68,62 @@ STATE_DIR="$HERE/.state"
 TOKEN_FILE="$STATE_DIR/$PROJECT.token"
 mkdir -p "$STATE_DIR"
 NETWORK_JSON=''
+NETWORK_ORIGINAL_JSON=''
+ROLLBACK_INJECTORS=0
+ROLLBACK_BASEURL=0
+ROLLBACK_BASE=''
+ROLLBACK_AUTH=''
+ROLLBACK_RUNNING=0
 cleanup_temporary_files() {
     if [ -n "$NETWORK_JSON" ]; then
         rm -f -- "$NETWORK_JSON"
     fi
+    if [ -n "$NETWORK_ORIGINAL_JSON" ]; then
+        rm -f -- "$NETWORK_ORIGINAL_JSON"
+    fi
 }
-trap cleanup_temporary_files EXIT
+
+handle_signal() { # signal exit-code
+    echo "FATAL: received $1; rolling back active proxy-suite state" >&2
+    exit "$2"
+}
+
+handle_exit() {
+    local rc=$? rollback_rc=0 teardown_rc=0
+    trap - EXIT
+    # Once cleanup begins, a repeated terminal signal must not interrupt it.
+    trap '' INT TERM
+    set +e
+    rollback_active_state || rollback_rc=1
+    if [ "$rollback_rc" -ne 0 ]; then
+        echo "FATAL: rollback is unresolved; destroying the throwaway Compose project" >&2
+        if compose down -v --remove-orphans; then
+            rm -f -- "$TOKEN_FILE"
+            ROLLBACK_INJECTORS=0
+            ROLLBACK_BASEURL=0
+            echo "==> unrecoverable fixture state removed with project $PROJECT" >&2
+        else
+            teardown_rc=1
+            echo "FATAL: could not remove project $PROJECT; run ./run.sh down once Docker is available" >&2
+        fi
+    fi
+    cleanup_temporary_files
+    if [ "$rollback_rc" -ne 0 ]; then
+        if [ "$teardown_rc" -eq 0 ]; then
+            echo "FATAL: automatic rollback failed closed by removing the fixture" >&2
+        else
+            echo "FATAL: automatic proxy-suite rollback and fixture removal did not complete" >&2
+        fi
+        if [ "$rc" -eq 0 ]; then
+            rc=1
+        fi
+    fi
+    exit "$rc"
+}
+
+trap 'handle_signal INT 130' INT
+trap 'handle_signal TERM 143' TERM
+trap handle_exit EXIT
 
 # Active nginx proxy_cache suppresses the original client's conditional request
 # fields before proxying. Keep those freshness controls out of the strict
@@ -141,27 +191,25 @@ cmd_up() {
 # suite runs with them installed.
 park_injectors() {
     local base="${1:-}"
-    docker exec "$(origin_container)" sh -c '
-        mkdir -p /config/plugins-parked
-        for d in /config/plugins/*/; do
-            case "$d" in
-                */configurations/|*"Jellyfin Refresh Kit"*) continue ;;
-            esac
-            mv "$d" /config/plugins-parked/ 2>/dev/null || true
-        done' >/dev/null || return 1
+    docker exec -i "$(origin_container)" sh -s -- park /config \
+        < "$HERE/lib/injector-state.sh" >/dev/null || return 1
     restart_origin "$base"
 }
 
 restore_injectors() {
     local base="${1:-}"
-    docker exec "$(origin_container)" sh -c '
-        [ -d /config/plugins-parked ] || exit 0
-        for d in /config/plugins-parked/*/; do
-            [ -e "$d" ] || continue
-            mv "$d" /config/plugins/ 2>/dev/null || true
-        done
-        rmdir /config/plugins-parked 2>/dev/null || true' >/dev/null || return 1
+    docker exec -i "$(origin_container)" sh -s -- restore /config \
+        < "$HERE/lib/injector-state.sh" >/dev/null || return 1
     restart_origin "$base"
+}
+
+restore_injectors_scoped() {
+    local base="${1:-}"
+    if restore_injectors "$base"; then
+        ROLLBACK_INJECTORS=0
+        return 0
+    fi
+    return 1
 }
 
 restart_origin() {
@@ -184,12 +232,80 @@ restart_origin() {
     return 1
 }
 
+restore_base_url() {
+    local prefix posted=0
+    if [ "$ROLLBACK_BASEURL" -eq 0 ]; then
+        return 0
+    fi
+    if [ -z "$ROLLBACK_AUTH" ] || [ -z "$NETWORK_ORIGINAL_JSON" ] \
+        || [ ! -s "$NETWORK_ORIGINAL_JSON" ]; then
+        echo "FATAL: BaseUrl rollback was armed without its original configuration" >&2
+        return 1
+    fi
+
+    echo "==> restoring the original BaseUrl"
+    # A BaseUrl change can take effect before or after the pending restart.
+    # Try the configured route first, then the root route, using the exact
+    # pre-mutation network document captured before the POST.
+    for prefix in "$ROLLBACK_BASE" ''; do
+        if curl --fail --show-error --silent -X POST -H "$ROLLBACK_AUTH" \
+            -H 'Content-Type: application/json' --data-binary @"$NETWORK_ORIGINAL_JSON" \
+            -o /dev/null \
+            "http://127.0.0.1:$ORIGIN$prefix/System/Configuration/network"; then
+            posted=1
+            break
+        fi
+    done
+    if [ "$posted" -ne 1 ]; then
+        echo "FATAL: could not POST the original BaseUrl through either active route" >&2
+        return 1
+    fi
+    if ! restart_origin; then
+        echo "FATAL: original BaseUrl was posted but root readiness was not restored" >&2
+        return 1
+    fi
+    ROLLBACK_BASEURL=0
+    ROLLBACK_BASE=''
+    ROLLBACK_AUTH=''
+}
+
+rollback_active_state() {
+    if [ "$ROLLBACK_RUNNING" -ne 0 ]; then
+        echo "FATAL: recursive proxy-suite rollback refused" >&2
+        return 1
+    fi
+    ROLLBACK_RUNNING=1
+
+    # Restore injectors while the configured BaseUrl is still active. If that
+    # fails, restore BaseUrl and make one more injector attempt at the root.
+    if [ "$ROLLBACK_INJECTORS" -ne 0 ]; then
+        echo "==> restoring parked injectors"
+        restore_injectors_scoped "$ROLLBACK_BASE" || true
+    fi
+    if [ "$ROLLBACK_BASEURL" -ne 0 ]; then
+        restore_base_url || true
+    fi
+    if [ "$ROLLBACK_INJECTORS" -ne 0 ] && [ "$ROLLBACK_BASEURL" -eq 0 ]; then
+        echo "==> retrying parked-injector restoration at the root BaseUrl"
+        restore_injectors_scoped '' || true
+    fi
+
+    ROLLBACK_RUNNING=0
+    if [ "$ROLLBACK_INJECTORS" -ne 0 ] || [ "$ROLLBACK_BASEURL" -ne 0 ]; then
+        echo "FATAL: unresolved rollback state (injectors=$ROLLBACK_INJECTORS, BaseUrl=$ROLLBACK_BASEURL)" >&2
+        return 1
+    fi
+    return 0
+}
+
 cmd_matrix() {
     local rc=0
     echo "==> parking third-party injectors (they replace the shell's headers)"
+    ROLLBACK_BASE=''
+    ROLLBACK_INJECTORS=1
     if ! park_injectors; then
         echo "FATAL: could not park injectors and restore origin readiness; attempting rollback" >&2
-        restore_injectors || echo "FATAL: injector rollback also failed" >&2
+        restore_injectors_scoped '' || echo "FATAL: injector rollback also failed" >&2
         return 1
     fi
     for s in "${STRONG_VALIDATOR_SETUPS[@]}"; do
@@ -199,7 +315,7 @@ cmd_matrix() {
         bash "$HERE/lib/matrix.sh" "${s%:*}" "${s##*:}" '' nginx-cache-suppresses-conditionals || rc=1
     done
     echo "==> restoring third-party injectors"
-    restore_injectors || rc=1
+    restore_injectors_scoped '' || rc=1
     return $rc
 }
 
@@ -249,16 +365,39 @@ cmd_subpath() {
         /*) ;;
         *) echo "FATAL: subpath BaseUrl must start with '/': $base" >&2; return 2 ;;
     esac
-    NETWORK_JSON="$(mktemp "$STATE_DIR/$PROJECT-network.XXXXXX.json")"
+    NETWORK_ORIGINAL_JSON="$(mktemp "$STATE_DIR/$PROJECT-network-original.XXXXXX.json")"
+    NETWORK_JSON="$(mktemp "$STATE_DIR/$PROJECT-network-subpath.XXXXXX.json")"
 
     echo "==> setting BaseUrl=$base (network configuration, NOT system configuration)"
     if ! curl --fail --show-error --silent -H "$auth" \
         "http://127.0.0.1:$ORIGIN/System/Configuration/network" \
-        | python3 -c 'import json,sys;d=json.load(sys.stdin);d["BaseUrl"]=sys.argv[1];print(json.dumps(d))' \
-            "$base" > "$NETWORK_JSON"; then
-        echo "FATAL: could not read or prepare the subpath network configuration" >&2
+        -o "$NETWORK_ORIGINAL_JSON"; then
+        echo "FATAL: could not read the original network configuration" >&2
         return 1
     fi
+    if ! python3 - "$base" "$NETWORK_ORIGINAL_JSON" "$NETWORK_JSON" <<'PY'
+import json
+import sys
+
+base, source, destination = sys.argv[1:]
+with open(source, encoding="utf-8") as handle:
+    document = json.load(handle)
+if document.get("BaseUrl") != "":
+    raise SystemExit("FATAL: proxy fixture BaseUrl was not empty before the subpath test")
+document["BaseUrl"] = base
+with open(destination, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, separators=(",", ":"))
+PY
+    then
+        echo "FATAL: could not prepare the subpath network configuration" >&2
+        return 1
+    fi
+    # Arm rollback before the mutating request. A transport failure can occur
+    # after Jellyfin accepted the POST, so even an unsuccessful curl must cause
+    # the original document to be replayed on EXIT/INT/TERM.
+    ROLLBACK_BASE="$base"
+    ROLLBACK_AUTH="$auth"
+    ROLLBACK_BASEURL=1
     if ! curl --fail --show-error --silent -X POST -H "$auth" -H 'Content-Type: application/json' \
         --data-binary @"$NETWORK_JSON" -o /dev/null \
         "http://127.0.0.1:$ORIGIN/System/Configuration/network"; then
@@ -266,6 +405,7 @@ cmd_subpath() {
         return 1
     fi
 
+    ROLLBACK_INJECTORS=1
     if restart_origin "$base" && park_injectors "$base"; then
         probes_unblocked=1
         bash "$HERE/lib/matrix.sh" "nginx SUBPATH $base" "$SUBPATH" "$base" strict || rc=1
@@ -276,7 +416,7 @@ cmd_subpath() {
 
     # Always attempt this rollback: park_injectors may have moved directories
     # before a restart/readiness failure, and restoring is harmless when it did not.
-    if restore_injectors "$base"; then
+    if restore_injectors_scoped "$base"; then
         if [ "$probes_unblocked" = 1 ]; then
             subpath_ready=1
         fi
@@ -290,17 +430,8 @@ cmd_subpath() {
             node "$HERE/lib/e2e.js" "$SUBPATH" "$base" || rc=1
     fi
 
-    echo "==> restoring BaseUrl=''"
-    if curl --fail --show-error --silent -H "$auth" \
-        "http://127.0.0.1:$ORIGIN$base/System/Configuration/network" \
-        | python3 -c 'import json,sys;d=json.load(sys.stdin);d["BaseUrl"]="";print(json.dumps(d))' \
-            > "$NETWORK_JSON" \
-        && curl --fail --show-error --silent -X POST -H "$auth" -H 'Content-Type: application/json' \
-            --data-binary @"$NETWORK_JSON" -o /dev/null \
-            "http://127.0.0.1:$ORIGIN$base/System/Configuration/network"; then
-        restart_origin || rc=1
-    else
-        echo "FATAL: could not restore BaseUrl=''" >&2
+    if ! rollback_active_state; then
+        echo "FATAL: could not restore the subpath fixture state" >&2
         rc=1
     fi
     return "$rc"
@@ -309,7 +440,14 @@ cmd_subpath() {
 cmd_all() {
     local rc=0
     cmd_up
-    cmd_matrix || rc=1
+    if ! cmd_matrix; then
+        rc=1
+        # Later legs require the ordinary injector state. Let the EXIT trap
+        # retry rollback immediately rather than running invalid follow-ups.
+        if [ "$ROLLBACK_INJECTORS" -ne 0 ]; then
+            return 1
+        fi
+    fi
     cmd_ws || rc=1
     cmd_cache || rc=1
     cmd_e2e || rc=1

@@ -2,5 +2,12 @@
     auto_https off
 }
 :80 {
-    reverse_proxy rk-jf:8096
+    reverse_proxy rk-jf:8096 {
+        # Caddy's HTTP transport otherwise adds Accept-Encoding: gzip when the
+        # client omitted the field, then transparently decodes the response
+        # without changing the origin's representation-specific strong ETag.
+        transport http {
+            compression off
+        }
+    }
 }
