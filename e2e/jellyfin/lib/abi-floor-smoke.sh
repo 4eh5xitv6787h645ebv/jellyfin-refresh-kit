@@ -280,12 +280,12 @@ start_floor_service() {
         printf 'FATAL: refusing ABI-floor container with labels %s\n' "${labels}" >&2
         return 1
     }
-    [ -n "${ABI_FLOOR_REFERENCE_IMAGE_ID}" ] \
-        && [ "${running_image_id}" = "${ABI_FLOOR_REFERENCE_IMAGE_ID}" ] || {
+    if [ -z "${ABI_FLOOR_REFERENCE_IMAGE_ID}" ] \
+        || [ "${running_image_id}" != "${ABI_FLOOR_REFERENCE_IMAGE_ID}" ]; then
         printf 'FATAL: ABI-floor container image ID %s differs from exact reference ID %s\n' \
             "${running_image_id}" "${ABI_FLOOR_REFERENCE_IMAGE_ID:-<unset>}" >&2
         return 1
-    }
+    fi
     for logical in abi-floor-config abi-floor-cache; do
         expected="${RK_PROJECT}_${logical}"
         volume_labels="$(docker volume inspect --format '{{json .Labels}}' "${expected}")" \
@@ -396,11 +396,11 @@ PY
         sha256sum -- "${container_dll_path}" | awk 'NR == 1 { print $1 }')" || return $?
     stage_dll_sha="$(sha256sum "${RK_STAGE_JF10}/Jellyfin.Plugin.RefreshKit.dll" \
         | awk 'NR == 1 { print $1 }')" || return $?
-    [[ "${container_dll_sha}" =~ ^[0-9a-f]{64}$ ]] \
-        && [ "${container_dll_sha}" = "${stage_dll_sha}" ] || {
+    if ! [[ "${container_dll_sha}" =~ ^[0-9a-f]{64}$ ]] \
+        || [ "${container_dll_sha}" != "${stage_dll_sha}" ]; then
         printf 'FATAL: running ABI-floor container DLL differs from the pinned snapshot\n' >&2
         return 1
-    }
+    fi
     managed_identity="$(python3 "${RK_REPO_ROOT}/scripts/abi_floor_evidence.py" \
         --managed-identity "${RK_STAGE_JF10}/Jellyfin.Plugin.RefreshKit.dll")" || return $?
     python3 - \
