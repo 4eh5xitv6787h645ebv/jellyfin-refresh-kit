@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   compatibility:
-    name: Nine pinned ecosystem matrices
+    name: 14 pinned ecosystem matrices
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:

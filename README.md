@@ -592,7 +592,7 @@ The standalone plugin declares support for **Jellyfin 10.11.x and Jellyfin
 every future minor passed; current-candidate results and exact snapshot
 identities are recorded separately in [COMPATIBILITY.md](COMPATIBILITY.md).
 
-The project includes compatibility testing across a broad set of community plugins and common reverse-proxy configurations. The detailed environments, tested plugin builds, verdicts, edge cases, and reproducible evidence live in [COMPATIBILITY.md](COMPATIBILITY.md).
+The current compatibility inventory classifies all 101 rows in the audited Awesome Jellyfin plugin section. It locks 44 immutable archives, including 40 testable runtime artifacts exercised across 14 matrices; five outer-response-buffer matrices use the statically enforced safe-degrade contract. The detailed environments, tested plugin builds, verdicts, edge cases, and reproducible evidence live in [COMPATIBILITY.md](COMPATIBILITY.md).
 
 Keeping the evidence in that file allows this README to describe the supported behaviour without turning into a test ledger.
 
@@ -759,7 +759,7 @@ security audit requires access to the live NuGet advisory feed.
 ./test.sh all              # every gate above; intentionally long-running
 ```
 
-The read-only **Locked ecosystem compatibility** workflow runs the nine pinned
+The read-only **Locked ecosystem compatibility** workflow runs all 14 pinned
 matrices weekly and can be manually dispatched for an exact source revision.
 It retains the collector's sanitized, completeness-checked evidence artifact.
 

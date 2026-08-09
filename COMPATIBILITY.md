@@ -73,24 +73,26 @@ verification rejects any staged DLL/metadata disagreement before a live lab.
 
 ## Locked ecosystem coverage
 
-The compatibility lock contains **24 immutable archives** representing **23
-catalog projects**. It is derived from catalog commit
-`a60d3d24fe0e16e59518f95ea4743d8996fa81c9` at cutoff
-`2026-08-08T14:17:00Z`; the source audit SHA-256 is
-`b9b5431eca9377f5f15b9636775f989f632bf89ae1554db9df68778f26d9bff2`.
+The current compatibility inventory classifies all **101 Awesome Jellyfin
+plugin-section rows** and locks **44 immutable archives**, including **40
+testable runtime artifacts**. It is derived from catalog commit
+`a60d3d24fe0e16e59518f95ea4743d8996fa81c9` (2026-08-05); the authoritative
+catalog snapshot SHA-256 is
+`9152f4016c90aad9986883c47e9217ce86bf348c7df89df5bc8c3ac04b7b0265`.
 
 The machine-enforced classifications are:
 
-| Runtime | Testable | Quarantined | Unsupported |
-| --- | ---: | ---: | ---: |
-| Jellyfin 10.11.11 | 19 | 2 | 2 |
-| Jellyfin 12.0.0-rc4 | 1 | 1 | 21 |
+| Runtime | Testable | Quarantined | Unsupported | Not relevant | Manual only | Archived |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Jellyfin 10.11.11 | 33 | 3 | 2 | 60 | 2 | 1 |
+| Jellyfin 12.0.0-rc4 | 3 | 1 | 34 | 60 | 2 | 1 |
 
-Jellyfin 12 testable coverage is intentionally limited to the dedicated net10
-Jellyfin Enhanced artifact. Seasonals is quarantined on 12 because its archive
-claims a net9/10.11 ABI, and the remaining catalog artifacts have no defensible
-12-native package. File Transformation is a separately locked dependency used
-throughout the callback stacks.
+Jellyfin 10.11 testable coverage contains 33 relevant catalog rows. Jellyfin 12
+testable coverage contains the dedicated net10/Jellyfin 12 artifacts for
+Jellyfin Enhanced, Intro Skipper, and StreamLimit. Seasonals is quarantined on
+12 because its archive claims a net9/10.11 ABI, and the remaining relevant rows
+have no defensible current Jellyfin 12 artifact. File Transformation is an
+additional locked dependency exercised throughout the callback stacks.
 
 Six hostile static fixtures exercise bounded behaviors without pretending to
 load incompatible plugins:
@@ -102,9 +104,10 @@ load incompatible plugins:
 - `legacy-direct-writer`
 - `transformation-chain`
 
-Nine runtime matrices exercise the selected real artifacts and orderings:
+Fourteen runtime matrices exercise the selected real artifacts and orderings:
 
 - `jf10-transform-core`
+- `jf10-transform-whisper`
 - `jf10-transform-hover`
 - `jf10-transform-player`
 - `jf10-transform-editors`
@@ -113,6 +116,10 @@ Nine runtime matrices exercise the selected real artifacts and orderings:
 - `jf10-middleware-reverse`
 - `jf10-registration-broker`
 - `jf12-enhanced`
+- `jf10-response-transformers-forward`
+- `jf10-response-transformers-reverse`
+- `jf10-direct-writers-readonly`
+- `jf10-direct-writers-writable`
 
 The exact artifacts, URLs, digests, metadata, expected tags, quarantine reasons,
 and install order live in `e2e/compat/ecosystem.lock.json` and
@@ -132,12 +139,14 @@ ETag. Matching `If-None-Match` can return `304`, a failed `If-Match` can return
 
 ### Nested outer-response-buffer ownership
 
-Exactly three locked matrices contain a known outer response owner and use the
+Exactly five locked matrices contain a known outer response owner and use the
 statically enforced `safe-degrade` expectation:
 
 - `jf10-middleware-forward`
 - `jf10-middleware-reverse`
 - `jf12-enhanced`
+- `jf10-response-transformers-forward`
+- `jf10-response-transformers-reverse`
 
 The complete injected/stamped body must still be returned, but Refresh Kit must
 not claim a validator for bytes the outer middleware owns. Primary and stale
