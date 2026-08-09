@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Initialize one fresh Jellyfin service, install a selected stage, and configure
-# the matching plugin. Usage: provision.sh jf10|jf12 [jf10|jf12]
+# the matching plugin. Usage: provision.sh jf10|jf12|abi-floor [jf10|jf12]
 # The optional second argument selects the stage, enabling the jf10-on-jf12 leg.
 
 set -euo pipefail
@@ -13,7 +13,10 @@ source "${HERE}/common.sh"
 
 TARGET="${1:-}"
 STAGE_FLAVOR="${2:-${TARGET}}"
-case "${TARGET}" in jf10|jf12) ;; *) rk_die "usage: provision.sh jf10|jf12 [jf10|jf12]" ;; esac
+case "${TARGET}" in
+    jf10|jf12|abi-floor) ;;
+    *) rk_die "usage: provision.sh jf10|jf12|abi-floor [jf10|jf12]" ;;
+esac
 case "${STAGE_FLAVOR}" in jf10|jf12) ;; *) rk_die "unknown stage flavor ${STAGE_FLAVOR}" ;; esac
 
 # Direct invocations and both parallel provisioning children resolve the same
@@ -179,7 +182,11 @@ CONTAINER_DLL_SHA="$(docker exec "${CONTAINER}" sha256sum "${REMOTE_PLUGIN_DIR}/
 [ "${HOST_DLL_SHA}" = "${CONTAINER_DLL_SHA}" ] || rk_die "${TARGET}: copied DLL checksum mismatch"
 
 rk_log "${TARGET}: restarting with installed plugin"
-rk_compose restart "${TARGET}" >/dev/null
+if [ "${TARGET}" = "abi-floor" ]; then
+    rk_compose --profile abi-floor restart "${TARGET}" >/dev/null
+else
+    rk_compose restart "${TARGET}" >/dev/null
+fi
 if ! rk_wait_http "${ORIGIN}/System/Info/Public" 200 120 2; then
     if [ "${TARGET}" = "jf12" ] && [ "${STAGE_FLAVOR}" = "jf10" ]; then
         rk_die "${TARGET}: server did not recover after loading the cross-generation stage"
@@ -191,7 +198,8 @@ fi
 # again so every subsequent command has a token proven against this process.
 TOKEN="$(authenticate)"
 
-if [ "${TARGET}" = "${STAGE_FLAVOR}" ]; then
+if [ "${TARGET}" = "${STAGE_FLAVOR}" ] \
+    || { [ "${TARGET}" = "abi-floor" ] && [ "${STAGE_FLAVOR}" = "jf10" ]; }; then
     rk_wait_http "${ORIGIN}/RefreshKit/Generation" 200 120 2 || {
         docker logs --tail 200 "${CONTAINER}" >&2 || true
         rk_die "${TARGET}: matching Refresh Kit stage did not expose its endpoint"

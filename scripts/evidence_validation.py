@@ -13,6 +13,10 @@ from host_upgrade_evidence import (
     HostUpgradeEvidenceError,
     validate_evidence as validate_host_upgrade_evidence,
 )
+from abi_floor_evidence import (
+    AbiFloorEvidenceError,
+    validate_evidence as validate_abi_floor_evidence,
+)
 
 
 INTEGRATION_JSON = (
@@ -30,9 +34,24 @@ INTEGRATION_JSON = (
     "compat-jf10-on-jf12/generation.json",
     "compat-jf10-on-jf12/plugin-record.json",
     "compat-jf10-on-jf12/public.json",
+    "abi-floor/result.json",
+    "abi-floor/server/result.json",
+    "abi-floor/server/public.json",
+    "abi-floor/server/generation.json",
+    "abi-floor/server/diagnostics.json",
+    "abi-floor/server/plugins.json",
     "host-upgrade/result.json",
     "host-upgrade/jf10/result.json",
     "host-upgrade/jf12/result.json",
+)
+INTEGRATION_TEXT = (
+    "abi-floor/server/generation.headers",
+    "abi-floor/server/kit.headers",
+    "abi-floor/server/kit.js",
+    "abi-floor/server/shell.headers",
+    "abi-floor/server/conditional.headers",
+    "abi-floor/server/index.html",
+    "abi-floor/server.log",
 )
 INTEGRATION_IMAGES = tuple(
     f"{target}/browser/{name}"
@@ -45,7 +64,7 @@ INTEGRATION_IMAGES = tuple(
         "post-restart-background.png",
     )
 )
-INTEGRATION_LOGS = ("dual-jellyfin", "host-upgrade", "proxy")
+INTEGRATION_LOGS = ("abi-floor", "dual-jellyfin", "host-upgrade", "proxy")
 SELF_LIFECYCLE_PHASES = {
     "playback-fixture-indexed",
     "pristine-authenticated-tabs",
@@ -462,7 +481,10 @@ def validate_integration_tree(root: pathlib.Path, build: pathlib.Path) -> set[st
     root, build = root.resolve(strict=True), build.resolve(strict=True)
     lab = root / "lab"
     logs = root / "logs"
-    expected_lab = {pathlib.PurePosixPath(name).as_posix() for name in (*INTEGRATION_JSON, *INTEGRATION_IMAGES)}
+    expected_lab = {
+        pathlib.PurePosixPath(name).as_posix()
+        for name in (*INTEGRATION_JSON, *INTEGRATION_TEXT, *INTEGRATION_IMAGES)
+    }
     actual_lab = {
         path.relative_to(lab).as_posix() for path in lab.rglob("*") if path.is_file()
     } if lab.is_dir() else set()
@@ -506,6 +528,10 @@ def validate_integration_tree(root: pathlib.Path, build: pathlib.Path) -> set[st
         load_object(cross / "public.json"),
         build,
     )
+    try:
+        validate_abi_floor_evidence(lab / "abi-floor", build)
+    except AbiFloorEvidenceError as error:
+        raise EvidenceValidationError(str(error)) from error
     try:
         validate_host_upgrade_evidence(lab / "host-upgrade", build)
     except HostUpgradeEvidenceError as error:

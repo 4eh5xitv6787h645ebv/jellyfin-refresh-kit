@@ -35,12 +35,26 @@ MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_ARCHIVE_FILES = 20_000
 REQUIRED_EXIT_STATUS = {
+    "abiFloorLab": 0,
     "dualJellyfinLab": 0,
     "hostUpgradeLab": 0,
     "proxyRig": 0,
     "compatibilityMatrices": 0,
 }
 REQUIRED_COLLECTED = {
+    "lab/abi-floor/result.json",
+    "lab/abi-floor/server/result.json",
+    "lab/abi-floor/server/public.json",
+    "lab/abi-floor/server/generation.json",
+    "lab/abi-floor/server/diagnostics.json",
+    "lab/abi-floor/server/plugins.json",
+    "lab/abi-floor/server/generation.headers",
+    "lab/abi-floor/server/kit.headers",
+    "lab/abi-floor/server/kit.js",
+    "lab/abi-floor/server/shell.headers",
+    "lab/abi-floor/server/conditional.headers",
+    "lab/abi-floor/server/index.html",
+    "lab/abi-floor/server.log",
     "lab/jf10/server/result.json",
     "lab/jf10/server/diagnostics.json",
     "lab/jf10/browser/result.json",
@@ -56,6 +70,7 @@ REQUIRED_COLLECTED = {
     "lab/host-upgrade/jf10/result.json",
     "lab/host-upgrade/jf12/result.json",
     "logs/host-upgrade.log",
+    "logs/abi-floor.log",
     "logs/dual-jellyfin.log",
     "logs/proxy.log",
     "compat/summary.json",
@@ -64,7 +79,7 @@ WORKER_CONTRACTS = {
     "fast": ("fast_repro_security", {}),
     "integration": (
         "integration_gate",
-        {"dualJellyfinLab": 0, "hostUpgradeLab": 0, "proxyRig": 0},
+        {"abiFloorLab": 0, "dualJellyfinLab": 0, "hostUpgradeLab": 0, "proxyRig": 0},
     ),
     "compatibility": ("compatibility_gate", {"compatibilityMatrices": 0}),
 }

@@ -154,6 +154,7 @@ PY
     bash e2e/proxy/lib/build-snapshot-negative.sh
     bash e2e/jellyfin/run.sh runner-negative
     bash e2e/jellyfin/run.sh host-upgrade-negative
+    bash e2e/jellyfin/run.sh abi-floor-negative
 
     command -v docker >/dev/null 2>&1 || {
         echo "FATAL: Docker Compose is required for compose validation." >&2
@@ -285,12 +286,14 @@ test_integration() {
     install_browser_dependencies
     validate_static_inputs
     prepare_validation_build_snapshot
-    local result=0 jellyfin_rc=0 jellyfin_tee_rc=0 host_upgrade_rc=0 host_upgrade_tee_rc=0
+    local result=0 abi_floor_rc=0 abi_floor_tee_rc=0
+    local jellyfin_rc=0 jellyfin_tee_rc=0 host_upgrade_rc=0 host_upgrade_tee_rc=0
     local proxy_rc=0 proxy_tee_rc=0 build_snapshot
     local -a pipeline_status=()
-    local log_dir jellyfin_log host_upgrade_log proxy_log
+    local log_dir abi_floor_log jellyfin_log host_upgrade_log proxy_log
     build_snapshot="${VALIDATION_BUILD_SNAPSHOT}"
     log_dir="$(mktemp -d)"
+    abi_floor_log="${log_dir}/abi-floor.log"
     jellyfin_log="${log_dir}/dual-jellyfin.log"
     host_upgrade_log="${log_dir}/host-upgrade.log"
     proxy_log="${log_dir}/proxy.log"
@@ -309,6 +312,16 @@ test_integration() {
     heading "Removing prior generated Jellyfin evidence before the gate"
     RK_SKIP_BUILD=1 RK_BUILD_SNAPSHOT="${build_snapshot}" \
         bash e2e/jellyfin/run.sh clean
+
+    heading "Running the isolated exact Jellyfin 10.11.0 ABI-floor load smoke"
+    set +e
+    RK_SKIP_BUILD=1 RK_BUILD_SNAPSHOT="${build_snapshot}" \
+        bash e2e/jellyfin/run.sh abi-floor 2>&1 | tee "${abi_floor_log}"
+    pipeline_status=("${PIPESTATUS[@]}")
+    abi_floor_rc="${pipeline_status[0]}"
+    abi_floor_tee_rc="${pipeline_status[1]}"
+    set -e
+    [ "${abi_floor_rc}" -eq 0 ] && [ "${abi_floor_tee_rc}" -eq 0 ] || result=1
 
     heading "Running the pinned Jellyfin 10.11 + 12 lifecycle/browser lab"
     set +e
@@ -353,10 +366,12 @@ test_integration() {
     python3 scripts/collect-ci-evidence.py \
         --output "${RK_RESULTS_DIR:-test-results}" \
         --build-dir "${build_snapshot}" \
+        --abi-floor-exit "${abi_floor_rc}" \
         --jellyfin-exit "${jellyfin_rc}" \
         --host-upgrade-exit "${host_upgrade_rc}" \
         --proxy-exit "${proxy_rc}" \
         --require-integration-evidence \
+        --log "abi-floor=${abi_floor_log}" \
         --log "dual-jellyfin=${jellyfin_log}" \
         --log "host-upgrade=${host_upgrade_log}" \
         --log "proxy=${proxy_log}" || result=1

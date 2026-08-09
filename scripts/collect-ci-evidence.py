@@ -20,6 +20,8 @@ from host_upgrade_evidence import (
 )
 from evidence_validation import (
     EvidenceValidationError,
+    INTEGRATION_LOGS,
+    INTEGRATION_TEXT,
     validate_compatibility_tree,
     validate_integration_tree,
 )
@@ -44,10 +46,17 @@ SAFE_JSON = (
     "compat-jf10-on-jf12/generation.json",
     "compat-jf10-on-jf12/plugin-record.json",
     "compat-jf10-on-jf12/public.json",
+    "abi-floor/result.json",
+    "abi-floor/server/result.json",
+    "abi-floor/server/public.json",
+    "abi-floor/server/generation.json",
+    "abi-floor/server/diagnostics.json",
+    "abi-floor/server/plugins.json",
     "host-upgrade/result.json",
     "host-upgrade/jf10/result.json",
     "host-upgrade/jf12/result.json",
 )
+SAFE_TEXT = INTEGRATION_TEXT
 INTEGRATION_LIFECYCLE_RESULTS = {
     "jf10/lifecycle/result.json": ("jf10", "self"),
     "jf10/third-party-lifecycle/result.json": ("jf10", "third-party"),
@@ -170,6 +179,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("test-results"))
     parser.add_argument("--jellyfin-exit", type=int)
+    parser.add_argument("--abi-floor-exit", type=int)
     parser.add_argument("--host-upgrade-exit", type=int)
     parser.add_argument("--proxy-exit", type=int)
     parser.add_argument("--compatibility-exit", type=int)
@@ -700,6 +710,8 @@ def main() -> int:
     statuses: dict[str, int] = {}
     if args.jellyfin_exit is not None:
         statuses["dualJellyfinLab"] = args.jellyfin_exit
+    if args.abi_floor_exit is not None:
+        statuses["abiFloorLab"] = args.abi_floor_exit
     if args.host_upgrade_exit is not None:
         statuses["hostUpgradeLab"] = args.host_upgrade_exit
     if args.proxy_exit is not None:
@@ -746,6 +758,10 @@ def main() -> int:
             strict_errors.append(
                 f"dual Jellyfin runner exit status is {args.jellyfin_exit!r}, expected 0"
             )
+        if args.abi_floor_exit != 0:
+            strict_errors.append(
+                f"ABI-floor runner exit status is {args.abi_floor_exit!r}, expected 0"
+            )
         if args.host_upgrade_exit != 0:
             strict_errors.append(
                 f"host-upgrade runner exit status is {args.host_upgrade_exit!r}, expected 0"
@@ -755,9 +771,11 @@ def main() -> int:
     collect_integration = (
         args.require_integration_evidence
         or args.jellyfin_exit is not None
+        or args.abi_floor_exit is not None
         or args.host_upgrade_exit is not None
         or args.proxy_exit is not None
         or "dualJellyfinLab" in statuses
+        or "abiFloorLab" in statuses
         or "hostUpgradeLab" in statuses
         or "proxyRig" in statuses
     )
@@ -790,6 +808,27 @@ def main() -> int:
             validate_integration_lifecycle(relative, value, integration_build, strict_errors)
         target = output / "lab" / relative
         write_json(target, sanitize_json(value))
+        relative_target = target.relative_to(output).as_posix()
+        if relative_target not in evidence["collected"]:
+            evidence["collected"].append(relative_target)
+
+    for relative in (SAFE_TEXT if collect_integration else ()):
+        source = LAB_ARTIFACTS / relative
+        if not source.is_file():
+            evidence["missing"].append(relative)
+            if args.require_integration_evidence:
+                strict_errors.append(f"missing required integration evidence: {relative}")
+            continue
+        if source.stat().st_size == 0:
+            evidence["missing"].append(f"{relative} (empty)")
+            if args.require_integration_evidence:
+                strict_errors.append(f"empty required integration evidence: {relative}")
+        target = output / "lab" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            sanitize_text(source.read_text(encoding="utf-8", errors="replace")),
+            encoding="utf-8",
+        )
         relative_target = target.relative_to(output).as_posix()
         if relative_target not in evidence["collected"]:
             evidence["collected"].append(relative_target)
@@ -843,7 +882,7 @@ def main() -> int:
 
     if args.require_integration_evidence:
         supplied_logs = {specification.split("=", 1)[0] for specification in args.log if "=" in specification}
-        missing_logs = sorted({"dual-jellyfin", "host-upgrade", "proxy"} - supplied_logs)
+        missing_logs = sorted(set(INTEGRATION_LOGS) - supplied_logs)
         if missing_logs:
             strict_errors.append("missing required integration logs: " + ", ".join(missing_logs))
         if integration_build is not None:

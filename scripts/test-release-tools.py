@@ -36,6 +36,7 @@ retainer = load("rk_release_retainer", "scripts/retain-release-candidate.py")
 collector = load("rk_evidence_collector", "scripts/collect-ci-evidence.py")
 validation_run = load("rk_validation_run", "scripts/verify-validation-run.py")
 evidence_validation = load("rk_evidence_validation", "scripts/evidence_validation.py")
+abi_floor = load("rk_abi_floor_evidence", "scripts/abi_floor_evidence.py")
 host_evidence = load("rk_host_upgrade_evidence", "scripts/host_upgrade_evidence.py")
 host_semantics = load(
     "rk_host_upgrade_semantics", "e2e/jellyfin/lib/verify-host-upgrade-results.py"
@@ -177,8 +178,13 @@ class BuildIsolationTests(unittest.TestCase):
         collector_text = (ROOT / "scripts" / "collect-ci-evidence.py").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(gate.count('pipeline_status=("${PIPESTATUS[@]}")'), 3)
-        for variable in ("jellyfin_tee_rc", "host_upgrade_tee_rc", "proxy_tee_rc"):
+        self.assertEqual(gate.count('pipeline_status=("${PIPESTATUS[@]}")'), 4)
+        for variable in (
+            "abi_floor_tee_rc",
+            "jellyfin_tee_rc",
+            "host_upgrade_tee_rc",
+            "proxy_tee_rc",
+        ):
             self.assertIn(f'[ "${{{variable}}}" -eq 0 ] || result=1', gate)
         self.assertIn("source.stat().st_size == 0", collector_text)
         self.assertNotIn(
@@ -917,6 +923,71 @@ class CanonicalEvidenceSemanticTests(unittest.TestCase):
                 evidence_validation.validate_cross_compatibility(
                     cross, generation_result, plugin_record, public, build
                 )
+
+
+class AbiFloorEvidenceTests(unittest.TestCase):
+    def test_semantic_validator_self_test_is_network_free_and_fail_closed(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            abi_floor.self_test()
+        self.assertIn("12/12 PASS", output.getvalue())
+
+    def test_collector_redaction_preserves_strict_raw_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence, build = abi_floor.fixture(pathlib.Path(temporary))
+            for path in evidence.rglob("*"):
+                if not path.is_file():
+                    continue
+                if path.suffix == ".json":
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                    collector.write_json(path, collector.sanitize_json(value))
+                else:
+                    path.write_text(
+                        collector.sanitize_text(
+                            path.read_text(encoding="utf-8", errors="replace")
+                        ),
+                        encoding="utf-8",
+                    )
+            abi_floor.validate_evidence(evidence, build)
+
+    def test_collector_release_inventory_and_runner_wiring_are_explicit(self) -> None:
+        expected_json = {
+            "abi-floor/result.json",
+            "abi-floor/server/result.json",
+            "abi-floor/server/public.json",
+            "abi-floor/server/generation.json",
+            "abi-floor/server/diagnostics.json",
+            "abi-floor/server/plugins.json",
+        }
+        self.assertTrue(expected_json.issubset(set(collector.SAFE_JSON)))
+        expected_text = {
+            "abi-floor/server/generation.headers",
+            "abi-floor/server/kit.headers",
+            "abi-floor/server/kit.js",
+            "abi-floor/server/shell.headers",
+            "abi-floor/server/conditional.headers",
+            "abi-floor/server/index.html",
+            "abi-floor/server.log",
+        }
+        self.assertTrue(expected_text.issubset(set(collector.SAFE_TEXT)))
+        self.assertEqual(validation_run.REQUIRED_EXIT_STATUS["abiFloorLab"], 0)
+        self.assertTrue(
+            {
+                *(f"lab/{name}" for name in expected_json),
+                *(f"lab/{name}" for name in expected_text),
+                "logs/abi-floor.log",
+            }.issubset(validation_run.REQUIRED_COLLECTED)
+        )
+        runner = (ROOT / "test.sh").read_text(encoding="utf-8")
+        self.assertIn("bash e2e/jellyfin/run.sh abi-floor", runner)
+        self.assertIn("--abi-floor-exit", runner)
+        self.assertIn('--log "abi-floor=${abi_floor_log}"', runner)
+        compose = (ROOT / "e2e/jellyfin/docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn('profiles: ["abi-floor"]', compose)
+        self.assertIn("127.0.0.1:${RK_ABI_FLOOR_PORT:-18119}:8096", compose)
+        self.assertIn("abi-floor-internal:", compose)
+        self.assertIn("internal: true", compose)
+        self.assertIn(abi_floor.IMAGE_REFERENCE, compose)
 
 
 class HostUpgradeEvidenceTests(unittest.TestCase):

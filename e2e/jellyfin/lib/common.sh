@@ -15,9 +15,11 @@ RK_ARTIFACT_DIR="${RK_JELLYFIN_DIR}/artifacts"
 
 RK_JF10_PORT="${RK_JF10_PORT:-18116}"
 RK_JF12_PORT="${RK_JF12_PORT:-18117}"
-export RK_JF10_PORT RK_JF12_PORT
+RK_ABI_FLOOR_PORT="${RK_ABI_FLOOR_PORT:-18119}"
+export RK_JF10_PORT RK_JF12_PORT RK_ABI_FLOOR_PORT
 RK_JF10_ORIGIN="http://127.0.0.1:${RK_JF10_PORT}"
 RK_JF12_ORIGIN="http://127.0.0.1:${RK_JF12_PORT}"
+RK_ABI_FLOOR_ORIGIN="http://127.0.0.1:${RK_ABI_FLOOR_PORT}"
 
 RK_LAB_USER="${RK_LAB_USER:-rk_admin}"
 RK_LAB_PASSWORD="${RK_LAB_PASSWORD:-Test669Pw!x}"
@@ -33,6 +35,7 @@ fi
 
 RK_JF10_DIGEST="aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db"
 RK_JF12_DIGEST="db1df1d111c27ba1f10bb8fce6630892f66eb66b12c2b24e79011453ac18b3db"
+RK_ABI_FLOOR_DIGEST="59417f441213e236a9f907d4e71a13472042409d85f9e9310dbdd87ee33d7bd4"
 
 RK_PROJECT="${RK_JELLYFIN_PROJECT:-rk-jellyfin-$(id -u)}"
 case "${RK_PROJECT}" in
@@ -90,6 +93,7 @@ rk_origin() {
     case "${1:-}" in
         jf10) printf '%s\n' "${RK_JF10_ORIGIN}" ;;
         jf12) printf '%s\n' "${RK_JF12_ORIGIN}" ;;
+        abi-floor) printf '%s\n' "${RK_ABI_FLOOR_ORIGIN}" ;;
         *) rk_die "unknown Jellyfin target: ${1:-<empty>}" ;;
     esac
 }
@@ -98,6 +102,7 @@ rk_expected_digest() {
     case "${1:-}" in
         jf10) printf '%s\n' "${RK_JF10_DIGEST}" ;;
         jf12) printf '%s\n' "${RK_JF12_DIGEST}" ;;
+        abi-floor) printf '%s\n' "${RK_ABI_FLOOR_DIGEST}" ;;
         *) rk_die "unknown Jellyfin target: ${1:-<empty>}" ;;
     esac
 }
@@ -106,6 +111,7 @@ rk_expected_version_pattern() {
     case "${1:-}" in
         jf10) printf '%s\n' '^10\.11\.11([.-]|$)' ;;
         jf12) printf '%s\n' '^12\.0([.-]|$)' ;;
+        abi-floor) printf '%s\n' '^10\.11\.0$' ;;
         *) rk_die "unknown Jellyfin target: ${1:-<empty>}" ;;
     esac
 }
@@ -120,14 +126,18 @@ rk_stage() {
 
 rk_token_file() {
     case "${1:-}" in
-        jf10|jf12) printf '%s/%s.token\n' "${RK_STATE_DIR}" "$1" ;;
+        jf10|jf12|abi-floor) printf '%s/%s.token\n' "${RK_STATE_DIR}" "$1" ;;
         *) rk_die "unknown Jellyfin target: ${1:-<empty>}" ;;
     esac
 }
 
 rk_container_id() {
     local target="$1" id
-    id="$(rk_compose ps -q "${target}")"
+    if [ "${target}" = "abi-floor" ]; then
+        id="$(rk_compose --profile abi-floor ps -q "${target}")"
+    else
+        id="$(rk_compose ps -q "${target}")"
+    fi
     [ -n "${id}" ] || rk_die "${target} container is not running in project ${RK_PROJECT}"
     printf '%s\n' "${id}"
 }
@@ -176,10 +186,15 @@ rk_no_token_auth_header() {
 
 rk_reset_service_storage() {
     local target="$1" volume_name volume
-    case "${target}" in jf10|jf12) ;; *) rk_die "unknown target ${target}" ;; esac
+    case "${target}" in jf10|jf12|abi-floor) ;; *) rk_die "unknown target ${target}" ;; esac
 
-    rk_compose stop "${target}" >/dev/null 2>&1 || true
-    rk_compose rm --force --stop "${target}" >/dev/null 2>&1 || true
+    if [ "${target}" = "abi-floor" ]; then
+        rk_compose --profile abi-floor stop "${target}" >/dev/null 2>&1 || true
+        rk_compose --profile abi-floor rm --force --stop "${target}" >/dev/null 2>&1 || true
+    else
+        rk_compose stop "${target}" >/dev/null 2>&1 || true
+        rk_compose rm --force --stop "${target}" >/dev/null 2>&1 || true
+    fi
     for volume_name in "${target}-config" "${target}-cache"; do
         while IFS= read -r volume; do
             [ -n "${volume}" ] || continue

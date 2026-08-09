@@ -11,9 +11,11 @@
 #   ./run.sh third-party genuine two-version third-party lifecycle on both
 #   ./run.sh runner-negative verify lifecycle failures cannot be swallowed
 #   ./run.sh compat      net9/JF10 build on pristine JF12, record, restore
+#   ./run.sh abi-floor   exact isolated Jellyfin 10.11.0 net9 load smoke
+#   ./run.sh abi-floor-negative no-Docker floor-smoke contract regression
 #   ./run.sh host-upgrade reproducible in-place JF10 and JF12 upgrade paths
 #   ./run.sh host-upgrade-negative no-Docker fail-closed lab regression
-#   ./run.sh all         lifecycle + browser + compat + host upgrades
+#   ./run.sh all         ABI floor + lifecycle + browser + compat + host upgrades
 #   ./run.sh down        remove only this Compose project's resources
 #   ./run.sh clean       down + remove this lab's generated state/artifacts
 #
@@ -26,7 +28,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/lib/common.sh"
 
 usage() {
-    sed -n '3,18p' "$0"
+    sed -n '3,20p' "$0"
 }
 
 check_prerequisites() {
@@ -108,9 +110,12 @@ cmd_up() {
 cmd_reset() {
     check_prerequisites || return $?
     rk_log "removing prior resources owned by Compose project ${RK_PROJECT}"
-    rk_compose --profile lifecycle --profile host-upgrade \
+    rk_compose --profile lifecycle --profile abi-floor --profile host-upgrade \
         down --volumes --remove-orphans >/dev/null 2>&1 || true
-    rm -f -- "${RK_STATE_DIR}/jf10.token" "${RK_STATE_DIR}/jf12.token" || return $?
+    rm -f -- \
+        "${RK_STATE_DIR}/jf10.token" "${RK_STATE_DIR}/jf12.token" \
+        "${RK_STATE_DIR}/abi-floor.token" "${RK_STATE_DIR}/abi-floor.token.part" \
+        || return $?
     cmd_up || return $?
     cmd_check all
 }
@@ -365,6 +370,10 @@ cmd_compat() {
     bash "${HERE}/lib/compat.sh"
 }
 
+cmd_abi_floor() {
+    bash "${HERE}/lib/abi-floor-smoke.sh"
+}
+
 cmd_host_upgrade() {
     local target="${1:-all}"
     case "${target}" in jf10|jf12|all) ;; *) rk_die "host-upgrade target must be jf10, jf12 or all" ;; esac
@@ -380,7 +389,7 @@ cmd_restart() {
 }
 
 cmd_status() {
-    rk_compose ps
+    rk_compose --profile abi-floor --profile host-upgrade ps
     printf 'jf10: %s/System/Info/Public -> %s\n' "${RK_JF10_ORIGIN}" \
         "$(rk_http_code "${RK_JF10_ORIGIN}/System/Info/Public")"
     printf 'jf12: %s/System/Info/Public -> %s\n' "${RK_JF12_ORIGIN}" \
@@ -389,9 +398,11 @@ cmd_status() {
 
 cmd_down() {
     rk_log "removing containers, network and volumes owned by ${RK_PROJECT}"
-    rk_compose --profile lifecycle --profile host-upgrade down --volumes --remove-orphans
+    rk_compose --profile lifecycle --profile abi-floor --profile host-upgrade \
+        down --volumes --remove-orphans
     rm -f -- \
         "${RK_STATE_DIR}/jf10.token" "${RK_STATE_DIR}/jf12.token" \
+        "${RK_STATE_DIR}/abi-floor.token" "${RK_STATE_DIR}/abi-floor.token.part" \
         "${RK_STATE_DIR}/jf10.lifecycle.ok" "${RK_STATE_DIR}/jf12.lifecycle.ok" \
         "${RK_STATE_DIR}/jf10.lifecycle.ok.part" "${RK_STATE_DIR}/jf12.lifecycle.ok.part" \
         "${RK_STATE_DIR}/host-upgrade-jf10.admin.token" \
@@ -419,6 +430,9 @@ cmd_clean() {
 
 cmd_all() {
     cmd_lifecycle all || return $?
+    # lifecycle resolves/builds the immutable snapshot first; the ABI-floor
+    # runner then pins that same snapshot instead of requiring a prior build.
+    cmd_abi_floor || return $?
     cmd_third_party all || return $?
     cmd_browser all || return $?
     cmd_compat || return $?
@@ -436,6 +450,8 @@ main() {
         third-party) cmd_third_party "${2:-all}" ;;
         runner-negative) bash "${HERE}/lib/runner-negative.sh" ;;
         compat)  cmd_compat ;;
+        abi-floor) cmd_abi_floor ;;
+        abi-floor-negative) bash "${HERE}/lib/abi-floor-negative.sh" ;;
         host-upgrade) cmd_host_upgrade "${2:-all}" ;;
         host-upgrade-negative) bash "${HERE}/lib/host-upgrade-negative.sh" ;;
         restart) cmd_restart "${2:-}" ;;

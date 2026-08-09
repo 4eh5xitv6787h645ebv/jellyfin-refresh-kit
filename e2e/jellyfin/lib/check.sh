@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Assert the installed plugin's anonymous endpoints, authenticated diagnostics,
-# and transformed/revalidating web shell. Usage: check.sh jf10|jf12
+# and transformed/revalidating web shell. Usage: check.sh jf10|jf12|abi-floor
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,7 +11,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/common.sh"
 
 TARGET="${1:-}"
-case "${TARGET}" in jf10|jf12) ;; *) rk_die "usage: check.sh jf10|jf12" ;; esac
+case "${TARGET}" in
+    jf10|jf12|abi-floor) ;;
+    *) rk_die "usage: check.sh jf10|jf12|abi-floor" ;;
+esac
 ORIGIN="$(rk_origin "${TARGET}")"
 TOKEN_FILE="$(rk_token_file "${TARGET}")"
 [ -s "${TOKEN_FILE}" ] || rk_die "${TARGET}: missing token file; provision the lab first"
@@ -71,7 +74,8 @@ ETAG="$(awk 'BEGIN { IGNORECASE=1 } /^etag:/ { sub(/^[^:]*:[[:space:]]*/, ""); s
 [ -n "${ETAG}" ] || rk_die "${TARGET}: transformed shell has no ETag"
 case "${ETAG}" in *rk-*) ;; *) rk_die "${TARGET}: shell ETag is not a Refresh Kit ETag: ${ETAG}" ;; esac
 
-CONDITIONAL_STATUS="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+CONDITIONAL_STATUS="$(curl --silent --show-error \
+    -D "${OUT}/conditional.headers" --output /dev/null --write-out '%{http_code}' \
     -H "If-None-Match: ${ETAG}" "${ORIGIN}/web/index.html")"
 [ "${CONDITIONAL_STATUS}" = "304" ] || \
     rk_die "${TARGET}: If-None-Match returned ${CONDITIONAL_STATUS}, expected 304"
@@ -105,8 +109,17 @@ if not generation or not kit_version or not isinstance(rows, list):
     raise SystemExit(f"FATAL: incomplete diagnostics response: {diagnostics!r}")
 PY
 
-PUBLIC_VERSION="$(curl --fail --silent --show-error "${ORIGIN}/System/Info/Public" | \
-    python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("Version", d.get("version", "")))')"
+curl --fail --silent --show-error \
+    -o "${OUT}/public.json" "${ORIGIN}/System/Info/Public"
+PUBLIC_VERSION="$(python3 - "${OUT}/public.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+print(data.get("Version", data.get("version", "")))
+PY
+)"
 KIT_VERSION="$(python3 - "${OUT}/diagnostics.json" <<'PY'
 import json, sys
 d=json.load(open(sys.argv[1], encoding="utf-8"))

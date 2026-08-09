@@ -2,10 +2,16 @@
 
 This lab provisions independent, project-scoped instances of:
 
+- Jellyfin **10.11.0** in a profile-only ABI-floor smoke with the Refresh Kit
+  `net9.0` package
 - Jellyfin **10.11.11** with the Refresh Kit `net9.0` package
 - Jellyfin **12.0.0-rc4** (published image tag `12.0-rc4`) with the Refresh Kit `net10.0` package
 
-Both Jellyfin container images are pinned by digest in `docker-compose.yml`. Ports bind only to loopback (`127.0.0.1:18116` and `127.0.0.1:18117` by default), and each run resolves one verified immutable plugin-build snapshot before copying any files. The lifecycle-only repository helper image is digest-pinned as well.
+All Jellyfin container images are pinned by digest in `docker-compose.yml`.
+Ports bind only to loopback (`127.0.0.1:18119`, `127.0.0.1:18116`, and
+`127.0.0.1:18117` by default), and each run resolves one verified immutable
+plugin-build snapshot before copying any files. The lifecycle-only repository
+helper image is digest-pinned as well.
 
 ## Prerequisites
 
@@ -35,18 +41,32 @@ Run commands from this directory, or use the repository-level `./test.sh integra
 ./run.sh third-party jf12
 ./run.sh runner-negative   # no-Docker regression for lifecycle exit propagation
 ./run.sh compat            # classify the net9/JF10 package on JF12, then restore net10
+./run.sh abi-floor         # isolated exact Jellyfin 10.11.0 net9 load smoke
+./run.sh abi-floor-negative # no-Docker floor-smoke/validator regressions
 ./run.sh host-upgrade      # run both pinned in-place server-upgrade paths
 ./run.sh host-upgrade jf10 # Jellyfin 10.11.10 -> 10.11.11 with net9 active
 ./run.sh host-upgrade jf12 # 10.11.11 -> 12.0-rc4 with net9 -> net10 migration
 ./run.sh host-upgrade-negative # no-Docker fail-closed/static checks
 ./run.sh restart jf10      # bounded plain server restart
 ./run.sh status
-./run.sh all               # lifecycle + browser + compatibility + host upgrades
+./run.sh all               # ABI floor + lifecycle + browser + compatibility + host upgrades
 ./run.sh down              # remove this Compose project's containers, network, and volumes
 ./run.sh clean             # down plus this lab's generated state and captures
 ```
 
-Set `RK_SKIP_BUILD=1` only when a verified `plugin/build` snapshot already exists. `RK_BUILD_SNAPSHOT` may select a particular immutable snapshot under `plugin/.builds`; the lab verifies it before use. Override ports with `RK_JF10_PORT` and `RK_JF12_PORT`. A custom Compose project name must begin with `rk-jellyfin-` and contain only lowercase letters, digits, `_`, or `-`.
+Set `RK_SKIP_BUILD=1` only when a verified `plugin/build` snapshot already
+exists. `RK_BUILD_SNAPSHOT` may select a particular immutable snapshot under
+`plugin/.builds`; the lab verifies it before use. Override ports with
+`RK_ABI_FLOOR_PORT`, `RK_JF10_PORT`, and `RK_JF12_PORT`. A custom Compose
+project name must begin with `rk-jellyfin-` and contain only lowercase letters,
+digits, `_`, or `-`.
+
+The ABI-floor runner accepts only
+`jellyfin/jellyfin:10.11.0@sha256:59417f441213e236a9f907d4e71a13472042409d85f9e9310dbdd87ee33d7bd4`.
+It performs a bounded pull and verifies the local repository digest and running
+container identity. Set `RK_ABI_FLOOR_SKIP_PULL=1` for an explicit offline run;
+the exact digest must already exist locally. The pull timeout defaults to 900
+seconds and accepts `RK_ABI_FLOOR_PULL_TIMEOUT_SECONDS=1..9999`.
 
 The host-upgrade service binds separately to `127.0.0.1:18118` by default
 (`RK_HOST_UPGRADE_PORT` overrides it) and owns dedicated project-scoped config
@@ -114,6 +134,28 @@ The JSON generation endpoint must also expose a valid nonempty process `Epoch`. 
 Before every lifecycle restart, the scenario derives the slowest live polling interval from the open tabs and holds the staged state for longer than both the provider cache TTL and two full browser polls, with a five-second margin and a fail-closed two-minute cap. During that window it requires the served generation and process epoch, loaded module/asset/configuration identities, versioned runtime URL, transformed-shell digest, and every document identity to remain unchanged. Uninstall must first reach a real absent/`Deleted` pending inventory state. Requested and actual hold timing are retained in the structured result.
 
 The `compat` command is a deliberately bounded ABI experiment: it installs the Jellyfin-10/net9 package into a pristine pinned Jellyfin 12 instance, records health, inventory, endpoint, shell, and log evidence, and then restores the matching net10 package. It does not replace the broader third-party matrix in `../compat/`.
+
+## Exact Jellyfin 10.11.0 ABI-floor smoke
+
+`abi-floor` is deliberately separate from the current Jellyfin 10 lifecycle and
+the in-place host-upgrade scenarios. Its profile-only service owns a dedicated
+internal Compose network, loopback port, token, config/cache volumes, and
+`artifacts/abi-floor/` tree. The
+runner resets only volumes carrying both this Compose project's label and the
+two exact ABI-floor volume labels.
+
+The smoke installs the verified immutable snapshot's `net9.0` stage on the exact
+10.11.0 image. Success requires server version `10.11.0`, the candidate plugin
+to be uniquely `Active` and loaded, generation/diagnostics identities to agree,
+the transformed shell and versioned runtime cache contracts to hold, and the
+server log to contain the exact assembly/plugin load without an incompatible
+shared-library error. Raw public-info, generation, diagnostics, inventory,
+headers, runtime, transformed-shell, and server-log responses are retained and
+cross-checked by `scripts/abi_floor_evidence.py` against the same snapshot's
+stage metadata, DLL, and package bytes. The no-Docker negative command mutates
+these identities and fails unless every mismatch is rejected. This describes
+the proof contract; a passing live result must come from an actual `abi-floor`
+run and is not inferred from the harness itself.
 
 ## In-place Jellyfin host upgrades and live load coverage
 
@@ -194,6 +236,18 @@ The default credentials are disposable lab credentials. Access tokens are writte
 
 ## Evidence and cleanup
 
-Structured results, redacted network/console/WebSocket captures, screenshots, and selected server evidence are written below `artifacts/`; tokens remain below `.state/`. Host-upgrade results are kept separately at `artifacts/host-upgrade/jf10/result.json` and `artifacts/host-upgrade/jf12/result.json`, with `artifacts/host-upgrade/result.json` aggregating both when `all` is requested. A new attempt rotates rather than deletes an earlier per-scenario artifact directory and rotates the prior aggregate before replacing it, so setup or migration failure cannot erase prior evidence. Both scratch trees are ignored by Git. A normal successful run may retain captures for inspection while `./run.sh down` removes all Compose-owned runtime resources. Use `./run.sh clean` to remove both runtime resources and generated captures.
+Structured results, redacted network/console/WebSocket captures, screenshots,
+and selected server evidence are written below `artifacts/`; tokens remain below
+`.state/`. ABI-floor evidence is isolated at `artifacts/abi-floor/`.
+Host-upgrade results are kept separately at
+`artifacts/host-upgrade/jf10/result.json` and
+`artifacts/host-upgrade/jf12/result.json`, with
+`artifacts/host-upgrade/result.json` aggregating both when `all` is requested.
+A new attempt rotates rather than deletes earlier ABI-floor or per-scenario
+artifacts and rotates the prior host-upgrade aggregate before replacing it, so
+setup or migration failure cannot erase prior evidence. Both scratch trees are
+ignored by Git. A normal successful run may retain captures for inspection
+while `./run.sh down` removes all Compose-owned runtime resources. Use
+`./run.sh clean` to remove both runtime resources and generated captures.
 
 The cleanup commands validate the project and scratch paths before deleting anything. They do not remove unrelated Docker containers, images, networks, volumes, or host files.
