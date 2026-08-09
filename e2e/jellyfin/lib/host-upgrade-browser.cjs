@@ -245,6 +245,28 @@ function runSelfTest() {
   check(() => assert.equal(pluginStatusName(0), 'Active'));
   check(() => assert.equal(pluginStatusName('-1'), 'Disabled'));
   check(() => assert.equal(pluginStatusName('Restart'), 'Restart'));
+  const indexedMedia = {
+    Id: 'a'.repeat(32),
+    Name: 'Refresh Kit Host Upgrade Fixture',
+    Path: MEDIA_REMOTE_FILE,
+    Type: 'Movie',
+    MediaType: 'Video',
+    RunTimeTicks: 1_200_000_000,
+    MediaSources: [{ Id: 'source' }],
+  };
+  check(() => assert.equal(readyIndexedMediaItem({ ...indexedMedia, RunTimeTicks: null }), false));
+  check(() => assert.equal(readyIndexedMediaItem({ ...indexedMedia, RunTimeTicks: 899_999_999 }), false));
+  check(() => assert.equal(readyIndexedMediaItem({ ...indexedMedia, MediaSources: [] }), false));
+  check(() => assert.equal(readyIndexedMediaItem(indexedMedia, 'b'.repeat(32)), false));
+  check(() => assert.deepEqual(readyIndexedMediaItem(indexedMedia, 'a'.repeat(32)), {
+    id: 'a'.repeat(32),
+    name: 'Refresh Kit Host Upgrade Fixture',
+    path: MEDIA_REMOTE_FILE,
+    type: 'Movie',
+    mediaType: 'Video',
+    runTimeTicks: 1_200_000_000,
+    mediaSourceCount: 1,
+  }));
   check(() => {
     const audit = classifyErrors([{
       name: 'self-test',
@@ -778,6 +800,14 @@ function normalizedMediaItem(item) {
   };
 }
 
+function readyIndexedMediaItem(item, expectedId = null) {
+  const normalized = normalizedMediaItem(item);
+  if (expectedId && normalized.id.replaceAll('-', '').toLowerCase()
+    !== expectedId.replaceAll('-', '').toLowerCase()) return false;
+  if (normalized.runTimeTicks < 900000000 || normalized.mediaSourceCount < 1) return false;
+  return normalized;
+}
+
 async function waitIndexedMediaItem(expectedId = null, timeoutMs = 240000) {
   const query = new URLSearchParams({
     Recursive: 'true',
@@ -795,10 +825,7 @@ async function waitIndexedMediaItem(expectedId = null, timeoutMs = 240000) {
     if (!Array.isArray(items)) return false;
     const found = items.find((item) => String(value(item, 'Path') || '') === MEDIA_REMOTE_FILE);
     if (!found) return false;
-    const normalized = normalizedMediaItem(found);
-    if (expectedId && normalized.id.replaceAll('-', '').toLowerCase()
-      !== expectedId.replaceAll('-', '').toLowerCase()) return false;
-    return normalized;
+    return readyIndexedMediaItem(found, expectedId);
   }, timeoutMs, 2000);
 }
 
