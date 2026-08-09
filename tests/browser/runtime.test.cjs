@@ -2320,6 +2320,7 @@ test('watchdog forces baseline revalidation after an ignored reload', async (t) 
   await page.evaluate(() => {
     window.__reloadAttempts = 0;
     window.__fetchCalls = 0;
+    window.__fetchCallsAtReload = null;
     window.__response = { CacheKey: 'G3', Epoch: 'update-process' };
     window.fetch = () => {
       window.__fetchCalls += 1;
@@ -2346,14 +2347,16 @@ test('watchdog forces baseline revalidation after an ignored reload', async (t) 
       'var RELOAD_SURVIVAL_WATCHDOG_MS = 3000;',
       'var RELOAD_SURVIVAL_WATCHDOG_MS = 75;',
     )
-    .replace('location.reload();', 'window.__reloadAttempts += 1;');
+    .replace(
+      'location.reload();',
+      'window.__fetchCallsAtReload = window.__fetchCalls; ' +
+        'window.__response = { CacheKey: "G2", Epoch: "baseline-return" }; ' +
+        'window.__reloadAttempts += 1;',
+    );
   await injectRuntime(page, source);
   await page.waitForFunction(() => window.__reloadAttempts === 1);
-  assert.equal(await page.evaluate(() => window.__fetchCalls), 2,
+  assert.equal(await page.evaluate(() => window.__fetchCallsAtReload), 2,
     'there is no in-flight observation when reload commits');
-  await page.evaluate(() => {
-    window.__response = { CacheKey: 'G2', Epoch: 'baseline-return' };
-  });
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.state().shared.reloadsSurvived === 1 &&
     window.__fetchCalls >= 3
@@ -2377,6 +2380,7 @@ test('watchdog disarms a stale target when a replacement generation lands during
   await page.evaluate(() => {
     window.__reloadAttempts = 0;
     window.__fetchCalls = 0;
+    window.__fetchCallsAtReload = null;
     window.__response = { CacheKey: 'G3', Epoch: 'original-process' };
     window.fetch = () => {
       window.__fetchCalls += 1;
@@ -2404,13 +2408,15 @@ test('watchdog disarms a stale target when a replacement generation lands during
       'var RELOAD_SURVIVAL_WATCHDOG_MS = 3000;',
       'var RELOAD_SURVIVAL_WATCHDOG_MS = 75;',
     )
-    .replace('location.reload();', 'window.__reloadAttempts += 1;');
+    .replace(
+      'location.reload();',
+      'window.__fetchCallsAtReload = window.__fetchCalls; ' +
+        'window.__response = { CacheKey: "G4", Epoch: "replacement-process" }; ' +
+        'window.__reloadAttempts += 1;',
+    );
   await injectRuntime(page, source);
   await page.waitForFunction(() => window.__reloadAttempts === 1);
-  assert.equal(await page.evaluate(() => window.__fetchCalls), 2);
-  await page.evaluate(() => {
-    window.__response = { CacheKey: 'G4', Epoch: 'replacement-process' };
-  });
+  assert.equal(await page.evaluate(() => window.__fetchCallsAtReload), 2);
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.state().shared.reloadsSurvived === 1
   ));
