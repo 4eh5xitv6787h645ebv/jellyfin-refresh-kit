@@ -2785,7 +2785,7 @@
             // Node.isConnected is absent in some older embedded engines. Its
             // absence is unknown, not evidence that a live element is detached.
             if (typeof element.isConnected === 'boolean' && !element.isConnected) return false;
-            if (element.closest('[hidden], [aria-hidden="true"], [inert]')) return false;
+            if (element.closest('[hidden], [aria-hidden="true" i], [inert]')) return false;
             var style = window.getComputedStyle(element);
             if (style && (style.display === 'none'
                 || style.visibility === 'hidden'

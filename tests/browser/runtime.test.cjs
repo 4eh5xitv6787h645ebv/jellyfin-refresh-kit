@@ -2829,7 +2829,7 @@ test('retained hidden password fields do not permanently block authenticated pag
   assert.equal(await blockReason(page), 'password_entry');
 
   await page.evaluate(() => {
-    document.querySelector('#retained-login').setAttribute('aria-hidden', 'true');
+    document.querySelector('#retained-login').setAttribute('aria-hidden', 'TRUE');
   });
   assert.equal(await blockReason(page), null);
 });
@@ -2898,6 +2898,16 @@ test('only rendered dialogs block, with visibility probe failures failing safe',
   await page.evaluate(() => {
     const dialog = document.querySelector('#retained-dialog');
     dialog.style.display = 'block';
+  });
+  assert.equal(await blockReason(page), 'dialog');
+
+  await page.evaluate(() => {
+    document.querySelector('#retained-dialog').setAttribute('aria-hidden', 'TRUE');
+  });
+  assert.equal(await blockReason(page), null);
+
+  await page.evaluate(() => {
+    document.querySelector('#retained-dialog').removeAttribute('aria-hidden');
   });
   assert.equal(await blockReason(page), 'dialog');
 
