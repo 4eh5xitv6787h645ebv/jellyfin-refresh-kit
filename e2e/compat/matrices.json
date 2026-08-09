@@ -38,7 +38,6 @@
         "letterboxd-sync-jf10",
         "notify-sync-jf10",
         "jellyfin-tweaks-jf10",
-        "whisper-subs-jf10",
         "mdblist-ratings-jf10"
       ],
       "generationProbe": "letterboxd-sync-jf10",
@@ -47,14 +46,39 @@
       "requiredStampedArtifacts": [
         "letterboxd-sync-jf10",
         "notify-sync-jf10",
-        "jellyfin-tweaks-jf10",
-        "whisper-subs-jf10"
+        "jellyfin-tweaks-jf10"
       ],
       "quarantinedAssertions": [
         "Seerr API behavior is not asserted because the lab intentionally has no external Seerr service.",
         "CDN/font delivery is represented by static hostile fixtures because the runtime network is internal-only.",
         "Intro Skipper core-bundle behavior is represented by real load/registration plus its existing hostile bundle fixture; this shell slice does not seed playback media.",
-        "MDBList Ratings injects an inline block, so URL stamping is not applicable; load/coexistence remains required."
+        "MDBList Ratings injects an inline block, so URL stamping is not applicable; load/coexistence remains required.",
+        "WhisperSubs is isolated in jf10-transform-whisper because File Transformation 2.5.11 selects an exact index.html pipeline ahead of a separately registered regex pipeline; combining them would silently omit WhisperSubs rather than exercise its callback."
+      ],
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": []
+    },
+    {
+      "id": "jf10-transform-whisper",
+      "runtime": "jf10",
+      "purpose": "WhisperSubs regex File Transformation callback on the read-only Jellyfin Web root.",
+      "installOrder": [
+        "@refresh-kit",
+        "file-transformation-jf10",
+        "whisper-subs-jf10"
+      ],
+      "generationProbe": "whisper-subs-jf10",
+      "stampingExpectation": "required",
+      "cacheExpectation": "required",
+      "requiredStampedArtifacts": [
+        "whisper-subs-jf10"
+      ],
+      "quarantinedAssertions": [
+        "File Transformation 2.5.11 selects an exact index.html registration before a matching regex registration, so this matrix deliberately excludes exact-key consumers and proves the real WhisperSubs regex callback in isolation. The writable direct-writer matrix separately proves WhisperSubs' on-disk fallback."
       ],
       "service": "jf10",
       "webrootExpectation": "read-only",

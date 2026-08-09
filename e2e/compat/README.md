@@ -8,7 +8,7 @@ No Jellyfin container is started by `static`, `list`, `coverage`, or `fetch`. Ru
 
 - Jellyfin 10.11.11 and the published `12.0-rc4` image (server version 12.0.0-rc4) are pinned by tag and SHA-256 digest. The runner verifies the created container's configured image again.
 - Published ports are declared only on `127.0.0.1` (defaults `18216`, `18217`, and `18218` for the disposable writable-webroot service). Some Docker engines suppress host publication for an `internal` network; after verifying the selected container's Compose project/service labels, pinned image digest, exclusive internal-bridge membership, absent gateway, and private bridge IPv4, the runner falls back to that project-owned IPv4 from the host. It never adds an egress-capable network. The Compose network remains `internal`, so plugins cannot contact CDNs, ARR, Seerr, OAuth, or other Internet services during the run.
-- Each Jellyfin root filesystem is read-only, with only project-owned `/config`, `/cache`, and `/tmp` writable. Twelve matrices retain a read-only image webroot. The one direct-writer matrix mounts a fresh named volume at `/jellyfin/jellyfin-web`; Docker initializes it from the pinned image, it is destroyed with the project, and no other root path becomes writable.
+- Each Jellyfin root filesystem is read-only, with only project-owned `/config`, `/cache`, and `/tmp` writable. Thirteen matrices retain a read-only image webroot. The one direct-writer matrix mounts a fresh named volume at `/jellyfin/jellyfin-web`; Docker initializes it from the pinned image, it is destroyed with the project, and no other root path becomes writable.
 - There are no fixed container names, host Docker-socket mounts, external volumes, or external networks. Every Docker resource belongs to the validated `rk-compat-*` Compose project.
 - Every upstream archive has a fixed GitHub release URL and SHA-256 in `ecosystem.lock.json`. Downloads are capped, written atomically, checked before inspection, and safely extracted with traversal, symlink, member-count, and expanded-size rejection.
 - `n00bcodr/Jellyfin-Enhanced` is strictly read-only. The harness only downloads the two locked 12.2 release assets and inspects them; it contains no GitHub write workflow and never pushes anywhere.
@@ -37,15 +37,15 @@ RK_COMPAT_ALLOW_CONTAINERS=1 ./run.sh run jf10-transform-hover
 RK_COMPAT_ALLOW_CONTAINERS=1 ./run.sh all
 ```
 
-`all` runs 13 fresh matrices and writes `artifacts/summary.json`. `clean` removes only this directory's `.cache`, `.state`, `artifacts`, and the `rk-compat-*` Compose project's resources.
+`all` runs 14 fresh matrices and writes `artifacts/summary.json`. `clean` removes only this directory's `.cache`, `.state`, `artifacts`, and the `rk-compat-*` Compose project's resources.
 
 ## Cache, cleanup, and resource expectations
 
 The content-addressed archive cache is `e2e/compat/.cache/artifacts`. A complete `fetch all-locked` contains 44 archives totalling 217,735,445 bytes (about 208 MiB; about 212 MiB allocated on the development host). Cache hits are rehashed and reinspected rather than trusted. `down` removes only the selected Compose project's containers, network, and volumes and keeps the host cache/evidence; `clean` also removes and recreates this harness's `.cache`, `.state`, and `artifacts` directories. Neither command removes Docker images or anything outside `e2e/compat` and the validated `rk-compat-*` project.
 
-The 44-archive container-free fetch/inspection and the 19 new package materializations are separate from runtime evidence: they prove immutable downloads, safe ZIP structure, binary identity tokens, framework evidence where packaged, and install sidecars without starting Jellyfin. Runtime duration for the expanded 13-matrix campaign must be measured by its first coordinated container run.
+The 44-archive container-free fetch/inspection and the 19 new package materializations are separate from runtime evidence: they prove immutable downloads, safe ZIP structure, binary identity tokens, framework evidence where packaged, and install sidecars without starting Jellyfin. Runtime duration for the expanded 14-matrix campaign must be measured by its first coordinated container run.
 
-The earlier complete nine-matrix diagnostic campaign remains historical evidence only. It pre-dates this 101-row/44-artifact/13-matrix expansion, and the expanded matrices have deliberately not been started as part of the container-free catalog import.
+The earlier complete nine-matrix diagnostic campaign remains historical evidence only. It pre-dates this 101-row/44-artifact/14-matrix expansion, and the expanded matrices have deliberately not been started as part of the container-free catalog import.
 
 Reserve 5 GiB of disk and 3 GiB of RAM for a cold full run. Only one service is started at a time, it has a 3 GiB memory limit and 256 MiB `/tmp`, and successful matrices remove their project volumes while retaining structured host evidence. The runner resolves `plugin/build` to one verified immutable snapshot before the first matrix and reuses that exact snapshot for the whole run; `RK_COMPAT_BUILD_SNAPSHOT` may select another snapshot under `plugin/.builds` explicitly.
 
@@ -62,6 +62,8 @@ For every selected plugin, the result records and checks:
 - configured opt-in interaction modes (currently Gelato JavaScript injection), public/authenticated JavaScript Injector aggregate content, required inline PowerToys markers, and both read-only and disposable-writable direct-webroot behavior where applicable.
 
 The `jf10-middleware-forward` and `jf10-middleware-reverse` matrices remain exact reverse install orders. A second exact reverse pair exercises Jellyfin Security plus all four web-interacting PowerToys packages and requires their independent response transformations to remain visible. The direct-writer pair distinguishes safe read-only degradation from real writes on the disposable webroot volume. GetAvatar remains the only explicit outer-owner unversioned limitation.
+
+WhisperSubs registers `(^|/)index\.html$`, while File Transformation 2.5.11 stops at an exact `index.html` pipeline when exact and regex registrations coexist. `jf10-transform-whisper` therefore proves the genuine WhisperSubs serve-time callback by itself on the read-only webroot; `jf10-direct-writers-writable` separately proves its direct-write fallback. The exact-key transform chain remains in `jf10-transform-core`, and the isolation is recorded as an upstream coexistence limitation rather than silently accepting a missing tag.
 
 Those four reverse-pair matrices and `jf12-enhanced` are the exact, statically enforced `safe-degrade` cache whitelist. An accepted result still requires a complete injected HTML response, current boot/runtime generation, the same asset multiset on a conditional request, working identity/gzip/Brotli responses, and healthy generation/plugin evidence. Both the primary and stale-conditional responses must be `200`, carry `Cache-Control: no-store`, omit `ETag` and `Last-Modified`, and contain the full body. Every other cache-required matrix retains the normal `rk-` ETag plus conditional `304` requirement.
 
