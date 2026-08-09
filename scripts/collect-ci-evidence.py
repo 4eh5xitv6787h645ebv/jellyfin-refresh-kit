@@ -157,6 +157,7 @@ COMPAT_MATRIX_FILES = (
     "artifact-verification.json",
     "result.json",
 )
+COMPAT_WEBROOT_FILES = ("webroot-before.html", "webroot-after.html")
 SAFE_DEGRADE_CHECK_NAMES = {
     "primaryStatus200",
     "primaryFramingValid",
@@ -328,6 +329,106 @@ def copy_exact_anonymous_http(
     shutil.copyfile(source, target)
 
 
+def copy_exact_compatibility_webroot(
+    source: pathlib.Path,
+    target: pathlib.Path,
+    relative: str,
+) -> bytes:
+    """Inspect and retain one direct-webroot HTML capture without rewriting it."""
+    try:
+        raw = source.read_bytes()
+        text = raw.decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ValueError(
+            f"unsafe exact compatibility webroot evidence {relative}: {error}"
+        ) from error
+    if not raw:
+        raise ValueError(f"empty exact compatibility webroot evidence: {relative}")
+    if contains_forbidden_secret(text) or sanitize_text(text) != text:
+        raise ValueError(
+            f"credential-shaped value in exact compatibility webroot evidence: {relative}"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Write the bytes that were inspected, rather than reopening the source.
+    target.write_bytes(raw)
+    return raw
+
+
+def exact_json_value(actual: Any, expected: Any) -> bool:
+    """Compare JSON values without accepting True/False as integer counts."""
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return (
+            set(actual) == set(expected)
+            and all(exact_json_value(actual[key], value) for key, value in expected.items())
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            exact_json_value(left, right) for left, right in zip(actual, expected)
+        )
+    return actual == expected
+
+
+def reconstruct_webroot_disk(
+    before: bytes,
+    after: bytes,
+    requirements: dict[str, Any],
+) -> dict[str, Any]:
+    """Reconstruct the analyzer's complete disk proof from the copied raw bytes."""
+    try:
+        before_text = before.decode("utf-8-sig", errors="strict")
+        after_text = after.decode("utf-8-sig", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"compatibility webroot evidence is not strict UTF-8: {error}") from error
+    effects: dict[str, Any] = {}
+    for artifact_id, requirement in requirements.items():
+        expected_after = requirement["cardinality"]
+        markers = {
+            marker: {
+                "beforeCount": before_text.count(marker),
+                "afterCount": after_text.count(marker),
+                "expectedBeforeCount": 0,
+                "expectedAfterCount": expected_after,
+            }
+            for marker in requirement["markers"]
+        }
+        checks = {
+            "rawMarkersAbsentBefore": all(
+                row["beforeCount"] == row["expectedBeforeCount"]
+                for row in markers.values()
+            ),
+            "rawMarkersExactAfter": all(
+                row["afterCount"] == row["expectedAfterCount"]
+                for row in markers.values()
+            ),
+        }
+        effects[artifact_id] = {
+            "mode": requirement["mode"],
+            "markers": markers,
+            "checks": checks,
+            "allPassed": all(checks.values()),
+        }
+    expects_writes = any(
+        requirement["mode"] == "added" for requirement in requirements.values()
+    )
+    document_checks = {
+        "beforeHtmlDocument": b"<html" in before.lower() and b"</html>" in before.lower(),
+        "afterHtmlDocument": b"<html" in after.lower() and b"</html>" in after.lower(),
+        "diskBytesChangedAsExpected": (before != after) == expects_writes,
+    }
+    return {
+        "beforeBytes": len(before),
+        "afterBytes": len(after),
+        "beforeSha256": hashlib.sha256(before).hexdigest(),
+        "afterSha256": hashlib.sha256(after).hexdigest(),
+        "effects": effects,
+        "checks": document_checks,
+        "allPassed": all(document_checks.values())
+        and all(row["allPassed"] for row in effects.values()),
+    }
+
+
 def file_hash(path: pathlib.Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -497,6 +598,72 @@ def compatibility_matrices() -> dict[str, str]:
     return result
 
 
+def compatibility_services() -> dict[str, str]:
+    value = json.loads(COMPAT_MATRICES.read_text(encoding="utf-8"))
+    matrices = value.get("matrices") if isinstance(value, dict) else None
+    if not isinstance(matrices, list):
+        raise ValueError("compatibility matrices.json has no matrices array")
+    result: dict[str, str] = {}
+    for row in matrices:
+        matrix_id = row.get("id") if isinstance(row, dict) else None
+        service = row.get("service") if isinstance(row, dict) else None
+        if (
+            not isinstance(matrix_id, str)
+            or not isinstance(service, str)
+            or re.fullmatch(r"[a-z0-9][a-z0-9-]*", service) is None
+        ):
+            raise ValueError(
+                f"compatibility matrix {matrix_id!r} has invalid service {service!r}"
+            )
+        result[matrix_id] = service
+    return result
+
+
+def compatibility_webroot_disk_requirements() -> dict[str, dict[str, Any]]:
+    value = json.loads(COMPAT_MATRICES.read_text(encoding="utf-8"))
+    matrices = value.get("matrices") if isinstance(value, dict) else None
+    if not isinstance(matrices, list):
+        raise ValueError("compatibility matrices.json has no matrices array")
+    result: dict[str, dict[str, Any]] = {}
+    for row in matrices:
+        if not isinstance(row, dict):
+            raise ValueError("compatibility matrix row is not an object")
+        matrix_id = row.get("id")
+        requirements = row.get("webrootDiskRequirements")
+        if not isinstance(matrix_id, str) or not isinstance(requirements, dict):
+            raise ValueError(
+                f"compatibility matrix {matrix_id!r} has invalid disk requirements"
+            )
+        for artifact_id, requirement in requirements.items():
+            if (
+                not isinstance(artifact_id, str)
+                or not artifact_id
+                or not isinstance(requirement, dict)
+                or set(requirement) != {"mode", "cardinality", "markers"}
+            ):
+                raise ValueError(
+                    f"compatibility matrix {matrix_id}/{artifact_id} has invalid disk requirement"
+                )
+            mode = requirement.get("mode")
+            cardinality = requirement.get("cardinality")
+            markers = requirement.get("markers")
+            if (
+                mode not in ("absent", "added")
+                or type(cardinality) is not int
+                or cardinality != (0 if mode == "absent" else 1)
+                or not isinstance(markers, list)
+                or not markers
+                or any(not isinstance(marker, str) or not marker for marker in markers)
+                or len(markers) != len(set(markers))
+            ):
+                raise ValueError(
+                    f"compatibility matrix {matrix_id}/{artifact_id} has invalid disk requirement"
+                )
+        if requirements:
+            result[matrix_id] = requirements
+    return result
+
+
 def compatibility_safe_degrade_matrices() -> list[str]:
     value = json.loads(COMPAT_MATRICES.read_text(encoding="utf-8"))
     matrices = value.get("matrices") if isinstance(value, dict) else None
@@ -590,6 +757,8 @@ def collect_compatibility(
 ) -> None:
     matrices = compatibility_matrices()
     matrix_ids = list(matrices)
+    services = compatibility_services()
+    disk_requirements = compatibility_webroot_disk_requirements()
     cache_expectations = compatibility_cache_expectations()
     expected_safe_degraded = compatibility_safe_degrade_matrices()
     expected_limitations = compatibility_unversioned_outer_limitations()
@@ -604,6 +773,7 @@ def collect_compatibility(
         for matrix_id in matrix_ids
         for name in COMPAT_MATRIX_FILES
     )
+    result_values: dict[str, dict[str, Any]] = {}
     for relative in relative_paths:
         source = COMPAT_ARTIFACTS / relative
         label = f"compat:{relative.as_posix()}"
@@ -624,6 +794,9 @@ def collect_compatibility(
         relative_target = target.relative_to(output).as_posix()
         if relative_target not in evidence["collected"]:
             evidence["collected"].append(relative_target)
+
+        if relative.name == "result.json" and isinstance(value, dict):
+            result_values[relative.parent.name] = value
 
         if not required or not isinstance(value, dict):
             if required and not isinstance(value, dict):
@@ -670,8 +843,19 @@ def collect_compatibility(
                     for row in limitations
                 )
             )
+            expected_disk = disk_requirements.get(matrix_id)
             if value.get("matrix") != matrix_id or value.get("outcome") != expected_outcome:
                 strict_errors.append(f"compatibility result is not a pass: {relative}")
+            elif value.get("runtime") != matrices[matrix_id] or value.get("service") != services[matrix_id]:
+                strict_errors.append(
+                    f"compatibility result runtime/service identity is wrong: {relative}"
+                )
+            elif expected_disk is None and (
+                "webrootDisk" not in value or value["webrootDisk"] is not None
+            ):
+                strict_errors.append(
+                    f"compatibility nondisk result webrootDisk is not explicit null: {relative}"
+                )
             elif not limitations_valid:
                 strict_errors.append(
                     f"compatibility result limitations are incomplete or unexpected: {relative}"
@@ -726,12 +910,63 @@ def collect_compatibility(
                 build_dir,
                 strict_errors,
             )
-        elif relative.name == "network.json" and (
-            value.get("valid") is not True or value.get("allPassed") is not True
-        ):
-            strict_errors.append(f"network isolation evidence is not a pass: {relative}")
+        elif relative.name == "network.json":
+            if value.get("valid") is not True or value.get("allPassed") is not True:
+                strict_errors.append(f"network isolation evidence is not a pass: {relative}")
+            if value.get("service") != services[relative.parent.name]:
+                strict_errors.append(
+                    f"network isolation service identity is wrong: {relative}"
+                )
         elif relative.name == "static.json" and value.get("allPassed") is not True:
             strict_errors.append(f"static compatibility evidence is not a pass: {relative}")
+
+    retained_raw: dict[str, dict[str, bytes]] = {}
+    for matrix_id in disk_requirements:
+        for name in COMPAT_WEBROOT_FILES:
+            relative = pathlib.Path(matrix_id) / name
+            source = COMPAT_ARTIFACTS / relative
+            label = f"compat:{relative.as_posix()}"
+            if not source.is_file():
+                evidence["missing"].append(label)
+                if required:
+                    strict_errors.append(
+                        f"missing required compatibility evidence: {relative}"
+                    )
+                continue
+            target = output / "compat" / relative
+            try:
+                raw = copy_exact_compatibility_webroot(
+                    source, target, relative.as_posix()
+                )
+            except ValueError as error:
+                evidence["missing"].append(f"{label} (unsafe exact bytes)")
+                if required:
+                    strict_errors.append(str(error))
+                continue
+            retained_raw.setdefault(matrix_id, {})[name] = raw
+            relative_target = target.relative_to(output).as_posix()
+            if relative_target not in evidence["collected"]:
+                evidence["collected"].append(relative_target)
+
+    if required:
+        for matrix_id, requirements in disk_requirements.items():
+            captures = retained_raw.get(matrix_id, {})
+            if set(captures) != set(COMPAT_WEBROOT_FILES):
+                continue
+            reconstructed = reconstruct_webroot_disk(
+                captures["webroot-before.html"],
+                captures["webroot-after.html"],
+                requirements,
+            )
+            result_disk = result_values.get(matrix_id, {}).get("webrootDisk")
+            if reconstructed["allPassed"] is not True:
+                strict_errors.append(
+                    f"compatibility raw webroot contract failed: {matrix_id}"
+                )
+            if not exact_json_value(result_disk, reconstructed):
+                strict_errors.append(
+                    f"compatibility result webrootDisk differs from retained raw bytes: {matrix_id}"
+                )
 
 
 def main() -> int:

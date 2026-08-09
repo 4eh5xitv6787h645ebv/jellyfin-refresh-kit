@@ -44,13 +44,22 @@
       "stampingExpectation": "required",
       "cacheExpectation": "required",
       "requiredStampedArtifacts": [
+        "plugin-pages-jf10",
         "letterboxd-sync-jf10",
         "notify-sync-jf10",
         "jellyfin-tweaks-jf10"
       ],
       "requiredBodyMarkers": {
+        "custom-tabs-jf10": [
+          "window.customTabsPlugin = {"
+        ],
+        "media-bar-jf10": [
+          "if (typeof MediaBarConfigHandler == 'undefined') {"
+        ],
         "mdblist-ratings-jf10": [
-          "<!-- MDBListRatings:rating-source-icons:start -->"
+          "<!-- MDBListRatings:rating-source-icons:start -->",
+          "window.__mdbListRatingsIconPatchApplied = true;",
+          "<!-- MDBListRatings:rating-source-icons:end -->"
         ]
       },
       "configurationPatches": [
@@ -85,9 +94,119 @@
       ],
       "service": "jf10",
       "webrootExpectation": "read-only",
-      "requiredPresentArtifacts": [],
+      "requiredPresentArtifacts": [
+        "media-bar-jf10"
+      ],
       "requiredAbsentArtifacts": [],
-      "requiredPreVersionedArtifacts": []
+      "requiredPreVersionedArtifacts": [
+        "home-screen-sections-jf10",
+        "seerrfin-jf10"
+      ],
+      "shellRequirements": {
+        "plugin-pages-jf10": {
+          "mode": "current-rkv",
+          "cardinality": 1,
+          "selectors": [
+            {
+              "tag": "script",
+              "origin": "same-origin",
+              "path": "/PluginPages/inject.js",
+              "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}},
+              "cardinality": 1
+            }
+          ]
+        },
+        "home-screen-sections-jf10": {
+          "mode": "source-versioned",
+          "cardinality": 2,
+          "selectors": [
+            {
+              "tag": "link",
+              "origin": "same-origin",
+              "path": "/HomeScreen/home-screen-sections.css",
+              "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "2.5.11.0", "c": "0"}},
+              "cardinality": 1
+            },
+            {
+              "tag": "script",
+              "origin": "same-origin",
+              "path": "/HomeScreen/home-screen-sections.js",
+              "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "2.5.11.0", "c": "0"}},
+              "cardinality": 1
+            }
+          ]
+        },
+        "media-bar-jf10": {
+          "mode": "external-present",
+          "cardinality": 2,
+          "selectors": [
+            {
+              "tag": "link",
+              "origin": "https://cdn.jsdelivr.net",
+              "path": "/gh/IAmParadox27/jellyfin-plugin-media-bar@main/slideshowpure.css",
+              "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}},
+              "cardinality": 1
+            },
+            {
+              "tag": "script",
+              "origin": "https://cdn.jsdelivr.net",
+              "path": "/gh/IAmParadox27/jellyfin-plugin-media-bar@main/slideshowpure.js",
+              "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}},
+              "cardinality": 1
+            }
+          ]
+        },
+        "seerrfin-jf10": {
+          "mode": "source-versioned",
+          "cardinality": 9,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/SeerrFin/seerrfin-tabs.css", "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "1.6.5.1", "c": "0"}}, "cardinality": 1},
+            {"tag": "link", "origin": "same-origin", "path": "/SeerrFin/seerrfin-modal.css", "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "1.6.5.1", "c": "0"}}, "cardinality": 1},
+            {"tag": "link", "origin": "same-origin", "path": "/SeerrFin/seerrfin-requests.css", "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "1.6.5.1", "c": "0"}}, "cardinality": 1},
+            {"tag": "link", "origin": "same-origin", "path": "/SeerrFin/seerrfin-letterboxd.css", "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "1.6.5.1", "c": "0"}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/SeerrFin/seerrfin-modal.js", "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "1.6.5.1", "c": "0"}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/SeerrFin/seerrfin-nativeui.js", "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "1.6.5.1", "c": "0"}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/SeerrFin/seerrfin-tabs.js", "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "1.6.5.1", "c": "0"}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/SeerrFin/seerrfin-requests.js", "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "1.6.5.1", "c": "0"}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/SeerrFin/seerrfin-letterboxd.js", "query": {"requiredKeys": ["v", "c"], "allowedKeys": ["v", "c"], "equals": {"v": "1.6.5.1", "c": "0"}}, "cardinality": 1}
+          ]
+        },
+        "letterboxd-sync-jf10": {
+          "mode": "current-rkv",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/Jellyfin.Plugin.LetterboxdSync/ClientScript", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "notify-sync-jf10": {
+          "mode": "current-rkv",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/NotifySync/client.js", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "jellyfin-tweaks-jf10": {
+          "mode": "current-rkv",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/JellyTweaks/script", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        }
+      },
+      "inlineRequirements": {
+        "custom-tabs-jf10": {"cardinality": 1, "markers": ["window.customTabsPlugin = {"], "ordered": false},
+        "media-bar-jf10": {"cardinality": 1, "markers": ["if (typeof MediaBarConfigHandler == 'undefined') {"], "ordered": false},
+        "mdblist-ratings-jf10": {
+          "cardinality": 1,
+          "markers": [
+            "<!-- MDBListRatings:rating-source-icons:start -->",
+            "window.__mdbListRatingsIconPatchApplied = true;",
+            "<!-- MDBListRatings:rating-source-icons:end -->"
+          ],
+          "ordered": true
+        }
+      },
+      "webrootDiskRequirements": {}
     },
     {
       "id": "jf10-transform-whisper",
@@ -114,7 +233,24 @@
       "requiredPreVersionedArtifacts": [],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
-      "contentProbes": []
+      "contentProbes": [],
+      "shellRequirements": {
+        "whisper-subs-jf10": {
+          "mode": "current-rkv",
+          "cardinality": 1,
+          "selectors": [
+            {
+              "tag": "script",
+              "origin": "same-origin",
+              "path": "/web/configurationpage",
+              "query": {"requiredKeys": ["name", "rkv"], "allowedKeys": ["name", "rkv"], "equals": {"name": "whisperSubs.js"}},
+              "cardinality": 1
+            }
+          ]
+        }
+      },
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {}
     },
     {
       "id": "jf10-transform-hover",
@@ -135,9 +271,22 @@
       "service": "jf10",
       "webrootExpectation": "read-only",
       "requiredPresentArtifacts": [],
+      "requiredAbsentArtifacts": [],
+      "requiredPreVersionedArtifacts": [],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
-      "contentProbes": []
+      "contentProbes": [],
+      "shellRequirements": {
+        "hover-trailer-jf10": {
+          "mode": "current-rkv",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/HoverTrailer/ClientScript", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        }
+      },
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {}
     },
     {
       "id": "jf10-transform-player",
@@ -162,7 +311,18 @@
       "requiredPresentArtifacts": [],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
-      "contentProbes": []
+      "contentProbes": [],
+      "shellRequirements": {
+        "in-player-episode-preview-jf10": {
+          "mode": "current-rkv",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/InPlayerPreview/ClientScript", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        }
+      },
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {}
     },
     {
       "id": "jf10-transform-editors",
@@ -187,7 +347,18 @@
       "requiredPresentArtifacts": [],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
-      "contentProbes": []
+      "contentProbes": [],
+      "shellRequirements": {
+        "editors-choice-jf10": {
+          "mode": "current-rkv",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/EditorsChoice/script", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        }
+      },
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {}
     },
     {
       "id": "jf10-transform-actor",
@@ -210,7 +381,19 @@
       "requiredPresentArtifacts": [],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
-      "contentProbes": []
+      "contentProbes": [],
+      "shellRequirements": {
+        "actor-plus-jf10": {
+          "mode": "current-rkv",
+          "cardinality": 2,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/ActorPlus/assets/birthage.css", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/ActorPlus/assets/birthage.js", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        }
+      },
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {}
     },
     {
       "id": "jf10-middleware-forward",
@@ -244,9 +427,69 @@
       "service": "jf10",
       "webrootExpectation": "read-only",
       "requiredPresentArtifacts": [],
+      "requiredAbsentArtifacts": [],
+      "requiredPreVersionedArtifacts": [
+        "jellyfin-enhanced-jf10",
+        "achievement-badges-jf10",
+        "ratings-jf10",
+        "jmsfusion-jf10",
+        "startrack-jf10"
+      ],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
-      "contentProbes": []
+      "contentProbes": [],
+      "shellRequirements": {
+        "jellyfin-enhanced-jf10": {
+          "mode": "source-versioned", "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/JellyfinEnhanced/script", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "achievement-badges-jf10": {
+          "mode": "source-versioned", "cardinality": 3,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/Plugins/AchievementBadges/client-script/sidebar", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/Plugins/AchievementBadges/client-script/standalone", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/Plugins/AchievementBadges/client-script/enhance", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "ratings-jf10": {
+          "mode": "source-versioned", "cardinality": 2,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/Ratings/ratings.css", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/Ratings/ratings.js", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "jmsfusion-jf10": {
+          "mode": "source-versioned", "cardinality": 3,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/Plugins/JMSFusion/runtime/storage-preload.js", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/slider/main.js", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/slider/modules/player/main.js", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "get-avatar-jf10": {
+          "mode": "unversioned-outer", "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/GetAvatar/ClientScript", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "startrack-jf10": {
+          "mode": "source-versioned", "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/Plugins/StarTrack/Widget", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "seasonals-jf10": {
+          "mode": "current-rkv", "cardinality": 2,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/Seasonals/Resources/seasonals.css", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/Seasonals/Resources/seasonals.js", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        }
+      },
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {}
     },
     {
       "id": "jf10-middleware-reverse",
@@ -279,9 +522,69 @@
       "service": "jf10",
       "webrootExpectation": "read-only",
       "requiredPresentArtifacts": [],
+      "requiredAbsentArtifacts": [],
+      "requiredPreVersionedArtifacts": [
+        "jellyfin-enhanced-jf10",
+        "achievement-badges-jf10",
+        "ratings-jf10",
+        "jmsfusion-jf10",
+        "startrack-jf10"
+      ],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
-      "contentProbes": []
+      "contentProbes": [],
+      "shellRequirements": {
+        "jellyfin-enhanced-jf10": {
+          "mode": "source-versioned", "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/JellyfinEnhanced/script", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "achievement-badges-jf10": {
+          "mode": "source-versioned", "cardinality": 3,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/Plugins/AchievementBadges/client-script/sidebar", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/Plugins/AchievementBadges/client-script/standalone", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/Plugins/AchievementBadges/client-script/enhance", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "ratings-jf10": {
+          "mode": "source-versioned", "cardinality": 2,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/Ratings/ratings.css", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/Ratings/ratings.js", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "jmsfusion-jf10": {
+          "mode": "source-versioned", "cardinality": 3,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/Plugins/JMSFusion/runtime/storage-preload.js", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/slider/main.js", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/slider/modules/player/main.js", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "get-avatar-jf10": {
+          "mode": "unversioned-outer", "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/GetAvatar/ClientScript", "query": {"requiredKeys": [], "allowedKeys": [], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "startrack-jf10": {
+          "mode": "source-versioned", "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/Plugins/StarTrack/Widget", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "seasonals-jf10": {
+          "mode": "current-rkv", "cardinality": 2,
+          "selectors": [
+            {"tag": "link", "origin": "same-origin", "path": "/Seasonals/Resources/seasonals.css", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1},
+            {"tag": "script", "origin": "same-origin", "path": "/Seasonals/Resources/seasonals.js", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        }
+      },
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {}
     },
     {
       "id": "jf10-registration-broker",
@@ -321,13 +624,16 @@
           "path": "/JavaScriptInjector/public.js",
           "authenticated": false,
           "markers": {
+            "media-preview-jf10": [
+              "window.JellyfinMediaPreview"
+            ],
             "gelato-jf10": [
               "(from Gelato)",
               "jellyfin_local_search_enabled"
             ],
             "jellyfin-oscars-jf10": [
               "(from Jellyfin Oscars)",
-              "__jellyfinOscarsInitialized"
+              "window.__jellyfinOscarsInitialized = true;"
             ]
           }
         },
@@ -346,7 +652,10 @@
             ]
           }
         }
-      ]
+      ],
+      "shellRequirements": {},
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {}
     },
     {
       "id": "jf12-enhanced",
@@ -374,10 +683,30 @@
       "requiredAbsentArtifacts": [
         "stream-limit-jf12"
       ],
-      "requiredPreVersionedArtifacts": [],
+      "requiredPreVersionedArtifacts": [
+        "jellyfin-enhanced-jf12"
+      ],
       "requiredBodyMarkers": {},
       "configurationPatches": [],
-      "contentProbes": []
+      "contentProbes": [],
+      "shellRequirements": {
+        "jellyfin-enhanced-jf12": {
+          "mode": "source-versioned",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/JellyfinEnhanced/script", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "stream-limit-jf12": {
+          "mode": "absent",
+          "cardinality": 0,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/StreamLimit/inject.js", "query": {"requiredKeys": [], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 0}
+          ]
+        }
+      },
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {}
     },
     {
       "runtime": "jf10",
@@ -395,20 +724,36 @@
       ],
       "requiredBodyMarkers": {
         "powertoys-jellytag-jf10": [
-          "data-jellytag-injected"
+          "const MARKER_ATTR = \"data-jellytag-injected\";"
         ],
         "powertoys-privacy-mode-jf10": [
-          "powertoysPrivacyMode"
+          "const PRIVACY_MODE_CLASS = \"powertoysPrivacyMode\";"
         ],
         "powertoys-remote-trailers-jf10": [
-          "powertoysvideoplayer"
+          "id = \"powertoysvideoplayer\";"
         ],
         "powertoys-thumbnail-previews-jf10": [
-          "6a65ce4e-fb35-4e99-8f37-02bc3979fe7e"
+          "const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"
         ]
       },
       "configurationPatches": [],
       "contentProbes": [],
+      "shellRequirements": {
+        "jellyfin-security-jf10": {
+          "mode": "source-versioned",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/TwoFactorAuth/inject", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        }
+      },
+      "inlineRequirements": {
+        "powertoys-jellytag-jf10": {"cardinality": 1, "markers": ["const MARKER_ATTR = \"data-jellytag-injected\";"], "ordered": false},
+        "powertoys-privacy-mode-jf10": {"cardinality": 1, "markers": ["const PRIVACY_MODE_CLASS = \"powertoysPrivacyMode\";"], "ordered": false},
+        "powertoys-remote-trailers-jf10": {"cardinality": 1, "markers": ["id = \"powertoysvideoplayer\";"], "ordered": false},
+        "powertoys-thumbnail-previews-jf10": {"cardinality": 1, "markers": ["const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"], "ordered": false}
+      },
+      "webrootDiskRequirements": {},
       "orderPair": "jf10-response-transformers",
       "id": "jf10-response-transformers-forward",
       "installOrder": [
@@ -440,20 +785,36 @@
       ],
       "requiredBodyMarkers": {
         "powertoys-jellytag-jf10": [
-          "data-jellytag-injected"
+          "const MARKER_ATTR = \"data-jellytag-injected\";"
         ],
         "powertoys-privacy-mode-jf10": [
-          "powertoysPrivacyMode"
+          "const PRIVACY_MODE_CLASS = \"powertoysPrivacyMode\";"
         ],
         "powertoys-remote-trailers-jf10": [
-          "powertoysvideoplayer"
+          "id = \"powertoysvideoplayer\";"
         ],
         "powertoys-thumbnail-previews-jf10": [
-          "6a65ce4e-fb35-4e99-8f37-02bc3979fe7e"
+          "const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"
         ]
       },
       "configurationPatches": [],
       "contentProbes": [],
+      "shellRequirements": {
+        "jellyfin-security-jf10": {
+          "mode": "source-versioned",
+          "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/TwoFactorAuth/inject", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {}}, "cardinality": 1}
+          ]
+        }
+      },
+      "inlineRequirements": {
+        "powertoys-jellytag-jf10": {"cardinality": 1, "markers": ["const MARKER_ATTR = \"data-jellytag-injected\";"], "ordered": false},
+        "powertoys-privacy-mode-jf10": {"cardinality": 1, "markers": ["const PRIVACY_MODE_CLASS = \"powertoysPrivacyMode\";"], "ordered": false},
+        "powertoys-remote-trailers-jf10": {"cardinality": 1, "markers": ["id = \"powertoysvideoplayer\";"], "ordered": false},
+        "powertoys-thumbnail-previews-jf10": {"cardinality": 1, "markers": ["const PLUGIN_ID = \"6a65ce4e-fb35-4e99-8f37-02bc3979fe7e\";"], "ordered": false}
+      },
+      "webrootDiskRequirements": {},
       "orderPair": "jf10-response-transformers",
       "id": "jf10-response-transformers-reverse",
       "installOrder": [
@@ -498,6 +859,39 @@
       "requiredBodyMarkers": {},
       "configurationPatches": [],
       "contentProbes": [],
+      "shellRequirements": {
+        "stream-limit-jf10": {
+          "mode": "absent", "cardinality": 0,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/StreamLimit/inject.js", "query": {"requiredKeys": [], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 0}
+          ]
+        },
+        "aniliberty-strm-jf10": {
+          "mode": "absent", "cardinality": 0,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/AniLibertyMetadata/Assets/aniliberty-popularity.js", "query": {"requiredKeys": [], "allowedKeys": ["v", "rkv"], "equals": {}}, "cardinality": 0}
+          ]
+        },
+        "jellyfin-tweaks-jf10": {
+          "mode": "absent", "cardinality": 0,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/JellyTweaks/script", "query": {"requiredKeys": [], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 0}
+          ]
+        },
+        "whisper-subs-jf10": {
+          "mode": "absent", "cardinality": 0,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/web/configurationpage", "query": {"requiredKeys": ["name"], "allowedKeys": ["name", "rkv"], "equals": {"name": "whisperSubs.js"}}, "cardinality": 0}
+          ]
+        }
+      },
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {
+        "stream-limit-jf10": {"mode": "absent", "cardinality": 0, "markers": ["<!-- BEGIN Jellyfin.Plugin.StreamLimit -->", "/StreamLimit/inject.js", "<!-- END Jellyfin.Plugin.StreamLimit -->"]},
+        "aniliberty-strm-jf10": {"mode": "absent", "cardinality": 0, "markers": ["<!-- AniLibertyPopularityBadge:start -->", "/AniLibertyMetadata/Assets/aniliberty-popularity.js?v=2.0.0.11.2", "<!-- AniLibertyPopularityBadge:end -->"]},
+        "jellyfin-tweaks-jf10": {"mode": "absent", "cardinality": 0, "markers": ["../JellyTweaks/script"]},
+        "whisper-subs-jf10": {"mode": "absent", "cardinality": 0, "markers": ["<script src=\"configurationpage?name=whisperSubs.js\"></script>"]}
+      },
       "quarantinedAssertions": [
         "Direct index.html writes must not succeed on the read-only image webroot; all plugins must still load and keep the server healthy."
       ]
@@ -532,6 +926,39 @@
       "requiredBodyMarkers": {},
       "configurationPatches": [],
       "contentProbes": [],
+      "shellRequirements": {
+        "stream-limit-jf10": {
+          "mode": "current-rkv", "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/StreamLimit/inject.js", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "aniliberty-strm-jf10": {
+          "mode": "source-versioned", "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/AniLibertyMetadata/Assets/aniliberty-popularity.js", "query": {"requiredKeys": ["v"], "allowedKeys": ["v"], "equals": {"v": "2.0.0.11.2"}}, "cardinality": 1}
+          ]
+        },
+        "jellyfin-tweaks-jf10": {
+          "mode": "current-rkv", "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/JellyTweaks/script", "query": {"requiredKeys": ["rkv"], "allowedKeys": ["rkv"], "equals": {}}, "cardinality": 1}
+          ]
+        },
+        "whisper-subs-jf10": {
+          "mode": "current-rkv", "cardinality": 1,
+          "selectors": [
+            {"tag": "script", "origin": "same-origin", "path": "/web/configurationpage", "query": {"requiredKeys": ["name", "rkv"], "allowedKeys": ["name", "rkv"], "equals": {"name": "whisperSubs.js"}}, "cardinality": 1}
+          ]
+        }
+      },
+      "inlineRequirements": {},
+      "webrootDiskRequirements": {
+        "stream-limit-jf10": {"mode": "added", "cardinality": 1, "markers": ["<!-- BEGIN Jellyfin.Plugin.StreamLimit -->", "/StreamLimit/inject.js", "<!-- END Jellyfin.Plugin.StreamLimit -->"]},
+        "aniliberty-strm-jf10": {"mode": "added", "cardinality": 1, "markers": ["<!-- AniLibertyPopularityBadge:start -->", "/AniLibertyMetadata/Assets/aniliberty-popularity.js?v=2.0.0.11.2", "<!-- AniLibertyPopularityBadge:end -->"]},
+        "jellyfin-tweaks-jf10": {"mode": "added", "cardinality": 1, "markers": ["../JellyTweaks/script"]},
+        "whisper-subs-jf10": {"mode": "added", "cardinality": 1, "markers": ["<script src=\"configurationpage?name=whisperSubs.js\"></script>"]}
+      },
       "quarantinedAssertions": [
         "AniLiberty uses its own immutable v= marker, so its required tag is asserted present but is not rewritten with rkv. External AniLiberty data flow remains unreachable."
       ]

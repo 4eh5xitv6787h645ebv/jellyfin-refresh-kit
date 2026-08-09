@@ -196,6 +196,13 @@ umask 077
 printf '%s' "${TOKEN}" > "${WORK}/token"
 umask 022
 
+WEBROOT_DISK_REQUIREMENTS="$(python3 "${MANIFEST_TOOL}" field "${MATRIX_ID}" webrootDiskRequirements)"
+if [ "${WEBROOT_DISK_REQUIREMENTS}" != "{}" ]; then
+    PHASE="baseline direct webroot capture"
+    docker exec "${CONTAINER}" cat /jellyfin/jellyfin-web/index.html \
+        > "${OUT}/webroot-before.html"
+fi
+
 PHASE="plugin installation"
 : > "${OUT}/install.tsv"
 mapfile -t INSTALL_ORDER < <(python3 "${MANIFEST_TOOL}" order "${MATRIX_ID}")
@@ -357,6 +364,10 @@ while IFS=$'\t' read -r _ artifact_id remote_folder _; do
     meta_output="${OUT}/runtime-meta/${artifact_id}.json"
     docker exec "${CONTAINER}" cat "/config/plugins/${remote_folder}/meta.json" > "${meta_output}"
 done < "${OUT}/install.tsv"
+if [ "${WEBROOT_DISK_REQUIREMENTS}" != "{}" ]; then
+    docker exec "${CONTAINER}" cat /jellyfin/jellyfin-web/index.html \
+        > "${OUT}/webroot-after.html"
+fi
 compat_compose logs --no-color "${SERVICE}" > "${OUT}/server.log" 2>&1
 
 PHASE="structured analysis"

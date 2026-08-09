@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -40,10 +41,150 @@ ABSENT_ARTIFACTS_BY_MATRIX = {
     "jf12-enhanced": {"stream-limit-jf12"},
 }
 PREVERSIONED_ARTIFACTS_BY_MATRIX = {
+    "jf10-transform-core": {
+        "home-screen-sections-jf10",
+        "seerrfin-jf10",
+    },
+    "jf10-middleware-forward": {
+        "jellyfin-enhanced-jf10",
+        "achievement-badges-jf10",
+        "ratings-jf10",
+        "jmsfusion-jf10",
+        "startrack-jf10",
+    },
+    "jf10-middleware-reverse": {
+        "jellyfin-enhanced-jf10",
+        "achievement-badges-jf10",
+        "ratings-jf10",
+        "jmsfusion-jf10",
+        "startrack-jf10",
+    },
+    "jf12-enhanced": {"jellyfin-enhanced-jf12"},
     "jf10-response-transformers-forward": {"jellyfin-security-jf10"},
     "jf10-response-transformers-reverse": {"jellyfin-security-jf10"},
     "jf10-direct-writers-writable": {"aniliberty-strm-jf10"},
 }
+EXTERNAL_ARTIFACTS_BY_MATRIX = {
+    "jf10-transform-core": {"media-bar-jf10"},
+}
+SOURCE_VERSION_KEYS = {
+    "v", "ver", "vers", "version", "rev", "revision", "hash", "build",
+    "buildid", "cb", "cachebust", "cachebuster",
+}
+MATRIX_FIELDS = {
+    "id",
+    "runtime",
+    "service",
+    "webrootExpectation",
+    "purpose",
+    "installOrder",
+    "orderPair",
+    "generationProbe",
+    "stampingExpectation",
+    "cacheExpectation",
+    "requiredStampedArtifacts",
+    "requiredUnversionedOuterArtifacts",
+    "requiredPresentArtifacts",
+    "requiredAbsentArtifacts",
+    "requiredPreVersionedArtifacts",
+    "requiredBodyMarkers",
+    "configurationPatches",
+    "contentProbes",
+    "shellRequirements",
+    "inlineRequirements",
+    "webrootDiskRequirements",
+    "quarantinedAssertions",
+}
+EXPECTED_MATRIX_SEQUENCE = (
+    "jf10-transform-core",
+    "jf10-transform-whisper",
+    "jf10-transform-hover",
+    "jf10-transform-player",
+    "jf10-transform-editors",
+    "jf10-transform-actor",
+    "jf10-middleware-forward",
+    "jf10-middleware-reverse",
+    "jf10-registration-broker",
+    "jf12-enhanced",
+    "jf10-response-transformers-forward",
+    "jf10-response-transformers-reverse",
+    "jf10-direct-writers-readonly",
+    "jf10-direct-writers-writable",
+)
+EXPECTED_MATRIX_BASE = {
+    "jf10-transform-core": ("jf10", "jf10", "read-only", "letterboxd-sync-jf10", "required", "required", None),
+    "jf10-transform-whisper": ("jf10", "jf10", "read-only", "whisper-subs-jf10", "required", "required", None),
+    "jf10-transform-hover": ("jf10", "jf10", "read-only", "hover-trailer-jf10", "required", "required", None),
+    "jf10-transform-player": ("jf10", "jf10", "read-only", "in-player-episode-preview-jf10", "required", "required", None),
+    "jf10-transform-editors": ("jf10", "jf10", "read-only", "editors-choice-jf10", "required", "required", None),
+    "jf10-transform-actor": ("jf10", "jf10", "read-only", "actor-plus-jf10", "required", "required", None),
+    "jf10-middleware-forward": ("jf10", "jf10", "read-only", "get-avatar-jf10", "required", "safe-degrade", "jf10-middleware"),
+    "jf10-middleware-reverse": ("jf10", "jf10", "read-only", "get-avatar-jf10", "required", "safe-degrade", "jf10-middleware"),
+    "jf10-registration-broker": ("jf10", "jf10", "read-only", "gelato-jf10", "observe", "required", None),
+    "jf12-enhanced": ("jf12", "jf12", "read-only", "intro-skipper-jf12", "observe", "safe-degrade", None),
+    "jf10-response-transformers-forward": ("jf10", "jf10", "read-only", "jellyfin-security-jf10", "observe", "safe-degrade", "jf10-response-transformers"),
+    "jf10-response-transformers-reverse": ("jf10", "jf10", "read-only", "jellyfin-security-jf10", "observe", "safe-degrade", "jf10-response-transformers"),
+    "jf10-direct-writers-readonly": ("jf10", "jf10", "read-only", "stream-limit-jf10", "observe", "required", None),
+    "jf10-direct-writers-writable": ("jf10", "jf10-writable", "writable-volume", "stream-limit-jf10", "required", "required", None),
+}
+EXPECTED_INSTALL_ORDER_SHA256 = {
+    "jf10-transform-core": "0a61d24b94eb3dd75b21c321207f978eefb9bfd770373108f98c8dd759e26ddf",
+    "jf10-transform-whisper": "d6e02c4b0d81322a65518b945eef9ea2cbb2db109f86839072b4df8da4a3bc5e",
+    "jf10-transform-hover": "1d4104ac59e2aeed9207444f32a48c44e1775c54272424ba72a4212774e67b8e",
+    "jf10-transform-player": "8a9f0809f9a43b67bcc747f599030edef7170bd93783458d9124e5537d850803",
+    "jf10-transform-editors": "e4164407a2eda057cb67bef3cb09c17520ec08f536095865bb6a98cd9281683a",
+    "jf10-transform-actor": "c48d7b7efee42eba13d13ef4f9fb01025be5bf89bc6237aa084df792e12d21cb",
+    "jf10-middleware-forward": "449554445dc03df55f50a1f9d394c3c3cadfeae0147836723df4e10096fe78eb",
+    "jf10-middleware-reverse": "bfe83e0fa0467bab037b8052ca6572bba08493af1cc18c6d6ccc811444e5434e",
+    "jf10-registration-broker": "e08df43cf23d7002f3727e7abb06120e3f8b73b0d9e3e7df849f4a9103ce392b",
+    "jf12-enhanced": "860500c99501971b6c55e30f326d039266b0710e8a33cc7cb150b99953d30645",
+    "jf10-response-transformers-forward": "b83d4780e97286639d825b440df384cab00469c6b8cc1273bfe65fcec4458751",
+    "jf10-response-transformers-reverse": "12558365329eea2dcac2efc755174328e88b3e8d3247971539a473b26c8f0ae2",
+    "jf10-direct-writers-readonly": "b231ee80d5150067c045c0a4be6b02beab0e8d0e165859c1e906ecdecb458dbf",
+    "jf10-direct-writers-writable": "b231ee80d5150067c045c0a4be6b02beab0e8d0e165859c1e906ecdecb458dbf",
+}
+CONTRACT_FIELDS = (
+    "id", "runtime", "service", "webrootExpectation", "purpose", "installOrder",
+    "orderPair", "generationProbe", "stampingExpectation", "cacheExpectation",
+    "requiredStampedArtifacts", "requiredUnversionedOuterArtifacts",
+    "requiredPresentArtifacts", "requiredAbsentArtifacts",
+    "requiredPreVersionedArtifacts", "requiredBodyMarkers", "configurationPatches",
+    "contentProbes", "shellRequirements", "inlineRequirements",
+    "webrootDiskRequirements", "quarantinedAssertions",
+)
+EXPECTED_MATRIX_CONTRACT_SHA256 = "1f8431d97254aba33deb9190ec0c1bd1ffd11e8cbe41c877cbb52a868e93fa32"
+
+
+def reject_unknown_fields(value: dict[str, Any], allowed: set[str], context: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise artifact_lib.HarnessError(f"{context}: unknown fields: {unknown}")
+
+
+def matrix_contract_digest(document: dict[str, Any]) -> str:
+    projection = []
+    for matrix in document["matrices"]:
+        row: dict[str, Any] = {}
+        for field in CONTRACT_FIELDS:
+            if field == "orderPair":
+                default: Any = None
+            elif field.startswith("required") or field in {
+                "configurationPatches",
+                "contentProbes",
+            }:
+                default = []
+            elif field.endswith("Requirements"):
+                default = {}
+            else:
+                default = None
+            row[field] = matrix.get(field, default)
+        projection.append(row)
+    contract = {
+        "runtimes": document["runtimes"],
+        "matrices": projection,
+    }
+    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -51,6 +192,7 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
     document = artifact_lib.load_json(matrix_path)
     if not isinstance(document, dict) or document.get("schemaVersion") != 1:
         raise artifact_lib.HarnessError("matrices must be a schemaVersion 1 object")
+    reject_unknown_fields(document, {"schemaVersion", "runtimes", "matrices"}, "matrices")
     runtimes = document.get("runtimes")
     matrices = document.get("matrices")
     if not isinstance(runtimes, dict) or set(runtimes) != {"jf10", "jf12"}:
@@ -61,12 +203,51 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
     for runtime, details in runtimes.items():
         if not isinstance(details, dict):
             raise artifact_lib.HarnessError(f"{runtime}: runtime details must be an object")
+        reject_unknown_fields(
+            details,
+            {
+                "serverVersion",
+                "serverVersionRegex",
+                "image",
+                "imageDigest",
+                "refreshKitTargetAbi",
+                "refreshKitFramework",
+                "defaultStage",
+            },
+            f"{runtime} runtime",
+        )
         image = str(details.get("image", ""))
         digest = str(details.get("imageDigest", ""))
         if f"@sha256:{digest}" not in image or not artifact_lib.SHA256_RE.fullmatch(digest):
             raise artifact_lib.HarnessError(f"{runtime}: image is not pinned to imageDigest")
         if not str(details.get("serverVersionRegex", "")).startswith("^"):
             raise artifact_lib.HarnessError(f"{runtime}: serverVersionRegex must be anchored")
+        server_version = details.get("serverVersion")
+        if (
+            not isinstance(server_version, str)
+            or re.fullmatch(
+                r"[0-9]+(?:\.[0-9]+){2,3}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?",
+                server_version,
+            )
+            is None
+        ):
+            raise artifact_lib.HarnessError(f"{runtime}: invalid serverVersion")
+        try:
+            version_pattern = re.compile(str(details["serverVersionRegex"]))
+        except re.error as exc:
+            raise artifact_lib.HarnessError(
+                f"{runtime}: invalid serverVersionRegex: {exc}"
+            ) from exc
+        if version_pattern.search(server_version) is None:
+            raise artifact_lib.HarnessError(
+                f"{runtime}: serverVersionRegex does not match serverVersion"
+            )
+        target_abi = details.get("refreshKitTargetAbi")
+        if (
+            not isinstance(target_abi, str)
+            or re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", target_abi) is None
+        ):
+            raise artifact_lib.HarnessError(f"{runtime}: invalid refreshKitTargetAbi")
         expected_framework = "net9.0" if runtime == "jf10" else "net10.0"
         if details.get("refreshKitFramework") != expected_framework:
             raise artifact_lib.HarnessError(f"{runtime}: Refresh Kit framework mismatch")
@@ -82,9 +263,13 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
         if not isinstance(matrix, dict):
             raise artifact_lib.HarnessError("matrix rows must be objects")
         matrix_id = str(matrix.get("id", ""))
+        reject_unknown_fields(matrix, MATRIX_FIELDS, matrix_id or "matrix row")
         matrix_ids.append(matrix_id)
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", matrix_id):
             raise artifact_lib.HarnessError(f"unsafe matrix id: {matrix_id!r}")
+        purpose = matrix.get("purpose")
+        if not isinstance(purpose, str) or not purpose.strip():
+            raise artifact_lib.HarnessError(f"{matrix_id}: purpose must be nonempty")
         runtime = matrix.get("runtime")
         if runtime not in runtimes:
             raise artifact_lib.HarnessError(f"{matrix_id}: unknown runtime {runtime!r}")
@@ -170,7 +355,10 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
             if (
                 not isinstance(artifact_ids, list)
                 or len(artifact_ids) != len(set(artifact_ids))
-                or any(artifact_id not in order for artifact_id in artifact_ids)
+                or any(
+                    artifact_id == "@refresh-kit" or artifact_id not in order
+                    for artifact_id in artifact_ids
+                )
             ):
                 raise artifact_lib.HarnessError(f"{matrix_id}: invalid {field}")
         requirement_owners: dict[str, str] = {}
@@ -182,10 +370,200 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
                         f"{matrix_id}: {artifact_id} cannot be required by both "
                         f"{previous} and {field}"
                     )
-        for artifact_id in requirement_owners:
-            if not artifacts[artifact_id]["shellUrlNeedles"]:
+        structured_requirements = matrix.get("shellRequirements", {})
+        if not isinstance(structured_requirements, dict):
+            raise artifact_lib.HarnessError(
+                f"{matrix_id}: shellRequirements must be an object"
+            )
+        seen_selectors: dict[str, str] = {}
+        for artifact_id, requirement in structured_requirements.items():
+            if artifact_id == "@refresh-kit" or artifact_id not in order:
                 raise artifact_lib.HarnessError(
-                    f"{matrix_id}: required shell artifact {artifact_id} has no URL matcher"
+                    f"{matrix_id}: shell requirement artifact is not installed: {artifact_id}"
+                )
+            if not isinstance(requirement, dict):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}: shell requirement for {artifact_id} must be an object"
+                )
+            reject_unknown_fields(
+                requirement,
+                {"mode", "cardinality", "selectors"},
+                f"{matrix_id}/{artifact_id} shell requirement",
+            )
+            mode = requirement.get("mode")
+            if mode not in {
+                "current-rkv",
+                "source-versioned",
+                "external-present",
+                "unversioned-outer",
+                "absent",
+            }:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{artifact_id}: invalid shell requirement mode"
+                )
+            cardinality = requirement.get("cardinality")
+            selectors = requirement.get("selectors")
+            if (
+                not isinstance(cardinality, int)
+                or isinstance(cardinality, bool)
+                or cardinality < 0
+                or not isinstance(selectors, list)
+                or not selectors
+            ):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{artifact_id}: invalid shell cardinality/selectors"
+                )
+            selector_total = 0
+            for selector_index, selector in enumerate(selectors):
+                context = f"{matrix_id}/{artifact_id} selector {selector_index}"
+                if not isinstance(selector, dict):
+                    raise artifact_lib.HarnessError(f"{context}: must be an object")
+                reject_unknown_fields(
+                    selector,
+                    {"tag", "origin", "path", "query", "cardinality"},
+                    context,
+                )
+                if selector.get("tag") not in {"script", "link"}:
+                    raise artifact_lib.HarnessError(f"{context}: invalid tag")
+                origin = str(selector.get("origin", ""))
+                if origin != "same-origin" and re.fullmatch(
+                    r"https://[a-z0-9.-]+(?::[0-9]+)?", origin
+                ) is None:
+                    raise artifact_lib.HarnessError(f"{context}: invalid origin")
+                path = selector.get("path")
+                if (
+                    not isinstance(path, str)
+                    or not path
+                    or "?" in path
+                    or "#" in path
+                ):
+                    raise artifact_lib.HarnessError(f"{context}: invalid exact path")
+                selector_cardinality = selector.get("cardinality")
+                if (
+                    not isinstance(selector_cardinality, int)
+                    or isinstance(selector_cardinality, bool)
+                    or selector_cardinality < 0
+                ):
+                    raise artifact_lib.HarnessError(
+                        f"{context}: invalid selector cardinality"
+                    )
+                selector_total += selector_cardinality
+                query = selector.get("query")
+                if not isinstance(query, dict):
+                    raise artifact_lib.HarnessError(f"{context}: query must be an object")
+                reject_unknown_fields(
+                    query, {"requiredKeys", "allowedKeys", "equals"}, f"{context} query"
+                )
+                required_keys = query.get("requiredKeys")
+                allowed_keys = query.get("allowedKeys")
+                equals = query.get("equals")
+                for label, keys in (
+                    ("requiredKeys", required_keys),
+                    ("allowedKeys", allowed_keys),
+                ):
+                    if (
+                        not isinstance(keys, list)
+                        or len(keys) != len(set(keys))
+                        or any(
+                            not isinstance(key, str)
+                            or key != key.casefold()
+                            or re.fullmatch(r"[a-z][a-z0-9_-]*", key) is None
+                            for key in keys
+                        )
+                    ):
+                        raise artifact_lib.HarnessError(f"{context}: invalid {label}")
+                if not set(required_keys).issubset(allowed_keys):
+                    raise artifact_lib.HarnessError(
+                        f"{context}: required query keys must be allowed"
+                    )
+                if (
+                    not isinstance(equals, dict)
+                    or not set(equals).issubset(required_keys)
+                    or any(
+                        not isinstance(value, str) or not value
+                        for value in equals.values()
+                    )
+                ):
+                    raise artifact_lib.HarnessError(f"{context}: invalid query equals")
+                if mode == "current-rkv" and (
+                    origin != "same-origin" or "rkv" not in required_keys
+                ):
+                    raise artifact_lib.HarnessError(
+                        f"{context}: current-rkv requires same-origin and required rkv"
+                    )
+                if mode == "source-versioned" and (
+                    origin != "same-origin"
+                    or len(SOURCE_VERSION_KEYS & set(required_keys)) != 1
+                    or "rkv" in allowed_keys
+                ):
+                    raise artifact_lib.HarnessError(
+                        f"{context}: source-versioned requires one source version query"
+                    )
+                if mode == "external-present" and origin == "same-origin":
+                    raise artifact_lib.HarnessError(
+                        f"{context}: external-present requires an explicit external origin"
+                    )
+                if mode == "unversioned-outer" and (
+                    origin != "same-origin" or allowed_keys
+                ):
+                    raise artifact_lib.HarnessError(
+                        f"{context}: unversioned-outer cannot allow query parameters"
+                    )
+                canonical_selector = json.dumps(
+                    {
+                        "tag": selector["tag"],
+                        "origin": origin.casefold(),
+                        "path": path.casefold(),
+                        "requiredKeys": sorted(required_keys),
+                        "allowedKeys": sorted(allowed_keys),
+                        "equals": {
+                            key.casefold(): value
+                            for key, value in sorted(equals.items())
+                        },
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if canonical_selector in seen_selectors:
+                    raise artifact_lib.HarnessError(
+                        f"{context}: duplicate/ambiguous exact selector"
+                    )
+                seen_selectors[canonical_selector] = artifact_id
+            if selector_total != cardinality:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{artifact_id}: selector cardinalities do not sum to artifact cardinality"
+                )
+            if (mode == "absent") != (cardinality == 0):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{artifact_id}: only absent requirements may have zero cardinality"
+                )
+
+        derived_requirement_groups = {
+            "requiredStampedArtifacts": {
+                artifact_id for artifact_id, row in structured_requirements.items()
+                if row["mode"] == "current-rkv"
+            },
+            "requiredUnversionedOuterArtifacts": {
+                artifact_id for artifact_id, row in structured_requirements.items()
+                if row["mode"] == "unversioned-outer"
+            },
+            "requiredPresentArtifacts": {
+                artifact_id for artifact_id, row in structured_requirements.items()
+                if row["mode"] == "external-present"
+            },
+            "requiredAbsentArtifacts": {
+                artifact_id for artifact_id, row in structured_requirements.items()
+                if row["mode"] == "absent"
+            },
+            "requiredPreVersionedArtifacts": {
+                artifact_id for artifact_id, row in structured_requirements.items()
+                if row["mode"] == "source-versioned"
+            },
+        }
+        for field, derived in derived_requirement_groups.items():
+            if set(shell_requirements[field]) != derived:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}: {field} disagrees with structured shell requirements"
                 )
         body_markers = matrix.get("requiredBodyMarkers", {})
         if not isinstance(body_markers, dict):
@@ -204,6 +582,88 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
                 raise artifact_lib.HarnessError(
                     f"{matrix_id}: invalid body markers for {artifact_id}"
                 )
+        inline_requirements = matrix.get("inlineRequirements", {})
+        if not isinstance(inline_requirements, dict):
+            raise artifact_lib.HarnessError(
+                f"{matrix_id}: inlineRequirements must be an object"
+            )
+        for artifact_id, requirement in inline_requirements.items():
+            if artifact_id == "@refresh-kit" or artifact_id not in order:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}: inline requirement artifact is not installed: {artifact_id}"
+                )
+            if not isinstance(requirement, dict):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{artifact_id}: inline requirement must be an object"
+                )
+            reject_unknown_fields(
+                requirement,
+                {"cardinality", "markers", "ordered"},
+                f"{matrix_id}/{artifact_id} inline requirement",
+            )
+            cardinality = requirement.get("cardinality")
+            markers = requirement.get("markers")
+            if (
+                not isinstance(cardinality, int)
+                or isinstance(cardinality, bool)
+                or cardinality < 1
+                or not isinstance(markers, list)
+                or not markers
+                or len(markers) != len(set(markers))
+                or any(not isinstance(marker, str) or not marker for marker in markers)
+                or not isinstance(requirement.get("ordered"), bool)
+            ):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{artifact_id}: invalid inline requirement"
+                )
+        expected_body_markers = {
+            artifact_id: requirement["markers"]
+            for artifact_id, requirement in inline_requirements.items()
+        }
+        if body_markers != expected_body_markers:
+            raise artifact_lib.HarnessError(
+                f"{matrix_id}: requiredBodyMarkers disagrees with inlineRequirements"
+            )
+
+        disk_requirements = matrix.get("webrootDiskRequirements", {})
+        if not isinstance(disk_requirements, dict):
+            raise artifact_lib.HarnessError(
+                f"{matrix_id}: webrootDiskRequirements must be an object"
+            )
+        for artifact_id, requirement in disk_requirements.items():
+            if artifact_id == "@refresh-kit" or artifact_id not in order:
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}: disk requirement artifact is not installed: {artifact_id}"
+                )
+            if not isinstance(requirement, dict):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{artifact_id}: disk requirement must be an object"
+                )
+            reject_unknown_fields(
+                requirement,
+                {"mode", "cardinality", "markers"},
+                f"{matrix_id}/{artifact_id} disk requirement",
+            )
+            disk_mode = requirement.get("mode")
+            cardinality = requirement.get("cardinality")
+            markers = requirement.get("markers")
+            if (
+                disk_mode not in {"absent", "added"}
+                or not isinstance(cardinality, int)
+                or isinstance(cardinality, bool)
+                or cardinality != (0 if disk_mode == "absent" else 1)
+                or not isinstance(markers, list)
+                or not markers
+                or len(markers) != len(set(markers))
+                or any(not isinstance(marker, str) or not marker for marker in markers)
+            ):
+                raise artifact_lib.HarnessError(
+                    f"{matrix_id}/{artifact_id}: invalid disk requirement"
+                )
+        if bool(disk_requirements) != matrix_id.startswith("jf10-direct-writers-"):
+            raise artifact_lib.HarnessError(
+                f"{matrix_id}: disk requirements are mandatory only for direct-writer matrices"
+            )
         configuration_patches = matrix.get("configurationPatches", [])
         if not isinstance(configuration_patches, list):
             raise artifact_lib.HarnessError(
@@ -215,6 +675,11 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
                 raise artifact_lib.HarnessError(
                     f"{matrix_id}: configuration patch must be an object"
                 )
+            reject_unknown_fields(
+                patch,
+                {"artifactId", "payload"},
+                f"{matrix_id} configuration patch",
+            )
             artifact_id = patch.get("artifactId")
             configured_artifacts.append(str(artifact_id))
             if artifact_id not in order or artifact_id == "@refresh-kit":
@@ -236,6 +701,11 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
         for probe in content_probes:
             if not isinstance(probe, dict):
                 raise artifact_lib.HarnessError(f"{matrix_id}: content probe must be an object")
+            reject_unknown_fields(
+                probe,
+                {"id", "path", "authenticated", "markers"},
+                f"{matrix_id} content probe",
+            )
             probe_id = str(probe.get("id", ""))
             probe_ids.append(probe_id)
             if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", probe_id):
@@ -290,6 +760,33 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
     duplicates = sorted(key for key, count in Counter(matrix_ids).items() if count != 1)
     if duplicates:
         raise artifact_lib.HarnessError(f"duplicate matrix ids: {duplicates}")
+    if tuple(matrix_ids) != EXPECTED_MATRIX_SEQUENCE:
+        raise artifact_lib.HarnessError(
+            "matrix ids/order must remain exactly the audited 14-matrix sequence"
+        )
+    for matrix in matrices:
+        matrix_id = matrix["id"]
+        actual_base = (
+            matrix["runtime"],
+            matrix["service"],
+            matrix["webrootExpectation"],
+            matrix["generationProbe"],
+            matrix["stampingExpectation"],
+            matrix["cacheExpectation"],
+            matrix.get("orderPair"),
+        )
+        if actual_base != EXPECTED_MATRIX_BASE[matrix_id]:
+            raise artifact_lib.HarnessError(
+                f"{matrix_id}: runtime/service/webroot/probe/stamping/cache/order-pair "
+                "contract changed"
+            )
+        order_digest = hashlib.sha256(
+            json.dumps(matrix["installOrder"], separators=(",", ":")).encode()
+        ).hexdigest()
+        if order_digest != EXPECTED_INSTALL_ORDER_SHA256[matrix_id]:
+            raise artifact_lib.HarnessError(
+                f"{matrix_id}: exact audited install order changed"
+            )
     safe_degrade_ids = {
         str(matrix["id"])
         for matrix in matrices
@@ -322,6 +819,16 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
             f"GetAvatar cases; expected={UNVERSIONED_OUTER_ARTIFACTS_BY_MATRIX}, "
             f"actual={actual_unversioned_outer}"
         )
+    actual_external = {
+        str(matrix["id"]): set(matrix.get("requiredPresentArtifacts", []))
+        for matrix in matrices
+        if matrix.get("requiredPresentArtifacts")
+    }
+    if actual_external != EXTERNAL_ARTIFACTS_BY_MATRIX:
+        raise artifact_lib.HarnessError(
+            "external shell assertions must remain exactly the audited Media Bar case; "
+            f"expected={EXTERNAL_ARTIFACTS_BY_MATRIX}, actual={actual_external}"
+        )
     actual_absent = {
         str(matrix["id"]): set(matrix.get("requiredAbsentArtifacts", []))
         for matrix in matrices
@@ -341,7 +848,7 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
     if actual_preversioned != PREVERSIONED_ARTIFACTS_BY_MATRIX:
         raise artifact_lib.HarnessError(
             "source-preversioned shell assertions must remain exactly the audited "
-            f"Security/AniLiberty cases; expected={PREVERSIONED_ARTIFACTS_BY_MATRIX}, "
+            f"local version-query cases; expected={PREVERSIONED_ARTIFACTS_BY_MATRIX}, "
             f"actual={actual_preversioned}"
         )
     expected_used = {
@@ -357,6 +864,13 @@ def load_and_validate(lock_path: Path, matrix_path: Path) -> tuple[dict[str, Any
             raise artifact_lib.HarnessError(
                 f"order pair {pair!r} must contain two exact reverse install orders"
             )
+    contract_digest = matrix_contract_digest(document)
+    if contract_digest != EXPECTED_MATRIX_CONTRACT_SHA256:
+        raise artifact_lib.HarnessError(
+            "exact runtime/matrix/body/config/content/shell/inline/disk/quarantine "
+            "compatibility contract changed; "
+            f"expected={EXPECTED_MATRIX_CONTRACT_SHA256}, actual={contract_digest}"
+        )
     return lock, document
 
 
@@ -414,7 +928,16 @@ def main() -> int:
             print(
                 json.dumps(
                     {
+                        "contractSha256": matrix_contract_digest(document),
                         "matrixCount": len(document["matrices"]),
+                        "shellRequirementCount": sum(
+                            len(matrix.get("shellRequirements", {}))
+                            for matrix in document["matrices"]
+                        ),
+                        "inlineRequirementCount": sum(
+                            len(matrix.get("inlineRequirements", {}))
+                            for matrix in document["matrices"]
+                        ),
                         "testableArtifactCount": sum(
                             item["disposition"] == "testable" for item in lock["artifacts"]
                         ),

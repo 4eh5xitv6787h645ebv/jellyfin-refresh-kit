@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import html
+import ipaddress
 import json
 import re
 import sys
@@ -28,7 +28,50 @@ VERSIONISH_KEYS = {
     "v", "ver", "vers", "version", "rev", "revision", "hash", "build",
     "buildid", "cb", "cachebust", "cachebuster", "nocache", "_",
 }
+SOURCE_VERSION_KEYS = {
+    "v", "ver", "vers", "version", "rev", "revision", "hash", "build",
+    "buildid", "cb", "cachebust", "cachebuster",
+}
 CONTENT_HASH_RE = re.compile(r"(?:^|[.\-])[0-9a-f]{8,}(?=(?:\.[a-z0-9_-]+)+$)", re.I)
+SHELL_DOCUMENT_URL = "https://compat.invalid/web/index.html"
+INERT_SHELL_CONTAINERS = {
+    "iframe", "math", "noembed", "noframes", "noscript", "plaintext", "style",
+    "svg", "template", "textarea", "title", "xmp",
+}
+JAVASCRIPT_MIME_TYPES = {
+    "application/ecmascript",
+    "application/javascript",
+    "application/x-ecmascript",
+    "application/x-javascript",
+    "text/ecmascript",
+    "text/javascript",
+    "text/javascript1.0",
+    "text/javascript1.1",
+    "text/javascript1.2",
+    "text/javascript1.3",
+    "text/javascript1.4",
+    "text/javascript1.5",
+    "text/jscript",
+    "text/livescript",
+    "text/x-ecmascript",
+    "text/x-javascript",
+}
+
+
+def normalize_special_url_reference(value: str) -> str:
+    """Apply the HTTP(S) backslash-as-slash rule before URL resolution."""
+    value = value.strip(" \t\r\n\f")
+    delimiters = [index for marker in ("?", "#") if (index := value.find(marker)) >= 0]
+    boundary = min(delimiters) if delimiters else len(value)
+    return value[:boundary].replace("\\", "/") + value[boundary:]
+
+
+def untrusted_special_scheme_reference(value: str) -> bool:
+    """Reject malformed explicit special-scheme forms urllib resolves differently."""
+    return (
+        re.match(r"(?i)^https?:", value) is not None
+        and re.match(r"(?i)^https?://[^/]", value) is None
+    )
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -67,28 +110,113 @@ def require_file(path: Path) -> None:
 
 
 class ShellParser(HTMLParser):
-    def __init__(self) -> None:
+    def __init__(self, document_url: str | None = None) -> None:
         super().__init__(convert_charrefs=True)
         self.assets: list[dict[str, Any]] = []
+        self.document_url = document_url
+        self.base_url = document_url or SHELL_DOCUMENT_URL
+        self.base_same_origin = True
+        self.base_href_seen = False
+        self.inert_context_counts: Counter[str] = Counter()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self._handle(tag, attrs)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._handle(tag, attrs)
+        self._handle(tag, attrs, self_closing=True)
 
-    def _handle(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        normalized = {key.casefold(): value or "" for key, value in attrs}
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.casefold()
+        if self.inert_context_counts[normalized_tag] > 0:
+            self.inert_context_counts[normalized_tag] -= 1
+
+    def _handle(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+        *,
+        self_closing: bool = False,
+    ) -> None:
+        normalized_tag = tag.casefold()
+        if normalized_tag in INERT_SHELL_CONTAINERS:
+            if not self_closing or normalized_tag not in {"math", "svg"}:
+                self.inert_context_counts[normalized_tag] += 1
+            return
+        if any(self.inert_context_counts.values()):
+            return
+        # HTML's tree-construction rules retain the first duplicate attribute.
+        # HTMLParser has already resolved character references in attribute values,
+        # so decoding the selected URL again would turn inert `&amp;name` text into a
+        # new query separator that the browser never observes.
+        normalized: dict[str, str] = {}
+        for key, value in attrs:
+            normalized.setdefault(key.casefold(), value or "")
+        if normalized_tag == "base":
+            if not self.base_href_seen and "href" in normalized:
+                self.base_href_seen = True
+                normalized_href = normalize_special_url_reference(normalized["href"])
+                self.base_url = urllib.parse.urljoin(
+                    self.document_url or SHELL_DOCUMENT_URL, normalized_href
+                )
+                if self.document_url is not None:
+                    if untrusted_special_scheme_reference(normalized_href):
+                        self.base_same_origin = False
+                    else:
+                        try:
+                            self.base_same_origin = normalized_url_origin(
+                                urllib.parse.urlsplit(self.base_url)
+                            ) == normalized_url_origin(
+                                urllib.parse.urlsplit(self.document_url)
+                            )
+                        except ValueError:
+                            self.base_same_origin = False
+                else:
+                    try:
+                        href = urllib.parse.urlsplit(normalized_href)
+                        self.base_same_origin = (
+                            not untrusted_special_scheme_reference(normalized_href)
+                            and not href.scheme
+                            and not href.netloc
+                            and not normalized_href.startswith("//")
+                        )
+                    except ValueError:
+                        self.base_same_origin = False
+            return
         url = ""
-        if tag.casefold() == "script":
-            url = normalized.get("src", "")
-        elif tag.casefold() == "link":
+        if normalized_tag == "script":
+            if "type" in normalized:
+                script_type = normalized["type"].strip().casefold()
+                executable_script = (
+                    not script_type
+                    or script_type == "module"
+                    or script_type in JAVASCRIPT_MIME_TYPES
+                )
+            else:
+                language = normalized.get("language", "").strip().casefold()
+                executable_script = (
+                    not language or f"text/{language}" in JAVASCRIPT_MIME_TYPES
+                )
+            if executable_script:
+                url = normalized.get("src", "")
+        elif normalized_tag == "link":
             rel = {part.casefold() for part in normalized.get("rel", "").split()}
-            if "stylesheet" in rel:
+            link_type = normalized.get("type", "").strip().casefold()
+            link_essence = link_type.split(";", 1)[0].strip()
+            if (
+                "stylesheet" in rel
+                and (not link_type or link_essence == "text/css")
+            ):
                 url = normalized.get("href", "")
         if url:
             self.assets.append(
-                {"position": len(self.assets), "tag": tag.casefold(), "url": html.unescape(url)}
+                {
+                    "position": len(self.assets),
+                    "tag": normalized_tag,
+                    "url": url,
+                    "baseUrl": self.base_url,
+                    "baseSameOrigin": self.base_same_origin,
+                    "documentUrl": self.document_url,
+                }
             )
 
 
@@ -200,27 +328,25 @@ def generation_from(path: Path) -> str:
     return value
 
 
-def query_values(url: str, key: str) -> list[str]:
-    try:
-        return [value for actual, value in urllib.parse.parse_qsl(
-            urllib.parse.urlsplit(url).query, keep_blank_values=True
-        ) if actual.casefold() == key.casefold()]
-    except ValueError:
-        return []
-
-
-def eligible_unversioned(url: str) -> bool:
-    if not url or url.startswith("//"):
+def eligible_unversioned(
+    url: str,
+    base_url: str = SHELL_DOCUMENT_URL,
+    document_url: str | None = None,
+    base_same_origin: bool | None = None,
+) -> bool:
+    if not url:
         return False
-    split = urllib.parse.urlsplit(url)
-    if split.scheme or split.netloc:
+    parsed = parsed_asset_url(
+        url, base_url, document_url, base_same_origin
+    )
+    if not parsed["valid"] or not parsed["sameOrigin"] or parsed["fragment"]:
         return False
-    pairs = urllib.parse.parse_qsl(split.query, keep_blank_values=True)
+    pairs = parsed["query"]
     if any(key.casefold() in VERSIONISH_KEYS for key, _ in pairs):
         return False
-    if split.query and "=" not in split.query:
+    if parsed["rawQuery"] and "=" not in parsed["rawQuery"]:
         return False
-    filename = PureName(split.path)
+    filename = PureName(parsed["path"])
     return CONTENT_HASH_RE.search(filename) is None
 
 
@@ -304,62 +430,392 @@ def parse_install_tsv(path: Path) -> list[dict[str, Any]]:
     return result
 
 
-def shell_attribution(
-    assets: list[dict[str, Any]], artifact: dict[str, Any], generation: str
+def normalized_url_origin(split: urllib.parse.SplitResult) -> str:
+    scheme = split.scheme.casefold()
+    hostname = (split.hostname or "").casefold()
+    if scheme not in {"http", "https"} or not hostname:
+        return ""
+    port = split.port
+    if port is None or (scheme, port) in {("http", 80), ("https", 443)}:
+        return f"{scheme}://{hostname}"
+    return f"{scheme}://{hostname}:{port}"
+
+
+def retained_selected_origin(network: dict[str, Any]) -> str | None:
+    """Return only an origin that exactly matches the retained network identity."""
+    mode = network.get("originMode")
+    selected = network.get("selectedOrigin")
+    if not isinstance(selected, str):
+        return None
+    if mode == "published-loopback":
+        declared = network.get("declaredLoopback")
+        if (
+            not isinstance(declared, str)
+            or re.fullmatch(r"127\.0\.0\.1:([0-9]+)", declared) is None
+            or network.get("publishedLoopbackActive") is not True
+        ):
+            return None
+        port = int(declared.rsplit(":", 1)[1])
+        if not 1 <= port <= 65535:
+            return None
+        expected = f"http://{declared}"
+    elif mode == "verified-internal-bridge":
+        address = network.get("internalIpv4")
+        if not isinstance(address, str) or network.get("publishedLoopbackActive") is not False:
+            return None
+        try:
+            parsed_address = ipaddress.ip_address(address)
+        except ValueError:
+            return None
+        if parsed_address.version != 4 or str(parsed_address) != address:
+            return None
+        expected = f"http://{address}:8096"
+    else:
+        return None
+    return expected if selected == expected else None
+
+
+def parsed_asset_url(
+    url: str,
+    base_url: str = SHELL_DOCUMENT_URL,
+    document_url: str | None = None,
+    base_same_origin: bool | None = None,
 ) -> dict[str, Any]:
-    needles = artifact["shellUrlNeedles"]
-    matches = [
-        row for row in assets
-        if any(needle in row["url"].casefold() for needle in needles)
-    ]
-    for row in matches:
-        stamps = query_values(row["url"], "rkv")
-        row["rkv"] = stamps
-        row["stampMatchesGeneration"] = stamps == [generation]
-        row["eligibleWithoutRefreshKitStamp"] = eligible_unversioned(
-            re.sub(r"([?&])rkv=[^&#]*&?", lambda match: match.group(1), row["url"], flags=re.I)
-            .replace("?&", "?")
-            .rstrip("?&")
+    """Parse a shell URL without treating query text as part of its path identity."""
+    try:
+        normalized_url = normalize_special_url_reference(url)
+        normalized_base_url = normalize_special_url_reference(base_url)
+        raw = urllib.parse.urlsplit(normalized_url)
+        resolved_url = urllib.parse.urljoin(normalized_base_url, normalized_url)
+        split = urllib.parse.urlsplit(resolved_url)
+        pairs = urllib.parse.parse_qsl(split.query, keep_blank_values=True)
+        resolved_origin = normalized_url_origin(split)
+        document_origin = (
+            normalized_url_origin(urllib.parse.urlsplit(document_url))
+            if document_url is not None
+            else ""
         )
+    except (TypeError, ValueError):
+        return {
+            "valid": False,
+            "sameOrigin": False,
+            "origin": "",
+            "path": "",
+            "query": [],
+            "rawQuery": "",
+            "fragment": "",
+            "resolvedUrl": "",
+        }
+    valid = bool(resolved_origin)
+    if document_url is not None:
+        syntactically_relative = (
+            not raw.scheme and not raw.netloc and not normalized_url.startswith("//")
+        )
+        same_origin = (
+            valid
+            and bool(document_origin)
+            and resolved_origin == document_origin
+            and not untrusted_special_scheme_reference(normalized_url)
+            and (not syntactically_relative or base_same_origin is not False)
+        )
+    else:
+        syntactically_relative = (
+            not raw.scheme and not raw.netloc and not normalized_url.startswith("//")
+        )
+        effective_base_same_origin = (
+            normalized_base_url == SHELL_DOCUMENT_URL
+            if base_same_origin is None
+            else base_same_origin
+        )
+        same_origin = (
+            valid
+            and syntactically_relative
+            and effective_base_same_origin
+        )
+    origin = "same-origin" if same_origin else resolved_origin
     return {
-        "needles": needles,
-        "tags": matches,
-        "tagCount": len(matches),
-        "currentStampCount": sum(row["stampMatchesGeneration"] for row in matches),
-        "unstampedEligibleCount": sum(
-            row["eligibleWithoutRefreshKitStamp"] and not row["stampMatchesGeneration"]
-            for row in matches
-        ),
+        "valid": valid,
+        "sameOrigin": same_origin,
+        "origin": origin,
+        "path": split.path,
+        "query": pairs,
+        "rawQuery": split.query,
+        "fragment": split.fragment,
+        "resolvedUrl": resolved_url,
     }
 
 
-def evaluate_unversioned_outer_limitation(shell: dict[str, Any]) -> dict[str, bool]:
-    return {
-        "singleTagPresent": shell.get("tagCount") == 1,
-        "currentStampAbsent": shell.get("currentStampCount") == 0,
-        "singleEligibleUnversionedTag": shell.get("unstampedEligibleCount") == 1,
+def selector_base_match(
+    asset: dict[str, Any], selector: dict[str, Any], *, allow_fragment: bool = False
+) -> dict[str, Any] | None:
+    if asset.get("tag") != selector.get("tag"):
+        return None
+    document_url = asset.get("documentUrl")
+    parsed = parsed_asset_url(
+        str(asset.get("url", "")),
+        str(asset.get("baseUrl", SHELL_DOCUMENT_URL)),
+        document_url if isinstance(document_url, str) else None,
+        asset.get("baseSameOrigin")
+        if isinstance(asset.get("baseSameOrigin"), bool)
+        else None,
+    )
+    if not parsed["valid"] or (parsed["fragment"] and not allow_fragment):
+        return None
+    if parsed["origin"] != selector.get("origin"):
+        return None
+    if parsed["path"] != selector.get("path"):
+        return None
+    return parsed
+
+
+def selector_matches(asset: dict[str, Any], selector: dict[str, Any]) -> bool:
+    parsed = selector_base_match(asset, selector)
+    if parsed is None:
+        return False
+    query_contract = selector.get("query", {})
+    pairs = parsed["query"]
+    actual_keys = [key for key, _ in pairs]
+    required_keys = set(query_contract.get("requiredKeys", []))
+    allowed_keys = set(query_contract.get("allowedKeys", []))
+    if not required_keys.issubset(actual_keys) or any(
+        key not in allowed_keys for key in actual_keys
+    ):
+        return False
+    for key, expected in query_contract.get("equals", {}).items():
+        values = [value for actual, value in pairs if actual == key]
+        if values != [expected]:
+            return False
+    return True
+
+
+def absent_selector_identity_matches(
+    asset: dict[str, Any], selector: dict[str, Any]
+) -> bool:
+    """Recognize an absent artifact without letting extra query keys hide its tag."""
+    parsed = selector_base_match(asset, selector, allow_fragment=True)
+    if parsed is None:
+        return False
+    pairs = parsed["query"]
+    folded_pairs = [(key.casefold(), value) for key, value in pairs]
+    query_contract = selector.get("query", {})
+    if any(
+        not any(actual == str(key).casefold() for actual, _ in folded_pairs)
+        for key in query_contract.get("requiredKeys", [])
+    ):
+        return False
+    return all(
+        any(
+            actual == str(key).casefold() and value == expected
+            for actual, value in folded_pairs
+        )
+        for key, expected in query_contract.get("equals", {}).items()
+    )
+
+
+def attribute_shell_assets(
+    assets: list[dict[str, Any]], requirements: dict[str, Any], generation: str
+) -> tuple[dict[str, dict[str, Any]], list[str], list[str]]:
+    """Attribute each tag once using structured selectors and retain ambiguity errors."""
+    matches_by_artifact: dict[str, list[dict[str, Any]]] = {
+        artifact_id: [] for artifact_id in requirements
     }
+    observed_order: list[str] = []
+    errors: list[str] = []
+    for asset in assets:
+        candidates = [
+            (artifact_id, selector_index, selector_matches(asset, selector))
+            for artifact_id, requirement in requirements.items()
+            for selector_index, selector in enumerate(requirement["selectors"])
+            if selector_matches(asset, selector)
+            or (
+                requirement["mode"] == "absent"
+                and absent_selector_identity_matches(asset, selector)
+            )
+        ]
+        if len(candidates) > 1:
+            errors.append(
+                f"shell asset {asset['url']!r} matched multiple selectors: {candidates}"
+            )
+            continue
+        if not candidates:
+            continue
+        artifact_id, selector_index, exact_query_match = candidates[0]
+        row = dict(asset)
+        document_url = row.get("documentUrl")
+        parsed = parsed_asset_url(
+            row["url"],
+            str(row.get("baseUrl", SHELL_DOCUMENT_URL)),
+            document_url if isinstance(document_url, str) else None,
+            row.get("baseSameOrigin")
+            if isinstance(row.get("baseSameOrigin"), bool)
+            else None,
+        )
+        stamps = [
+            value for key, value in parsed["query"] if key.casefold() == "rkv"
+        ]
+        source_versions = [
+            value
+            for key, value in parsed["query"]
+            if key.casefold() in SOURCE_VERSION_KEYS
+        ]
+        row.update(
+            {
+                "matchedSelector": selector_index,
+                "exactQueryMatch": exact_query_match,
+                "origin": parsed["origin"],
+                "path": parsed["path"],
+                "resolvedUrl": parsed["resolvedUrl"],
+                "query": parsed["query"],
+                "sameOrigin": parsed["sameOrigin"],
+                "rkv": stamps,
+                "sourceVersionValues": source_versions,
+                "stampMatchesGeneration": stamps == [generation],
+                "eligibleWithoutRefreshKitStamp": eligible_unversioned(
+                    re.sub(
+                        r"([?&])rkv=[^&#]*&?",
+                        lambda match: match.group(1),
+                        row["url"],
+                        flags=re.I,
+                    )
+                    .replace("?&", "?")
+                    .rstrip("?&"),
+                    str(row.get("baseUrl", SHELL_DOCUMENT_URL)),
+                    document_url if isinstance(document_url, str) else None,
+                    row.get("baseSameOrigin")
+                    if isinstance(row.get("baseSameOrigin"), bool)
+                    else None,
+                ),
+            }
+        )
+        matches_by_artifact[artifact_id].append(row)
+        observed_order.append(artifact_id)
+
+    attributed: dict[str, dict[str, Any]] = {}
+    for artifact_id, requirement in requirements.items():
+        matches = matches_by_artifact[artifact_id]
+        selector_counts = Counter(row["matchedSelector"] for row in matches)
+        attributed[artifact_id] = {
+            "mode": requirement["mode"],
+            "tags": matches,
+            "tagCount": len(matches),
+            "currentStampCount": sum(row["stampMatchesGeneration"] for row in matches),
+            "unstampedEligibleCount": sum(
+                row["eligibleWithoutRefreshKitStamp"]
+                and not row["stampMatchesGeneration"]
+                for row in matches
+            ),
+            "selectorCounts": [
+                selector_counts.get(index, 0)
+                for index in range(len(requirement["selectors"]))
+            ],
+        }
+    return attributed, observed_order, errors
 
 
-def evaluate_current_stamped(shell: dict[str, Any]) -> dict[str, bool]:
-    tag_count = shell.get("tagCount")
-    return {
-        "tagPresent": isinstance(tag_count, int) and tag_count > 0,
-        "everyMatchedTagHasCurrentStamp": isinstance(tag_count, int)
-        and tag_count > 0
-        and shell.get("currentStampCount") == tag_count,
+def evaluate_shell_requirement(
+    shell: dict[str, Any], requirement: dict[str, Any]
+) -> dict[str, bool]:
+    tags = shell.get("tags", [])
+    mode = requirement["mode"]
+    checks = {
+        "artifactCardinalityExact": shell.get("tagCount") == requirement["cardinality"],
+        "selectorCardinalitiesExact": shell.get("selectorCounts")
+        == [selector["cardinality"] for selector in requirement["selectors"]],
     }
+    if mode == "absent":
+        return checks
+    checks["tagPresent"] = bool(tags)
+    if mode == "current-rkv":
+        checks.update(
+            {
+                "allSameOrigin": bool(tags) and all(row.get("sameOrigin") for row in tags),
+                "everyMatchedTagHasCurrentStamp": bool(tags)
+                and all(row.get("stampMatchesGeneration") for row in tags),
+            }
+        )
+    elif mode == "source-versioned":
+        checks.update(
+            {
+                "allSameOrigin": bool(tags) and all(row.get("sameOrigin") for row in tags),
+                "refreshKitStampAbsent": bool(tags)
+                and all(not row.get("rkv") for row in tags),
+                "oneNonemptySourceVersionPerTag": bool(tags)
+                and all(
+                    len(row.get("sourceVersionValues", [])) == 1
+                    and bool(row["sourceVersionValues"][0])
+                    for row in tags
+                ),
+            }
+        )
+    elif mode == "external-present":
+        checks["allExternal"] = bool(tags) and all(
+            not row.get("sameOrigin") and row.get("origin") for row in tags
+        )
+    elif mode == "unversioned-outer":
+        checks.update(
+            {
+                "allSameOrigin": bool(tags) and all(row.get("sameOrigin") for row in tags),
+                "refreshKitStampAbsent": bool(tags)
+                and all(not row.get("rkv") for row in tags),
+                "sourceVersionAbsent": bool(tags)
+                and all(not row.get("sourceVersionValues") for row in tags),
+                "allEligibleUnversioned": bool(tags)
+                and all(row.get("eligibleWithoutRefreshKitStamp") for row in tags),
+            }
+        )
+    return checks
 
 
-def evaluate_source_preversioned(shell: dict[str, Any]) -> dict[str, bool]:
-    tags = shell.get("tags")
+def evaluate_webroot_disk(
+    before: bytes, after: bytes, requirements: dict[str, Any]
+) -> dict[str, Any]:
+    before_text = before.decode("utf-8-sig")
+    after_text = after.decode("utf-8-sig")
+    effects: dict[str, Any] = {}
+    for artifact_id, requirement in requirements.items():
+        expected_after = requirement["cardinality"]
+        markers = {
+            marker: {
+                "beforeCount": before_text.count(marker),
+                "afterCount": after_text.count(marker),
+                "expectedBeforeCount": 0,
+                "expectedAfterCount": expected_after,
+            }
+            for marker in requirement["markers"]
+        }
+        checks = {
+            "rawMarkersAbsentBefore": all(
+                row["beforeCount"] == row["expectedBeforeCount"]
+                for row in markers.values()
+            ),
+            "rawMarkersExactAfter": all(
+                row["afterCount"] == row["expectedAfterCount"]
+                for row in markers.values()
+            ),
+        }
+        effects[artifact_id] = {
+            "mode": requirement["mode"],
+            "markers": markers,
+            "checks": checks,
+            "allPassed": all(checks.values()),
+        }
+    expects_writes = any(
+        requirement["mode"] == "added" for requirement in requirements.values()
+    )
+    document_checks = {
+        "beforeHtmlDocument": b"<html" in before.lower() and b"</html>" in before.lower(),
+        "afterHtmlDocument": b"<html" in after.lower() and b"</html>" in after.lower(),
+        "diskBytesChangedAsExpected": (before != after) == expects_writes,
+    }
     return {
-        "tagPresent": isinstance(tags, list) and len(tags) > 0,
-        "refreshKitStampAbsent": isinstance(tags, list)
-        and bool(tags)
-        and all(not row.get("rkv") for row in tags if isinstance(row, dict))
-        and all(isinstance(row, dict) for row in tags),
-        "sourceVersionMakesStampIneligible": shell.get("unstampedEligibleCount") == 0,
+        "beforeBytes": len(before),
+        "afterBytes": len(after),
+        "beforeSha256": hashlib.sha256(before).hexdigest(),
+        "afterSha256": hashlib.sha256(after).hexdigest(),
+        "effects": effects,
+        "checks": document_checks,
+        "allPassed": all(document_checks.values())
+        and all(row["allPassed"] for row in effects.values()),
     }
 
 
@@ -370,7 +826,7 @@ def cmd_runtime(args: argparse.Namespace) -> int:
     runtime_lock = matrices["runtimes"][runtime]
     artifacts = artifact_lib.artifact_index(lock)
     evidence = args.evidence.resolve()
-    required_names = (
+    required_names = [
         "artifact-verification.json",
         "network.json",
         "stage.json",
@@ -391,9 +847,19 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         "conditional.headers",
         "conditional.html",
         "image.txt",
-    )
+    ]
+    if matrix.get("webrootDiskRequirements"):
+        required_names.extend(("webroot-before.html", "webroot-after.html"))
     for name in required_names:
         require_file(evidence / name)
+
+    webroot_disk: dict[str, Any] | None = None
+    if matrix.get("webrootDiskRequirements"):
+        webroot_disk = evaluate_webroot_disk(
+            (evidence / "webroot-before.html").read_bytes(),
+            (evidence / "webroot-after.html").read_bytes(),
+            matrix["webrootDiskRequirements"],
+        )
 
     editors_choice_configuration: dict[str, Any] | None = None
     if args.matrix == "jf10-transform-editors":
@@ -408,6 +874,8 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         }
 
     errors: list[str] = []
+    if webroot_disk is not None and not webroot_disk["allPassed"]:
+        errors.append("direct webroot before/after disk evidence failed")
     matrix_configurations: dict[str, Any] = {}
     for patch in matrix.get("configurationPatches", []):
         artifact_id = patch["artifactId"]
@@ -450,6 +918,7 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         errors.append("container image does not contain the locked digest")
 
     network = read_json(evidence / "network.json")
+    selected_origin = retained_selected_origin(network)
     network_checks = {
         "valid": network.get("valid") is True and network.get("allPassed") is True,
         "project": network.get("project", "").startswith("rk-compat-"),
@@ -462,6 +931,7 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         "exclusiveProjectNetwork": network.get("exclusiveProjectNetwork") is True,
         "originMode": network.get("originMode")
         in ("published-loopback", "verified-internal-bridge"),
+        "selectedOriginIdentity": selected_origin is not None,
     }
     for key, passed in network_checks.items():
         if not passed:
@@ -473,7 +943,10 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         errors.append("generation did not change after a loose third-party JavaScript asset changed")
 
     shell_text = read_text(evidence / "shell-after.html")
-    shell_parser = ShellParser()
+    shell_document_url = (
+        f"{selected_origin}/web/index.html" if selected_origin is not None else None
+    )
+    shell_parser = ShellParser(shell_document_url)
     shell_parser.feed(shell_text)
     own_tag_count = shell_text.count('plugin="Jellyfin Refresh Kit"')
     shell_checks = {
@@ -504,7 +977,7 @@ def cmd_runtime(args: argparse.Namespace) -> int:
     shell_body = (evidence / "shell-after.html").read_bytes()
     conditional_body = (evidence / "conditional.html").read_bytes()
     conditional_text = read_text(evidence / "conditional.html")
-    conditional_parser = ShellParser()
+    conditional_parser = ShellParser(shell_document_url)
     conditional_parser.feed(conditional_text)
     cache_checks = {
         "refreshKitEtag": len(etags) == 1 and "rk-" in etags[0],
@@ -558,7 +1031,12 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         probe_text = read_text(probe_path)
         artifact_checks = {
             artifact_id: {
-                marker: marker in probe_text for marker in markers
+                marker: {
+                    "count": probe_text.count(marker),
+                    "minimum": 1,
+                    "passed": probe_text.count(marker) >= 1,
+                }
+                for marker in markers
             }
             for artifact_id, markers in probe["markers"].items()
         }
@@ -569,16 +1047,17 @@ def cmd_runtime(args: argparse.Namespace) -> int:
             "bytes": probe_path.stat().st_size,
             "artifactChecks": artifact_checks,
             "allPassed": all(
-                passed
+                check["passed"]
                 for checks in artifact_checks.values()
-                for passed in checks.values()
+                for check in checks.values()
             ),
         }
         for artifact_id, checks in artifact_checks.items():
-            for marker, passed in checks.items():
-                if not passed:
+            for marker, check in checks.items():
+                if not check["passed"]:
                     errors.append(
-                        f"{artifact_id}: content probe {probe['id']} missed marker {marker!r}"
+                        f"{artifact_id}: content probe {probe['id']} marker cardinality "
+                        f"failed for {marker!r}: minimum=1, actual={check['count']}"
                     )
 
     inventory_rows = plugin_rows(read_json(evidence / "plugins.json"))
@@ -620,23 +1099,12 @@ def cmd_runtime(args: argparse.Namespace) -> int:
             errors.append(f"Refresh Kit check failed: {key}")
 
     per_plugin = []
-    required_unversioned_outer = set(
-        matrix.get("requiredUnversionedOuterArtifacts", [])
+    shell_requirements = matrix.get("shellRequirements", {})
+    inline_requirements = matrix.get("inlineRequirements", {})
+    shell_attributions, observed_shell_order, attribution_errors = attribute_shell_assets(
+        shell_parser.assets, shell_requirements, generation_after
     )
-    required_present = set(matrix.get("requiredPresentArtifacts", []))
-    required_absent = set(matrix.get("requiredAbsentArtifacts", []))
-    required_preversioned = set(matrix.get("requiredPreVersionedArtifacts", []))
-    observed_shell_order: list[str] = []
-    for asset in shell_parser.assets:
-        for artifact_id in requested_order:
-            if artifact_id == "@refresh-kit":
-                continue
-            if any(
-                needle in asset["url"].casefold()
-                for needle in artifacts[artifact_id]["shellUrlNeedles"]
-            ):
-                observed_shell_order.append(artifact_id)
-                break
+    errors.extend(attribution_errors)
 
     for artifact_id in requested_order:
         if artifact_id == "@refresh-kit":
@@ -685,34 +1153,54 @@ def cmd_runtime(args: argparse.Namespace) -> int:
             if not passed:
                 plugin_errors.append(f"runtime meta check failed: {key}")
 
-        shell = shell_attribution(shell_parser.assets, artifact, generation_after)
+        shell = shell_attributions.get(
+            artifact_id,
+            {
+                "mode": None,
+                "tags": [],
+                "tagCount": 0,
+                "currentStampCount": 0,
+                "unstampedEligibleCount": 0,
+                "selectorCounts": [],
+            },
+        )
         shell_requirement_checks: dict[str, bool] = {}
-        if artifact_id in matrix["requiredStampedArtifacts"]:
-            shell_requirement_checks = evaluate_current_stamped(shell)
+        shell_requirement = shell_requirements.get(artifact_id)
+        if shell_requirement is not None:
+            shell_requirement_checks = evaluate_shell_requirement(
+                shell, shell_requirement
+            )
             for key, passed in shell_requirement_checks.items():
                 if not passed:
-                    plugin_errors.append(f"required generation-stamp check failed: {key}")
-        if artifact_id in required_present and shell["tagCount"] < 1:
-            plugin_errors.append("required shell tag was not observed")
-        if artifact_id in required_absent:
-            shell_requirement_checks = {"tagAbsent": shell["tagCount"] == 0}
-            if not shell_requirement_checks["tagAbsent"]:
-                plugin_errors.append("forbidden read-only direct-writer tag was observed")
-        if artifact_id in required_preversioned:
-            shell_requirement_checks = evaluate_source_preversioned(shell)
-            for key, passed in shell_requirement_checks.items():
+                    plugin_errors.append(
+                        f"{shell_requirement['mode']} shell check failed: {key}"
+                    )
+        inline_requirement = inline_requirements.get(artifact_id)
+        body_markers: dict[str, Any] = {}
+        if inline_requirement is not None:
+            marker_positions = []
+            for marker in inline_requirement["markers"]:
+                count = shell_text.count(marker)
+                passed = count == inline_requirement["cardinality"]
+                body_markers[marker] = {
+                    "count": count,
+                    "expected": inline_requirement["cardinality"],
+                    "passed": passed,
+                }
+                marker_positions.append(shell_text.find(marker))
                 if not passed:
-                    plugin_errors.append(f"source-preversioned shell check failed: {key}")
-        body_markers = {
-            marker: marker in shell_text
-            for marker in matrix.get("requiredBodyMarkers", {}).get(artifact_id, [])
-        }
-        for marker, present in body_markers.items():
-            if not present:
-                plugin_errors.append(f"required inline body marker was not observed: {marker!r}")
+                    plugin_errors.append(
+                        f"inline marker cardinality failed for {marker!r}: "
+                        f"expected={inline_requirement['cardinality']}, actual={count}"
+                    )
+            if inline_requirement.get("ordered") and not all(
+                left < right
+                for left, right in zip(marker_positions, marker_positions[1:])
+            ):
+                plugin_errors.append("required inline markers were not observed in order")
         limitation: dict[str, Any] | None = None
-        if artifact_id in required_unversioned_outer:
-            limitation_checks = evaluate_unversioned_outer_limitation(shell)
+        if shell_requirement is not None and shell_requirement["mode"] == "unversioned-outer":
+            limitation_checks = shell_requirement_checks
             for key, passed in limitation_checks.items():
                 if not passed:
                     plugin_errors.append(
@@ -798,6 +1286,7 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         "matrixConfiguration": editors_choice_configuration,
         "matrixConfigurations": matrix_configurations,
         "contentProbes": content_probe_results,
+        "webrootDisk": webroot_disk,
         "refreshKit": {
             "expectedGuid": REFRESH_KIT_GUID,
             "generationBefore": generation_before,

@@ -108,6 +108,7 @@ COMPAT_MATRIX_FILES = (
     "artifact-verification.json",
     "result.json",
 )
+COMPAT_WEBROOT_FILES = ("webroot-before.html", "webroot-after.html")
 SAFE_DEGRADE_CHECK_NAMES = {
     "primaryStatus200",
     "primaryFramingValid",
@@ -154,6 +155,87 @@ def load_object(path: pathlib.Path) -> dict[str, Any]:
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise EvidenceValidationError(message)
+
+
+def exact_json_value(actual: Any, expected: Any) -> bool:
+    """Compare JSON values without Python's bool/int equality shortcut."""
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return (
+            set(actual) == set(expected)
+            and all(exact_json_value(actual[key], value) for key, value in expected.items())
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            exact_json_value(left, right) for left, right in zip(actual, expected)
+        )
+    return actual == expected
+
+
+def reconstruct_webroot_disk(
+    before: bytes,
+    after: bytes,
+    requirements: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    """Rebuild the analyzer's complete direct-webroot result from retained bytes."""
+    require(bool(before), f"{label}: raw webroot-before.html is empty")
+    require(bool(after), f"{label}: raw webroot-after.html is empty")
+    try:
+        before_text = before.decode("utf-8-sig", errors="strict")
+        after_text = after.decode("utf-8-sig", errors="strict")
+    except UnicodeDecodeError as error:
+        raise EvidenceValidationError(
+            f"{label}: raw webroot evidence is not strict UTF-8: {error}"
+        ) from error
+
+    effects: dict[str, Any] = {}
+    for artifact_id, requirement in requirements.items():
+        expected_after = requirement["cardinality"]
+        markers = {
+            marker: {
+                "beforeCount": before_text.count(marker),
+                "afterCount": after_text.count(marker),
+                "expectedBeforeCount": 0,
+                "expectedAfterCount": expected_after,
+            }
+            for marker in requirement["markers"]
+        }
+        checks = {
+            "rawMarkersAbsentBefore": all(
+                row["beforeCount"] == row["expectedBeforeCount"]
+                for row in markers.values()
+            ),
+            "rawMarkersExactAfter": all(
+                row["afterCount"] == row["expectedAfterCount"]
+                for row in markers.values()
+            ),
+        }
+        effects[artifact_id] = {
+            "mode": requirement["mode"],
+            "markers": markers,
+            "checks": checks,
+            "allPassed": all(checks.values()),
+        }
+    expects_writes = any(
+        requirement["mode"] == "added" for requirement in requirements.values()
+    )
+    document_checks = {
+        "beforeHtmlDocument": b"<html" in before.lower() and b"</html>" in before.lower(),
+        "afterHtmlDocument": b"<html" in after.lower() and b"</html>" in after.lower(),
+        "diskBytesChangedAsExpected": (before != after) == expects_writes,
+    }
+    return {
+        "beforeBytes": len(before),
+        "afterBytes": len(after),
+        "beforeSha256": hashlib.sha256(before).hexdigest(),
+        "afterSha256": hashlib.sha256(after).hexdigest(),
+        "effects": effects,
+        "checks": document_checks,
+        "allPassed": all(document_checks.values())
+        and all(row["allPassed"] for row in effects.values()),
+    }
 
 
 def checksum_inventory(root: pathlib.Path) -> dict[str, str]:
@@ -540,31 +622,73 @@ def validate_integration_tree(root: pathlib.Path, build: pathlib.Path) -> set[st
     return {f"lab/{name}" for name in expected_lab} | {f"logs/{name}" for name in expected_logs}
 
 
-def _matrix_contract(matrices_path: pathlib.Path) -> tuple[list[str], dict[str, str], dict[str, str], dict[str, list[str]]]:
+def _matrix_contract(
+    matrices_path: pathlib.Path,
+) -> tuple[
+    list[str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, list[str]],
+    dict[str, dict[str, Any]],
+]:
     root = load_object(matrices_path)
     rows = root.get("matrices")
     require(isinstance(rows, list), "compatibility matrices has no array")
     ids: list[str] = []
     runtimes: dict[str, str] = {}
+    services: dict[str, str] = {}
     cache: dict[str, str] = {}
     limitations: dict[str, list[str]] = {}
+    webroot_disk: dict[str, dict[str, Any]] = {}
     for row in rows:
         require(isinstance(row, dict), "compatibility matrix row is not an object")
-        matrix_id, runtime, expectation = row.get("id"), row.get("runtime"), row.get("cacheExpectation")
-        require(isinstance(matrix_id, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]*", matrix_id) is not None
-                and matrix_id not in runtimes, f"invalid/repeated compatibility matrix id: {matrix_id!r}")
-        require(runtime in ("jf10", "jf12"), f"compatibility matrix {matrix_id} runtime is invalid")
+        matrix_id = row.get("id")
+        runtime = row.get("runtime")
+        service = row.get("service")
+        expectation = row.get("cacheExpectation")
+        require(isinstance(matrix_id, str)
+                and re.fullmatch(r"[a-z0-9][a-z0-9-]*", matrix_id) is not None
+                and matrix_id not in runtimes,
+                f"invalid/repeated compatibility matrix id: {matrix_id!r}")
+        require(runtime in ("jf10", "jf12"),
+                f"compatibility matrix {matrix_id} runtime is invalid")
+        require(isinstance(service, str)
+                and re.fullmatch(r"[a-z0-9][a-z0-9-]*", service) is not None,
+                f"compatibility matrix {matrix_id} service is invalid")
         require(expectation in ("required", "observe", "safe-degrade"),
                 f"compatibility matrix {matrix_id} cache expectation is invalid")
         artifacts = row.get("requiredUnversionedOuterArtifacts", [])
-        require(isinstance(artifacts, list) and all(isinstance(item, str) for item in artifacts),
+        require(isinstance(artifacts, list)
+                and all(isinstance(item, str) for item in artifacts),
                 f"compatibility matrix {matrix_id} limitations are invalid")
+        disk_requirements = row.get("webrootDiskRequirements")
+        require(isinstance(disk_requirements, dict),
+                f"compatibility matrix {matrix_id} disk requirements are invalid")
+        for artifact_id, requirement in disk_requirements.items():
+            require(isinstance(artifact_id, str) and bool(artifact_id)
+                    and isinstance(requirement, dict)
+                    and set(requirement) == {"mode", "cardinality", "markers"},
+                    f"compatibility matrix {matrix_id} disk requirement is invalid")
+            mode = requirement.get("mode")
+            cardinality = requirement.get("cardinality")
+            markers = requirement.get("markers")
+            require(mode in ("absent", "added")
+                    and type(cardinality) is int
+                    and cardinality == (0 if mode == "absent" else 1)
+                    and isinstance(markers, list) and bool(markers)
+                    and all(isinstance(marker, str) and bool(marker) for marker in markers)
+                    and len(markers) == len(set(markers)),
+                    f"compatibility matrix {matrix_id}/{artifact_id} disk requirement is invalid")
         ids.append(matrix_id)
         runtimes[matrix_id] = runtime
+        services[matrix_id] = service
         cache[matrix_id] = expectation
         if artifacts:
             limitations[matrix_id] = artifacts
-    return ids, runtimes, cache, limitations
+        if disk_requirements:
+            webroot_disk[matrix_id] = disk_requirements
+    return ids, runtimes, services, cache, limitations, webroot_disk
 
 
 def validate_compatibility_tree(
@@ -572,9 +696,21 @@ def validate_compatibility_tree(
 ) -> set[str]:
     root, build = root.resolve(strict=True), build.resolve(strict=True)
     compat = root / "compat"
-    ids, runtimes, cache_expectations, limitations = _matrix_contract(matrices_path)
+    (
+        ids,
+        runtimes,
+        services,
+        cache_expectations,
+        limitations,
+        webroot_disk_requirements,
+    ) = _matrix_contract(matrices_path)
     expected = {"summary.json"} | {
         f"{matrix_id}/{name}" for matrix_id in ids for name in COMPAT_MATRIX_FILES
+    }
+    expected |= {
+        f"{matrix_id}/{name}"
+        for matrix_id in webroot_disk_requirements
+        for name in COMPAT_WEBROOT_FILES
     }
     actual = {
         path.relative_to(compat).as_posix() for path in compat.rglob("*") if path.is_file()
@@ -634,12 +770,13 @@ def validate_compatibility_tree(
         require(result.get("schemaVersion") == 1
                 and result.get("matrix") == matrix_id
                 and result.get("runtime") == runtime
+                and result.get("service") == services[matrix_id]
                 and result.get("serverVersion") == SERVER_VERSIONS[runtime]
                 and result.get("image") == IMAGE_REFERENCES[runtime]
                 and result.get("errors") == []
                 and result.get("outcome") == expected_outcome,
                 f"{matrix_id}: result outcome differs")
-        require(network.get("service") == runtime
+        require(network.get("service") == services[matrix_id]
                 and network.get("configuredImage") == IMAGE_REFERENCES[runtime]
                 and network.get("expectedImageDigest") == IMAGE_DIGESTS[runtime]
                 and network.get("internalBridge") is True
@@ -659,6 +796,21 @@ def validate_compatibility_tree(
                     and isinstance(row.get("checks"), dict) and bool(row["checks"])
                     and all(value is True for value in row["checks"].values()) for row in rows),
                 f"{matrix_id}: limitation proof is incomplete")
+        requirements = webroot_disk_requirements.get(matrix_id)
+        if requirements is None:
+            require("webrootDisk" in result and result["webrootDisk"] is None,
+                    f"{matrix_id}: nondisk result webrootDisk must be explicit null")
+        else:
+            before = (directory / "webroot-before.html").read_bytes()
+            after = (directory / "webroot-after.html").read_bytes()
+            reconstructed = reconstruct_webroot_disk(
+                before, after, requirements, matrix_id
+            )
+            require(reconstructed["allPassed"] is True,
+                    f"{matrix_id}: raw webroot marker/document/change contract failed")
+            require("webrootDisk" in result
+                    and exact_json_value(result["webrootDisk"], reconstructed),
+                    f"{matrix_id}: result webrootDisk differs from retained raw bytes")
         if cache_expectations[matrix_id] == "safe-degrade":
             refresh = result.get("refreshKit")
             cache = refresh.get("cacheEvidence") if isinstance(refresh, dict) else None

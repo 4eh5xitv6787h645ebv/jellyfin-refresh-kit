@@ -509,10 +509,16 @@ class ValidationRunTests(unittest.TestCase):
             current_receipt.write_bytes(receipt_path.read_bytes())
             run_id, attempt = 1234, 2
             package_build = evidence_validation.package_identity(build)
-            integration_collected = set(validation_run.REQUIRED_COLLECTED) - {
-                "compat/summary.json"
+            compatibility_collected = {
+                path
+                for path in validation_run.REQUIRED_COLLECTED
+                if path.startswith("compat/")
             }
-            compatibility_collected = {"compat/summary.json"}
+            integration_collected = {
+                path
+                for path in validation_run.REQUIRED_COLLECTED
+                if not path.startswith("compat/")
+            }
             run = {
                 "schemaVersion": 2,
                 "sourceRevision": source,
@@ -1189,6 +1195,402 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
 
 
 class CompatibilityEvidenceTests(unittest.TestCase):
+    @staticmethod
+    def make_direct_webroot_fixture(root: pathlib.Path) -> dict[str, object]:
+        artifact_root = root / "artifacts"
+        output = root / "output"
+        matrix_path = root / "matrices.json"
+        build = root / "build"
+        stage = build / "stage"
+        stage.mkdir(parents=True)
+        (stage / "Jellyfin.Plugin.RefreshKit.dll").write_bytes(b"jf10-stage")
+        (stage / "meta.json").write_text(
+            json.dumps({"runtimeFixture": "jf10"}), encoding="utf-8"
+        )
+
+        disk_id = "direct-disk"
+        nondisk_id = "ordinary-transform"
+        marker = "<!-- direct-raw-marker -->"
+        asset_marker = "/DirectWriter/inject.js"
+        requirements = {
+            "direct-plugin": {
+                "mode": "added",
+                "cardinality": 1,
+                "markers": [marker, asset_marker],
+            }
+        }
+        rows = [
+            {
+                "id": disk_id,
+                "runtime": "jf10",
+                "service": "jf10-writable",
+                "cacheExpectation": "required",
+                "requiredUnversionedOuterArtifacts": [],
+                "webrootDiskRequirements": requirements,
+            },
+            {
+                "id": nondisk_id,
+                "runtime": "jf10",
+                "service": "jf10",
+                "cacheExpectation": "required",
+                "requiredUnversionedOuterArtifacts": [],
+                "webrootDiskRequirements": {},
+            },
+        ]
+        matrix_path.write_text(json.dumps({"matrices": rows}), encoding="utf-8")
+        summary = {
+            "schemaVersion": 1,
+            "outcome": "pass",
+            "expectedMatrices": [disk_id, nondisk_id],
+            "completedMatrices": [disk_id, nondisk_id],
+            "missingMatrices": [],
+            "failedMatrices": [],
+            "expectedSafeDegradedMatrices": [],
+            "safeDegradedMatrices": [],
+            "missingSafeDegradedMatrices": [],
+            "expectedPassWithLimitationMatrices": [],
+            "passWithLimitationMatrices": [],
+            "missingPassWithLimitationMatrices": [],
+            "unexpectedPassWithLimitationMatrices": [],
+        }
+        artifact_root.mkdir()
+        (artifact_root / "summary.json").write_text(
+            json.dumps(summary), encoding="utf-8"
+        )
+
+        before = (
+            b"\xef\xbb\xbf<!doctype html>\r\n<HTML>\n<body>before</body>\r\n</HTML>\n"
+        )
+        after = (
+            b"\xef\xbb\xbf<!doctype html>\r\n<HTML>\n<body>after\r\n"
+            + marker.encode("utf-8")
+            + b"\n<script src=\""
+            + asset_marker.encode("utf-8")
+            + b"\"></script>\r\n</body>\n</HTML>\r\n"
+        )
+        webroot_disk = collector.reconstruct_webroot_disk(
+            before, after, requirements
+        )
+        for matrix_id, service in (
+            (disk_id, "jf10-writable"),
+            (nondisk_id, "jf10"),
+        ):
+            directory = artifact_root / matrix_id
+            directory.mkdir()
+            values = {
+                "static.json": {"schemaVersion": 1, "allPassed": True},
+                "stage.json": {
+                    "schemaVersion": 1,
+                    "valid": True,
+                    "runtime": "jf10",
+                    "stage": str(stage),
+                    "meta": json.loads(
+                        (stage / "meta.json").read_text(encoding="utf-8")
+                    ),
+                    "dllSha256": collector.file_hash(
+                        stage / "Jellyfin.Plugin.RefreshKit.dll"
+                    ),
+                },
+                "network.json": {
+                    "schemaVersion": 1,
+                    "valid": True,
+                    "allPassed": True,
+                    "service": service,
+                    "configuredImage": evidence_validation.IMAGE_REFERENCES["jf10"],
+                    "expectedImageDigest": evidence_validation.IMAGE_DIGESTS["jf10"],
+                    "internalBridge": True,
+                    "noGateway": True,
+                    "originMode": "verified-internal-bridge",
+                    "publishedLoopbackActive": False,
+                },
+                "artifact-verification.json": {
+                    "schemaVersion": 1,
+                    "allPassed": True,
+                },
+                "result.json": {
+                    "schemaVersion": 1,
+                    "matrix": matrix_id,
+                    "runtime": "jf10",
+                    "service": service,
+                    "serverVersion": evidence_validation.SERVER_VERSIONS["jf10"],
+                    "image": evidence_validation.IMAGE_REFERENCES["jf10"],
+                    "errors": [],
+                    "outcome": "pass",
+                    "cacheExpectation": "required",
+                    "limitations": [],
+                    "webrootDisk": webroot_disk if matrix_id == disk_id else None,
+                },
+            }
+            for name, value in values.items():
+                (directory / name).write_text(json.dumps(value), encoding="utf-8")
+        (artifact_root / disk_id / "webroot-before.html").write_bytes(before)
+        (artifact_root / disk_id / "webroot-after.html").write_bytes(after)
+        return {
+            "artifact_root": artifact_root,
+            "output": output,
+            "matrix_path": matrix_path,
+            "build": build,
+            "disk_id": disk_id,
+            "nondisk_id": nondisk_id,
+            "requirements": requirements,
+            "marker": marker,
+            "before": before,
+            "after": after,
+        }
+
+    def collect_direct_webroot_fixture(
+        self, fixture: dict[str, object]
+    ) -> tuple[dict[str, list[str]], list[str]]:
+        evidence: dict[str, list[str]] = {"missing": [], "collected": []}
+        errors: list[str] = []
+        with (
+            mock.patch.object(
+                collector, "COMPAT_ARTIFACTS", fixture["artifact_root"]
+            ),
+            mock.patch.object(collector, "COMPAT_MATRICES", fixture["matrix_path"]),
+        ):
+            collector.collect_compatibility(
+                fixture["output"],
+                evidence,
+                errors,
+                True,
+                fixture["build"],
+                0,
+            )
+        return evidence, errors
+
+    def test_manifest_raw_inventory_and_service_contract_are_exact(self) -> None:
+        matrices_path = ROOT / "e2e" / "compat" / "matrices.json"
+        (
+            ids,
+            _runtimes,
+            services,
+            _cache,
+            _limitations,
+            disk_requirements,
+        ) = evidence_validation._matrix_contract(matrices_path)
+        direct_ids = {
+            "jf10-direct-writers-readonly",
+            "jf10-direct-writers-writable",
+        }
+        self.assertEqual(set(disk_requirements), direct_ids)
+        self.assertEqual(services["jf10-direct-writers-writable"], "jf10-writable")
+        self.assertEqual(
+            set(collector.compatibility_webroot_disk_requirements()), direct_ids
+        )
+        self.assertEqual(
+            collector.compatibility_services()["jf10-direct-writers-writable"],
+            "jf10-writable",
+        )
+        raw_paths = {
+            f"compat/{matrix_id}/{name}"
+            for matrix_id in disk_requirements
+            for name in evidence_validation.COMPAT_WEBROOT_FILES
+        }
+        self.assertEqual(
+            raw_paths,
+            {
+                "compat/jf10-direct-writers-readonly/webroot-before.html",
+                "compat/jf10-direct-writers-readonly/webroot-after.html",
+                "compat/jf10-direct-writers-writable/webroot-before.html",
+                "compat/jf10-direct-writers-writable/webroot-after.html",
+            },
+        )
+        expected_inventory = {"summary.json"} | {
+            f"{matrix_id}/{name}"
+            for matrix_id in ids
+            for name in evidence_validation.COMPAT_MATRIX_FILES
+        } | {
+            path.removeprefix("compat/") for path in raw_paths
+        }
+        self.assertEqual(len(expected_inventory), 75)
+        self.assertEqual(
+            {
+                path
+                for path in validation_run.REQUIRED_COLLECTED
+                if path.startswith("compat/")
+            },
+            {"compat/summary.json", *raw_paths},
+        )
+        self.assertTrue(
+            set(collector.COMPAT_WEBROOT_FILES).isdisjoint(collector.COMPAT_MATRIX_FILES)
+        )
+
+    def test_raw_webroot_collection_is_byte_exact_and_semantically_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.make_direct_webroot_fixture(pathlib.Path(temporary))
+            evidence, errors = self.collect_direct_webroot_fixture(fixture)
+            self.assertEqual(errors, [])
+            self.assertEqual(evidence["missing"], [])
+            disk_id = str(fixture["disk_id"])
+            output = pathlib.Path(fixture["output"])
+            self.assertEqual(
+                (output / "compat" / disk_id / "webroot-before.html").read_bytes(),
+                fixture["before"],
+            )
+            self.assertEqual(
+                (output / "compat" / disk_id / "webroot-after.html").read_bytes(),
+                fixture["after"],
+            )
+            collected = evidence_validation.validate_compatibility_tree(
+                output,
+                pathlib.Path(fixture["build"]),
+                pathlib.Path(fixture["matrix_path"]),
+            )
+            self.assertEqual(set(evidence["collected"]), collected)
+            result = json.loads(
+                (output / "compat" / disk_id / "result.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            marker = str(fixture["marker"])
+            counts = result["webrootDisk"]["effects"]["direct-plugin"]["markers"][
+                marker
+            ]
+            self.assertTrue(
+                all(type(counts[name]) is int for name in counts), counts
+            )
+            nondisk_result = json.loads(
+                (
+                    output
+                    / "compat"
+                    / str(fixture["nondisk_id"])
+                    / "result.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertIn("webrootDisk", nondisk_result)
+            self.assertIsNone(nondisk_result["webrootDisk"])
+
+    def test_exact_webroot_copy_rejects_empty_invalid_and_credentials(self) -> None:
+        cases = {
+            "empty": b"",
+            "invalid-utf8": b"\xff\xfe<html></html>",
+            "authorization": b"<html>Authorization: Bearer exposed</html>",
+            "fixture-password": b"<html>Compat669Pw!x</html>",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            for label, raw in cases.items():
+                with self.subTest(label=label):
+                    source = root / f"{label}.html"
+                    target = root / f"{label}.copied.html"
+                    source.write_bytes(raw)
+                    with self.assertRaises(ValueError):
+                        collector.copy_exact_compatibility_webroot(
+                            source, target, f"direct/{label}.html"
+                        )
+                    self.assertFalse(target.exists())
+
+    def test_collector_rejects_typed_marker_count_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.make_direct_webroot_fixture(pathlib.Path(temporary))
+            result_path = (
+                pathlib.Path(fixture["artifact_root"])
+                / str(fixture["disk_id"])
+                / "result.json"
+            )
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            marker = str(fixture["marker"])
+            result["webrootDisk"]["effects"]["direct-plugin"]["markers"][marker][
+                "beforeCount"
+            ] = False
+            result_path.write_text(json.dumps(result), encoding="utf-8")
+            _evidence, errors = self.collect_direct_webroot_fixture(fixture)
+            self.assertTrue(
+                any("webrootDisk differs" in error for error in errors), errors
+            )
+
+    def test_retained_webroot_mutations_fail_closed(self) -> None:
+        scenarios = (
+            "missing",
+            "unexpected",
+            "one-byte",
+            "hash",
+            "count",
+            "count-bool",
+            "check-bool",
+            "marker-contract",
+            "result-service",
+            "network-service",
+            "nondisk-null",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                fixture = self.make_direct_webroot_fixture(pathlib.Path(temporary))
+                _evidence, errors = self.collect_direct_webroot_fixture(fixture)
+                self.assertEqual(errors, [])
+                output = pathlib.Path(fixture["output"])
+                disk_id = str(fixture["disk_id"])
+                nondisk_id = str(fixture["nondisk_id"])
+                disk_directory = output / "compat" / disk_id
+                result_path = disk_directory / "result.json"
+                network_path = disk_directory / "network.json"
+                after_path = disk_directory / "webroot-after.html"
+                marker = str(fixture["marker"])
+
+                if scenario == "missing":
+                    (disk_directory / "webroot-before.html").unlink()
+                elif scenario == "unexpected":
+                    unexpected = output / "compat" / nondisk_id / "webroot-before.html"
+                    unexpected.write_bytes(b"<html></html>")
+                elif scenario == "one-byte":
+                    after_path.write_bytes(after_path.read_bytes() + b" ")
+                elif scenario in {"hash", "count", "count-bool", "check-bool"}:
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    disk = result["webrootDisk"]
+                    marker_row = disk["effects"]["direct-plugin"]["markers"][marker]
+                    if scenario == "hash":
+                        disk["afterSha256"] = "0" * 64
+                    elif scenario == "count":
+                        marker_row["afterCount"] = 2
+                    elif scenario == "count-bool":
+                        marker_row["beforeCount"] = False
+                    else:
+                        disk["effects"]["direct-plugin"]["checks"][
+                            "rawMarkersExactAfter"
+                        ] = 1
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                elif scenario == "marker-contract":
+                    changed = after_path.read_bytes().replace(
+                        marker.encode("utf-8"), b"<!-- direct-raw-markeX -->"
+                    )
+                    after_path.write_bytes(changed)
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    result["webrootDisk"] = evidence_validation.reconstruct_webroot_disk(
+                        (disk_directory / "webroot-before.html").read_bytes(),
+                        changed,
+                        fixture["requirements"],
+                        disk_id,
+                    )
+                    self.assertIs(result["webrootDisk"]["allPassed"], False)
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                elif scenario == "result-service":
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    result["service"] = "jf10"
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                elif scenario == "network-service":
+                    network = json.loads(network_path.read_text(encoding="utf-8"))
+                    network["service"] = "jf10"
+                    network_path.write_text(json.dumps(network), encoding="utf-8")
+                else:
+                    nondisk_result_path = (
+                        output / "compat" / nondisk_id / "result.json"
+                    )
+                    nondisk = json.loads(
+                        nondisk_result_path.read_text(encoding="utf-8")
+                    )
+                    nondisk.pop("webrootDisk")
+                    nondisk_result_path.write_text(
+                        json.dumps(nondisk), encoding="utf-8"
+                    )
+
+                with self.assertRaises(evidence_validation.EvidenceValidationError):
+                    evidence_validation.validate_compatibility_tree(
+                        output,
+                        pathlib.Path(fixture["build"]),
+                        pathlib.Path(fixture["matrix_path"]),
+                    )
+
     def test_strict_compatibility_evidence_requires_every_matrix_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -1203,12 +1605,14 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         {
                             "id": value,
                             "runtime": runtimes[value],
+                            "service": runtimes[value],
                             "cacheExpectation": "safe-degrade"
                             if value == ids[1]
                             else "required",
                             "requiredUnversionedOuterArtifacts": ["outer-plugin"]
                             if value == ids[1]
                             else [],
+                            "webrootDiskRequirements": {},
                         }
                         for value in ids
                     ]
@@ -1275,6 +1679,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         "schemaVersion": 1,
                         "matrix": matrix_id,
                         "runtime": runtime,
+                        "service": runtime,
                         "serverVersion": evidence_validation.SERVER_VERSIONS[runtime],
                         "image": evidence_validation.IMAGE_REFERENCES[runtime],
                         "errors": [],
@@ -1284,6 +1689,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                         "cacheExpectation": "safe-degrade"
                         if matrix_id == ids[1]
                         else "required",
+                        "webrootDisk": None,
                         "limitations": [
                             {
                                 "code": "outer-owner-unversioned-shell-tag",

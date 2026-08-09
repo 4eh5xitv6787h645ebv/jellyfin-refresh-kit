@@ -75,6 +75,10 @@ REQUIRED_COLLECTED = {
     "logs/dual-jellyfin.log",
     "logs/proxy.log",
     "compat/summary.json",
+    "compat/jf10-direct-writers-readonly/webroot-before.html",
+    "compat/jf10-direct-writers-readonly/webroot-after.html",
+    "compat/jf10-direct-writers-writable/webroot-before.html",
+    "compat/jf10-direct-writers-writable/webroot-after.html",
 }
 WORKER_CONTRACTS = {
     "fast": ("fast_repro_security", {}),
