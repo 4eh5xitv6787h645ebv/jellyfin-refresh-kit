@@ -24,7 +24,7 @@
     {
       "id": "jf10-transform-core",
       "runtime": "jf10",
-      "purpose": "Broad real File Transformation dependency/callback stack.",
+      "purpose": "Exhaustive current Jellyfin 10 File Transformation callback chain, including index and core-bundle consumers.",
       "installOrder": [
         "@refresh-kit",
         "file-transformation-jf10",
@@ -33,60 +33,131 @@
         "collection-sections-jf10",
         "custom-tabs-jf10",
         "media-bar-jf10",
-        "seerrfin-jf10"
+        "seerrfin-jf10",
+        "intro-skipper-jf10",
+        "letterboxd-sync-jf10",
+        "notify-sync-jf10",
+        "jellyfin-tweaks-jf10",
+        "whisper-subs-jf10",
+        "mdblist-ratings-jf10"
       ],
-      "generationProbe": "plugin-pages-jf10",
-      "stampingExpectation": "observe",
+      "generationProbe": "letterboxd-sync-jf10",
+      "stampingExpectation": "required",
       "cacheExpectation": "required",
-      "requiredStampedArtifacts": [],
+      "requiredStampedArtifacts": [
+        "letterboxd-sync-jf10",
+        "notify-sync-jf10",
+        "jellyfin-tweaks-jf10",
+        "whisper-subs-jf10"
+      ],
       "quarantinedAssertions": [
         "Seerr API behavior is not asserted because the lab intentionally has no external Seerr service.",
-        "CDN/font delivery is represented by static hostile fixtures because the runtime network is internal-only."
-      ]
+        "CDN/font delivery is represented by static hostile fixtures because the runtime network is internal-only.",
+        "Intro Skipper core-bundle behavior is represented by real load/registration plus its existing hostile bundle fixture; this shell slice does not seed playback media.",
+        "MDBList Ratings injects an inline block, so URL stamping is not applicable; load/coexistence remains required."
+      ],
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": []
     },
     {
       "id": "jf10-transform-hover",
       "runtime": "jf10",
       "purpose": "Optional File Transformation consumer with an unversioned HoverTrailer tag.",
-      "installOrder": ["@refresh-kit", "file-transformation-jf10", "hover-trailer-jf10"],
+      "installOrder": [
+        "@refresh-kit",
+        "file-transformation-jf10",
+        "hover-trailer-jf10"
+      ],
       "generationProbe": "hover-trailer-jf10",
       "stampingExpectation": "required",
       "cacheExpectation": "required",
-      "requiredStampedArtifacts": ["hover-trailer-jf10"],
-      "quarantinedAssertions": []
+      "requiredStampedArtifacts": [
+        "hover-trailer-jf10"
+      ],
+      "quarantinedAssertions": [],
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": []
     },
     {
       "id": "jf10-transform-player",
       "runtime": "jf10",
       "purpose": "Player-DOM File Transformation consumer with an unversioned client tag.",
-      "installOrder": ["@refresh-kit", "file-transformation-jf10", "in-player-episode-preview-jf10"],
+      "installOrder": [
+        "@refresh-kit",
+        "file-transformation-jf10",
+        "in-player-episode-preview-jf10"
+      ],
       "generationProbe": "in-player-episode-preview-jf10",
       "stampingExpectation": "required",
       "cacheExpectation": "required",
-      "requiredStampedArtifacts": ["in-player-episode-preview-jf10"],
-      "quarantinedAssertions": ["Playback/Trickplay DOM behavior needs a seeded media library and is outside this shell/load slice."]
+      "requiredStampedArtifacts": [
+        "in-player-episode-preview-jf10"
+      ],
+      "quarantinedAssertions": [
+        "Playback/Trickplay DOM behavior needs a seeded media library and is outside this shell/load slice."
+      ],
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": []
     },
     {
       "id": "jf10-transform-editors",
       "runtime": "jf10",
       "purpose": "Editor's Choice documented File Transformation mode and unversioned client tag.",
-      "installOrder": ["@refresh-kit", "file-transformation-jf10", "editors-choice-jf10"],
+      "installOrder": [
+        "@refresh-kit",
+        "file-transformation-jf10",
+        "editors-choice-jf10"
+      ],
       "generationProbe": "editors-choice-jf10",
       "stampingExpectation": "required",
       "cacheExpectation": "required",
-      "requiredStampedArtifacts": ["editors-choice-jf10"],
-      "quarantinedAssertions": ["The Splide CDN is blocked by the internal-only runtime network and covered by the CDN fixture."]
+      "requiredStampedArtifacts": [
+        "editors-choice-jf10"
+      ],
+      "quarantinedAssertions": [
+        "The Splide CDN is blocked by the internal-only runtime network and covered by the CDN fixture."
+      ],
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": []
     },
     {
       "id": "jf10-transform-actor",
       "runtime": "jf10",
       "purpose": "ActorPlus hard File Transformation dependency and paired unversioned CSS/JS tags.",
-      "installOrder": ["@refresh-kit", "file-transformation-jf10", "actor-plus-jf10"],
+      "installOrder": [
+        "@refresh-kit",
+        "file-transformation-jf10",
+        "actor-plus-jf10"
+      ],
       "generationProbe": "actor-plus-jf10",
       "stampingExpectation": "required",
       "cacheExpectation": "required",
-      "requiredStampedArtifacts": ["actor-plus-jf10"],
-      "quarantinedAssertions": []
+      "requiredStampedArtifacts": [
+        "actor-plus-jf10"
+      ],
+      "quarantinedAssertions": [],
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": []
     },
     {
       "id": "jf10-middleware-forward",
@@ -107,12 +178,22 @@
       "generationProbe": "get-avatar-jf10",
       "stampingExpectation": "required",
       "cacheExpectation": "safe-degrade",
-      "requiredStampedArtifacts": ["seasonals-jf10"],
-      "requiredUnversionedOuterArtifacts": ["get-avatar-jf10"],
+      "requiredStampedArtifacts": [
+        "seasonals-jf10"
+      ],
+      "requiredUnversionedOuterArtifacts": [
+        "get-avatar-jf10"
+      ],
       "quarantinedAssertions": [
         "GetAvatar injects its single client tag after Refresh Kit's transform boundary; the tag is required but explicitly reported as an unversioned outer-owner limitation.",
         "OAuth, ARR, avatar-pack, and other external integrations are not configured or contacted."
-      ]
+      ],
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": []
     },
     {
       "id": "jf10-middleware-reverse",
@@ -133,33 +214,256 @@
       "generationProbe": "get-avatar-jf10",
       "stampingExpectation": "required",
       "cacheExpectation": "safe-degrade",
-      "requiredStampedArtifacts": ["seasonals-jf10"],
-      "requiredUnversionedOuterArtifacts": ["get-avatar-jf10"],
-      "quarantinedAssertions": ["GetAvatar's single tag is injected outside Refresh Kit and is required as an explicitly unversioned outer-owner limitation."]
+      "requiredStampedArtifacts": [
+        "seasonals-jf10"
+      ],
+      "requiredUnversionedOuterArtifacts": [
+        "get-avatar-jf10"
+      ],
+      "quarantinedAssertions": [
+        "GetAvatar's single tag is injected outside Refresh Kit and is required as an explicitly unversioned outer-owner limitation."
+      ],
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": []
     },
     {
       "id": "jf10-registration-broker",
       "runtime": "jf10",
-      "purpose": "Real provider/consumer JavaScript registration path without File Transformation.",
-      "installOrder": ["@refresh-kit", "javascript-injector-jf10", "media-preview-jf10"],
-      "generationProbe": "media-preview-jf10",
+      "purpose": "JavaScript Injector provider/consumer registration with public and authenticated aggregate-script probes.",
+      "installOrder": [
+        "@refresh-kit",
+        "javascript-injector-jf10",
+        "media-preview-jf10",
+        "discontinue-watching-jf10",
+        "jellysleep-jf10",
+        "gelato-jf10",
+        "jellyfin-oscars-jf10"
+      ],
+      "generationProbe": "gelato-jf10",
       "stampingExpectation": "observe",
       "cacheExpectation": "required",
       "requiredStampedArtifacts": [],
-      "quarantinedAssertions": ["Hover/playback behavior is not asserted without seeded Trickplay or trailer data."]
+      "quarantinedAssertions": [
+        "Hover/playback behavior is not asserted without seeded Trickplay or trailer data."
+      ],
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [
+        {
+          "artifactId": "gelato-jf10",
+          "payload": {
+            "EnableJavaScriptInjection": true
+          }
+        }
+      ],
+      "contentProbes": [
+        {
+          "id": "javascript-injector-public",
+          "path": "/JavaScriptInjector/public.js",
+          "authenticated": false,
+          "markers": {
+            "gelato-jf10": [
+              "(from Gelato)",
+              "jellyfin_local_search_enabled"
+            ],
+            "jellyfin-oscars-jf10": [
+              "(from Jellyfin Oscars)",
+              "__jellyfinOscarsInitialized"
+            ]
+          }
+        },
+        {
+          "id": "javascript-injector-private",
+          "path": "/JavaScriptInjector/private.js",
+          "authenticated": true,
+          "markers": {
+            "discontinue-watching-jf10": [
+              "(from DiscontinueWatching)",
+              "[DiscontinueWatching] Initializing"
+            ],
+            "jellysleep-jf10": [
+              "(from Jellysleep)",
+              "Sleep Timer Plugin for Jellyfin"
+            ]
+          }
+        }
+      ]
     },
     {
       "id": "jf12-enhanced",
       "runtime": "jf12",
-      "purpose": "Only catalog plugin with a dedicated net10/Jellyfin 12 server artifact.",
-      "installOrder": ["@refresh-kit", "jellyfin-enhanced-jf12"],
-      "generationProbe": "jellyfin-enhanced-jf12",
+      "purpose": "Dedicated net10/Jellyfin 12 artifacts for Jellyfin Enhanced, Intro Skipper, and StreamLimit.",
+      "installOrder": [
+        "@refresh-kit",
+        "jellyfin-enhanced-jf12",
+        "intro-skipper-jf12",
+        "stream-limit-jf12"
+      ],
+      "generationProbe": "intro-skipper-jf12",
       "stampingExpectation": "observe",
       "cacheExpectation": "safe-degrade",
       "requiredStampedArtifacts": [],
       "quarantinedAssertions": [
-        "Seasonals is excluded: its Jellyfin 12 claim is contradicted by its net9/targetAbi-10.11 artifact.",
+        "Jellyfin 12 has no locked File Transformation provider, so Intro Skipper is asserted for dedicated ABI load/coexistence rather than callback execution.",
+        "StreamLimit direct webroot injection is expected to degrade safely on the read-only image webroot.",
+        "Seasonals remains excluded because its Jellyfin 12 claim is contradicted by its net9/targetAbi-10.11 artifact.",
         "The missing Jellyfin 12 File Transformation ecosystem is represented by the jf12-synthetic fixture."
+      ],
+      "service": "jf12",
+      "webrootExpectation": "read-only",
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": []
+    },
+    {
+      "runtime": "jf10",
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "generationProbe": "jellyfin-security-jf10",
+      "stampingExpectation": "observe",
+      "cacheExpectation": "safe-degrade",
+      "requiredStampedArtifacts": [],
+      "requiredUnversionedOuterArtifacts": [],
+      "requiredPresentArtifacts": [
+        "jellyfin-security-jf10"
+      ],
+      "requiredBodyMarkers": {
+        "powertoys-jellytag-jf10": [
+          "data-jellytag-injected"
+        ],
+        "powertoys-privacy-mode-jf10": [
+          "powertoysPrivacyMode"
+        ],
+        "powertoys-remote-trailers-jf10": [
+          "powertoysvideoplayer"
+        ],
+        "powertoys-thumbnail-previews-jf10": [
+          "6a65ce4e-fb35-4e99-8f37-02bc3979fe7e"
+        ]
+      },
+      "configurationPatches": [],
+      "contentProbes": [],
+      "orderPair": "jf10-response-transformers",
+      "id": "jf10-response-transformers-forward",
+      "installOrder": [
+        "@refresh-kit",
+        "jellyfin-security-jf10",
+        "powertoys-jellytag-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-thumbnail-previews-jf10"
+      ],
+      "purpose": "Refresh Kit before independent security and PowerToys response transformers.",
+      "quarantinedAssertions": [
+        "Credentialed 2FA/OIDC/email/passkey flows and remote trailer services remain manual; middleware injection and all four inline PowerToys transforms are required."
+      ]
+    },
+    {
+      "runtime": "jf10",
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "generationProbe": "jellyfin-security-jf10",
+      "stampingExpectation": "observe",
+      "cacheExpectation": "safe-degrade",
+      "requiredStampedArtifacts": [],
+      "requiredUnversionedOuterArtifacts": [],
+      "requiredPresentArtifacts": [
+        "jellyfin-security-jf10"
+      ],
+      "requiredBodyMarkers": {
+        "powertoys-jellytag-jf10": [
+          "data-jellytag-injected"
+        ],
+        "powertoys-privacy-mode-jf10": [
+          "powertoysPrivacyMode"
+        ],
+        "powertoys-remote-trailers-jf10": [
+          "powertoysvideoplayer"
+        ],
+        "powertoys-thumbnail-previews-jf10": [
+          "6a65ce4e-fb35-4e99-8f37-02bc3979fe7e"
+        ]
+      },
+      "configurationPatches": [],
+      "contentProbes": [],
+      "orderPair": "jf10-response-transformers",
+      "id": "jf10-response-transformers-reverse",
+      "installOrder": [
+        "powertoys-thumbnail-previews-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-jellytag-jf10",
+        "jellyfin-security-jf10",
+        "@refresh-kit"
+      ],
+      "purpose": "Exact reverse registration candidate for security and all four PowerToys response transformers.",
+      "quarantinedAssertions": [
+        "Credentialed security and external-service flows remain manual; local response transformations are still required."
+      ]
+    },
+    {
+      "id": "jf10-direct-writers-readonly",
+      "runtime": "jf10",
+      "service": "jf10",
+      "webrootExpectation": "read-only",
+      "purpose": "Graceful-degradation load campaign for plugins that can directly patch Jellyfin Web.",
+      "installOrder": [
+        "@refresh-kit",
+        "stream-limit-jf10",
+        "aniliberty-strm-jf10",
+        "jellyfin-tweaks-jf10",
+        "whisper-subs-jf10"
+      ],
+      "generationProbe": "stream-limit-jf10",
+      "stampingExpectation": "observe",
+      "cacheExpectation": "required",
+      "requiredStampedArtifacts": [],
+      "requiredUnversionedOuterArtifacts": [],
+      "requiredPresentArtifacts": [],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": [],
+      "quarantinedAssertions": [
+        "Direct index.html writes must not succeed on the read-only image webroot; all plugins must still load and keep the server healthy."
+      ]
+    },
+    {
+      "id": "jf10-direct-writers-writable",
+      "runtime": "jf10",
+      "service": "jf10-writable",
+      "webrootExpectation": "writable-volume",
+      "purpose": "Functional direct-writer campaign on a disposable named volume copied from the pinned image webroot.",
+      "installOrder": [
+        "@refresh-kit",
+        "stream-limit-jf10",
+        "aniliberty-strm-jf10",
+        "jellyfin-tweaks-jf10",
+        "whisper-subs-jf10"
+      ],
+      "generationProbe": "stream-limit-jf10",
+      "stampingExpectation": "required",
+      "cacheExpectation": "required",
+      "requiredStampedArtifacts": [
+        "stream-limit-jf10",
+        "jellyfin-tweaks-jf10",
+        "whisper-subs-jf10"
+      ],
+      "requiredUnversionedOuterArtifacts": [],
+      "requiredPresentArtifacts": [
+        "aniliberty-strm-jf10"
+      ],
+      "requiredBodyMarkers": {},
+      "configurationPatches": [],
+      "contentProbes": [],
+      "quarantinedAssertions": [
+        "AniLiberty uses its own immutable v= marker, so its required tag is asserted present but is not rewritten with rkv. External AniLiberty data flow remains unreachable."
       ]
     }
   ]

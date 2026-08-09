@@ -1,10 +1,15 @@
 {
   "schemaVersion": 1,
   "audit": {
-    "source": "/tmp/rk-ecosystem-audit.json",
-    "sha256": "b9b5431eca9377f5f15b9636775f989f632bf89ae1554db9df68778f26d9bff2",
+    "source": "catalog.snapshot.json",
+    "sha256": "9152f4016c90aad9986883c47e9217ce86bf348c7df89df5bc8c3ac04b7b0265",
+    "catalogRepository": "https://github.com/awesome-jellyfin/awesome-jellyfin",
     "catalogCommit": "a60d3d24fe0e16e59518f95ea4743d8996fa81c9",
-    "cutoff": "2026-08-08T14:17:00Z"
+    "catalogCommitDate": "2026-08-05T08:34:16Z",
+    "auditedAtUtc": "2026-08-08T23:46:19Z",
+    "networkMode": "read-only",
+    "protectedRepository": "https://github.com/n00bcodr/Jellyfin-Enhanced",
+    "protectedRepositoryAccess": "strictly-read-only"
   },
   "artifacts": [
     {
@@ -52,7 +57,9 @@
         "assembly": "Jellyfin.Plugin.AchievementBadges.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["/plugins/achievementbadges/"]
+      "shellUrlNeedles": [
+        "/plugins/achievementbadges/"
+      ]
     },
     {
       "id": "hover-trailer-jf10",
@@ -75,7 +82,9 @@
         "assembly": "Fovty.Plugin.HoverTrailer.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["/hovertrailer/"]
+      "shellUrlNeedles": [
+        "/hovertrailer/"
+      ]
     },
     {
       "id": "in-player-episode-preview-jf10",
@@ -98,7 +107,9 @@
         "assembly": "Namo.Plugin.InPlayerEpisodePreview.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["/inplayerpreview/"]
+      "shellUrlNeedles": [
+        "/inplayerpreview/"
+      ]
     },
     {
       "id": "editors-choice-jf10",
@@ -121,7 +132,9 @@
         "assembly": "EditorsChoicePlugin.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["/editorschoice/"]
+      "shellUrlNeedles": [
+        "/editorschoice/"
+      ]
     },
     {
       "id": "jellyfin-enhanced-jf10",
@@ -130,22 +143,24 @@
       "runtime": "jf10",
       "repository": "https://github.com/n00bcodr/Jellyfin-Enhanced",
       "repositoryAccess": "strictly-read-only",
-      "sourceRevision": "82b425201e92dad1f251f574bc73f1b892b79f71",
+      "sourceRevision": "ea06d91f398d68b0cb98732cc5781b9d0bcc5013",
       "archive": {
         "name": "Jellyfin.Plugin.JellyfinEnhanced_10.11.0.zip",
-        "url": "https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.1.0.0/Jellyfin.Plugin.JellyfinEnhanced_10.11.0.zip",
-        "sha256": "ef27604cb7711ade70a2ea659db1528fdbda9420b98d259a4f404b135079a24b"
+        "url": "https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.2.0.0/Jellyfin.Plugin.JellyfinEnhanced_10.11.0.zip",
+        "sha256": "24278bd5ad6c53150aa12023677767301af8c7ef44e072eee869658869fdfff4"
       },
       "plugin": {
         "guid": "f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b",
         "name": "Jellyfin Enhanced",
-        "version": "12.1.0.0",
+        "version": "12.2.0.0",
         "targetAbi": "10.11.0.0",
         "framework": "net9.0",
         "assembly": "Jellyfin.Plugin.JellyfinEnhanced.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["/jellyfinenhanced/"]
+      "shellUrlNeedles": [
+        "/jellyfinenhanced/"
+      ]
     },
     {
       "id": "jellyfin-enhanced-jf12",
@@ -154,22 +169,24 @@
       "runtime": "jf12",
       "repository": "https://github.com/n00bcodr/Jellyfin-Enhanced",
       "repositoryAccess": "strictly-read-only",
-      "sourceRevision": "82b425201e92dad1f251f574bc73f1b892b79f71",
+      "sourceRevision": "ea06d91f398d68b0cb98732cc5781b9d0bcc5013",
       "archive": {
         "name": "Jellyfin.Plugin.JellyfinEnhanced_12.0.0.zip",
-        "url": "https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.1.0.0/Jellyfin.Plugin.JellyfinEnhanced_12.0.0.zip",
-        "sha256": "954705e060da45b8f97793bd74bd0e0b7b5f39549605570b62a185ebba4eb042"
+        "url": "https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.2.0.0/Jellyfin.Plugin.JellyfinEnhanced_12.0.0.zip",
+        "sha256": "0a2e077aaf99d89b2975510eba3c65cc31484c8074df8bce269ea1f2699689b3"
       },
       "plugin": {
         "guid": "f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b",
         "name": "Jellyfin Enhanced",
-        "version": "12.1.0.0",
+        "version": "12.2.0.0",
         "targetAbi": "12.0.0.0",
         "framework": "net10.0",
         "assembly": "Jellyfin.Plugin.JellyfinEnhanced.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["/jellyfinenhanced/"]
+      "shellUrlNeedles": [
+        "/jellyfinenhanced/"
+      ]
     },
     {
       "id": "javascript-injector-jf10",
@@ -192,7 +209,9 @@
         "assembly": "Jellyfin.Plugin.JavaScriptInjector.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["javascriptinjector"]
+      "shellUrlNeedles": [
+        "javascriptinjector"
+      ]
     },
     {
       "id": "media-preview-jf10",
@@ -215,7 +234,9 @@
         "assembly": "Jellyfin.Plugin.MediaPreview.dll",
         "archiveMeta": "upstream"
       },
-      "shellUrlNeedles": ["/mediapreview/"]
+      "shellUrlNeedles": [
+        "/mediapreview/"
+      ]
     },
     {
       "id": "jmsfusion-jf10",
@@ -238,7 +259,10 @@
         "assembly": "Jellyfin.Plugin.JMSFusion.dll",
         "archiveMeta": "upstream"
       },
-      "shellUrlNeedles": ["/plugins/jmsfusion/", "/slider/"]
+      "shellUrlNeedles": [
+        "/plugins/jmsfusion/",
+        "/slider/"
+      ]
     },
     {
       "id": "actor-plus-jf10",
@@ -261,7 +285,9 @@
         "assembly": "Jellyfin.Plugin.ActorPlus.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["/actorplus/"]
+      "shellUrlNeedles": [
+        "/actorplus/"
+      ]
     },
     {
       "id": "collection-sections-jf10",
@@ -307,7 +333,9 @@
         "assembly": "Jellyfin.Plugin.CustomTabs.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["customtabs"]
+      "shellUrlNeedles": [
+        "customtabs"
+      ]
     },
     {
       "id": "get-avatar-jf10",
@@ -330,7 +358,9 @@
         "assembly": "Jellyfin.Plugin.GetAvatar.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["/getavatar/"]
+      "shellUrlNeedles": [
+        "/getavatar/"
+      ]
     },
     {
       "id": "home-screen-sections-jf10",
@@ -353,7 +383,9 @@
         "assembly": "Jellyfin.Plugin.HomeScreenSections.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["homescreensections"]
+      "shellUrlNeedles": [
+        "homescreensections"
+      ]
     },
     {
       "id": "media-bar-jf10",
@@ -376,7 +408,10 @@
         "assembly": "Jellyfin.Plugin.MediaBar.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["media-bar", "jellyfin-plugin-media-bar"]
+      "shellUrlNeedles": [
+        "media-bar",
+        "jellyfin-plugin-media-bar"
+      ]
     },
     {
       "id": "plugin-pages-jf10",
@@ -399,7 +434,9 @@
         "assembly": "Jellyfin.Plugin.PluginPages.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["pluginpages"]
+      "shellUrlNeedles": [
+        "pluginpages"
+      ]
     },
     {
       "id": "ratings-jf10",
@@ -407,22 +444,24 @@
       "disposition": "testable",
       "runtime": "jf10",
       "repository": "https://github.com/K3ntas/jellyfin-plugin-ratings",
-      "sourceRevision": "9c8827f625c00036d199e4c606fa5dbcffecab2d",
+      "sourceRevision": "f010b0b755a97f3e9ccac8a50c578ba4e9a31b9a",
       "archive": {
-        "name": "jellyfin-plugin-ratings_1.0.361.0.zip",
-        "url": "https://github.com/K3ntas/jellyfin-plugin-ratings/releases/download/v1.0.361.0/jellyfin-plugin-ratings_1.0.361.0.zip",
-        "sha256": "e624861721f1189d59ef4a7f9e19026d840469c8db944fafd6214a3207cf3336"
+        "name": "jellyfin-plugin-ratings_1.0.373.0.zip",
+        "url": "https://github.com/K3ntas/jellyfin-plugin-ratings/releases/download/v1.0.373.0/jellyfin-plugin-ratings_1.0.373.0.zip",
+        "sha256": "a888358b74cc8ed09e0b3fd379a441bb70a01ba02b81741c522c54246ac24d1b"
       },
       "plugin": {
         "guid": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
         "name": "Ratings",
-        "version": "1.0.361.0",
+        "version": "1.0.373.0",
         "targetAbi": "10.11.0.0",
         "framework": "net9.0",
         "assembly": "Jellyfin.Plugin.Ratings.dll",
         "archiveMeta": "upstream"
       },
-      "shellUrlNeedles": ["/ratings/"]
+      "shellUrlNeedles": [
+        "/ratings/"
+      ]
     },
     {
       "id": "seasonals-jf10",
@@ -445,7 +484,9 @@
         "assembly": "Jellyfin.Plugin.Seasonals.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["/seasonals/"]
+      "shellUrlNeedles": [
+        "/seasonals/"
+      ]
     },
     {
       "id": "seerrfin-jf10",
@@ -468,7 +509,9 @@
         "assembly": "Jellyfin.Plugin.SeerrFin.dll",
         "archiveMeta": "upstream"
       },
-      "shellUrlNeedles": ["/seerrfin/"]
+      "shellUrlNeedles": [
+        "/seerrfin/"
+      ]
     },
     {
       "id": "startrack-jf10",
@@ -491,7 +534,9 @@
         "assembly": "Jellyfin.Plugin.InternalRating.dll",
         "archiveMeta": "absent-generate"
       },
-      "shellUrlNeedles": ["/plugins/startrack/"]
+      "shellUrlNeedles": [
+        "/plugins/startrack/"
+      ]
     },
     {
       "id": "skin-manager-legacy",
@@ -563,38 +608,2336 @@
         "archiveMeta": "absent"
       },
       "quarantineReason": "The artifact has no Jellyfin 10.11 claim and exposes an arbitrary dynamic-asset route without mutating the shell.",
-      "shellUrlNeedles": ["/staticassets/asset/"]
+      "shellUrlNeedles": [
+        "/staticassets/asset/"
+      ]
+    },
+    {
+      "id": "intro-skipper-jf10",
+      "catalogName": "intro-skipper",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/intro-skipper/intro-skipper",
+      "sourceRevision": "b5f307c978fd3463bcf23496f2038b472d5d7eb5",
+      "archive": {
+        "name": "intro-skipper-v1.10.11.22.zip",
+        "url": "https://github.com/intro-skipper/intro-skipper/releases/download/10.11/v1.10.11.22/intro-skipper-v1.10.11.22.zip",
+        "sha256": "370f16ea93a482d34e71ef224451d206797fdf2ad0b06391a431645ac445087e"
+      },
+      "plugin": {
+        "guid": "c83d86bb-a1e0-4c35-a113-e2101cf4ee6b",
+        "name": "Intro Skipper",
+        "version": "1.10.11.22",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "IntroSkipper.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "file-transformation-bundle-and-branding-css",
+      "artifactEvidenceNote": "The release ZIP embeds 1.10.11.22 while the tagged source project file still declares 1.10.11.21; the immutable archive and release tag supply the runtime identity."
+    },
+    {
+      "id": "intro-skipper-jf12",
+      "catalogName": "intro-skipper",
+      "disposition": "testable",
+      "runtime": "jf12",
+      "repository": "https://github.com/intro-skipper/intro-skipper",
+      "sourceRevision": "fbd2e397f256940b5cec8f63c6c423784616b0fa",
+      "archive": {
+        "name": "intro-skipper-v1.12.0.1.zip",
+        "url": "https://github.com/intro-skipper/intro-skipper/releases/download/12.0/v1.12.0.1/intro-skipper-v1.12.0.1.zip",
+        "sha256": "5f011284294cfbb6c3bd3b72467a4bb5238df4cb6cf5b56aca49b18da3476ec3"
+      },
+      "plugin": {
+        "guid": "c83d86bb-a1e0-4c35-a113-e2101cf4ee6b",
+        "name": "Intro Skipper",
+        "version": "1.12.0.1",
+        "targetAbi": "12.0.0.0",
+        "framework": "net10.0",
+        "assembly": "IntroSkipper.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "file-transformation-bundle-and-branding-css",
+      "artifactEvidenceNote": "The release ZIP embeds 1.12.0.1 while the tagged source project file still declares 1.12.0.0; the immutable archive and release tag supply the runtime identity."
+    },
+    {
+      "id": "discontinue-watching-jf10",
+      "catalogName": "jellyfin-plugin-discontinue-watching",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/jon4hz/jellyfin-plugin-discontinue-watching",
+      "sourceRevision": "1a3dc5c29dc5bce80f526a001b6606438d404dd0",
+      "archive": {
+        "name": "jellyfin-plugin-discontinue-watching-0.5.1.zip",
+        "url": "https://github.com/jon4hz/jellyfin-plugin-discontinue-watching/releases/download/v0.5.1/jellyfin-plugin-discontinue-watching-0.5.1.zip",
+        "sha256": "8d9706c9b7d07140112272c2dcf18749a424b1c560487412ec54f475f0c29e63"
+      },
+      "plugin": {
+        "guid": "74a22212-e4c5-4b5c-8d77-04e7e220f28d",
+        "name": "DiscontinueWatching",
+        "version": "0.5.1.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.DiscontinueWatching.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "javascript-injector-registration"
+    },
+    {
+      "id": "jellysleep-jf10",
+      "catalogName": "jellyfin-plugin-jellysleep",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/jon4hz/jellyfin-plugin-jellysleep",
+      "sourceRevision": "806477c6ad8a8f8f09e9c30faafdac9aa7b374a9",
+      "archive": {
+        "name": "jellyfin-plugin-jellysleep-0.8.0.zip",
+        "url": "https://github.com/jon4hz/jellyfin-plugin-jellysleep/releases/download/v0.8.0/jellyfin-plugin-jellysleep-0.8.0.zip",
+        "sha256": "9628134f076616a816807222ace4324cbe3c992d467f41c45312b6775db01977"
+      },
+      "plugin": {
+        "guid": "a760bbb5-7b7b-4fda-951c-f3c39d689a8f",
+        "name": "Jellysleep",
+        "version": "0.8.0.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.Jellysleep.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "javascript-injector-registration"
+    },
+    {
+      "id": "stream-limit-jf10",
+      "catalogName": "Jellyfin.Plugin.StreamLimit",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/JellyboxAD/Jellyfin.Plugin.StreamLimit",
+      "sourceRevision": "d4a59b8dd855ed3838a75b7dd38a5bf681b306e2",
+      "archive": {
+        "name": "StreamLimit-v1.1.0.0.zip",
+        "url": "https://github.com/JellyboxAD/Jellyfin.Plugin.StreamLimit/releases/download/v1.1.0.0/StreamLimit-v1.1.0.0.zip",
+        "sha256": "efed7c8eee4647456479b2f464cdffe6a15d528857705a16fad5e582e35335ce"
+      },
+      "plugin": {
+        "guid": "d98fbe02-daf3-4c09-a832-4b4e1d07326c",
+        "name": "StreamLimiter",
+        "version": "1.1.0.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.StreamLimit.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [
+        "/streamlimit/inject.js"
+      ],
+      "interactionMode": "direct-webroot-writer"
+    },
+    {
+      "id": "stream-limit-jf12",
+      "catalogName": "Jellyfin.Plugin.StreamLimit",
+      "disposition": "testable",
+      "runtime": "jf12",
+      "repository": "https://github.com/JellyboxAD/Jellyfin.Plugin.StreamLimit",
+      "sourceRevision": "d4a59b8dd855ed3838a75b7dd38a5bf681b306e2",
+      "archive": {
+        "name": "StreamLimit-v1.1.0.0-jellyfin12.zip",
+        "url": "https://github.com/JellyboxAD/Jellyfin.Plugin.StreamLimit/releases/download/v1.1.0.0/StreamLimit-v1.1.0.0-jellyfin12.zip",
+        "sha256": "d465a129a3635b9591550356fada503fec8ad0b7baa0a31bc0ee7e404963e636"
+      },
+      "plugin": {
+        "guid": "d98fbe02-daf3-4c09-a832-4b4e1d07326c",
+        "name": "StreamLimiter",
+        "version": "1.1.0.0",
+        "targetAbi": "12.0.0.0",
+        "framework": "net10.0",
+        "assembly": "Jellyfin.Plugin.StreamLimit.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [
+        "/streamlimit/inject.js"
+      ],
+      "interactionMode": "direct-webroot-writer",
+      "artifactEvidenceNote": "The upstream manifest labels the Jellyfin 12 entry 1.1.1.0, but the v1.1.0.0 release filename and packaged DLL identity are 1.1.0.0; runtime verification follows the immutable DLL identity."
+    },
+    {
+      "id": "gelato-jf10",
+      "catalogName": "Gelato",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/lostb1t/Gelato",
+      "sourceRevision": "3201d9457b9dd6c6b7726adc7189d0f6a98a9ee3",
+      "archive": {
+        "name": "gelato_0.26.15.1.zip",
+        "url": "https://github.com/lostb1t/Gelato/releases/download/v0.26.15.1/gelato_0.26.15.1.zip",
+        "sha256": "dfaf8d19e5a297c79d7d95a7fe9f8d223af8ef121864fdb1320b55f2cc0dae05"
+      },
+      "plugin": {
+        "guid": "94ea4e14-8163-4989-96fe-0a2094bc2d6a",
+        "name": "Gelato",
+        "version": "0.26.15.1",
+        "targetAbi": "10.11.6.0",
+        "framework": "net9.0",
+        "assembly": "Gelato.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "javascript-injector-registration"
+    },
+    {
+      "id": "letterboxd-sync-jf10",
+      "catalogName": "jellyfin-plugin-letterboxd-sync",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/Gizmo091/jellyfin-plugin-letterboxd-sync",
+      "sourceRevision": "23f960eec1c1529a67c458d1b0543fa9dca13e5e",
+      "archive": {
+        "name": "jellyfin-plugin-letterboxd-sync-v2.2.0.zip",
+        "url": "https://github.com/Gizmo091/jellyfin-plugin-letterboxd-sync/releases/download/v2.2.0/jellyfin-plugin-letterboxd-sync-v2.2.0.zip",
+        "sha256": "c3d692d2baad3fe77b7ad3e621e199370ca41d6d0aa2f8d081d2f10c426ee089"
+      },
+      "plugin": {
+        "guid": "b1fb3d98-3336-4b87-a5c9-8a948bd87233",
+        "name": "LetterboxdSync",
+        "version": "2.2.0.0",
+        "targetAbi": "10.11.9.0",
+        "framework": "net9.0",
+        "assembly": "LetterboxdSync.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [
+        "/jellyfin.plugin.letterboxdsync/clientscript"
+      ],
+      "interactionMode": "file-transformation-index"
+    },
+    {
+      "id": "notify-sync-jf10",
+      "catalogName": "NotifySync",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/peterdu1109/NotifySync",
+      "sourceRevision": "f2bf6cd3a62d7fa13a87fb3e11c7e4f5d74ba275",
+      "archive": {
+        "name": "NotifySync.zip",
+        "url": "https://github.com/peterdu1109/NotifySync/releases/download/v5.7.19.0/NotifySync.zip",
+        "sha256": "03376558b75e9c830aed79254833a0730492e75faec6217937ad609e92f3377f"
+      },
+      "plugin": {
+        "guid": "95655672-2342-4321-8291-321312312312",
+        "name": "NotifySync",
+        "version": "5.7.19.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "NotifySync.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": [
+        "/notifysync/client.js"
+      ],
+      "interactionMode": "file-transformation-index"
+    },
+    {
+      "id": "jellyfin-security-jf10",
+      "catalogName": "Jellyfin Security",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/ZL154/JellyfinSecurity",
+      "sourceRevision": "6fc4d56163e560b70338948e8bb934122d97c5c2",
+      "archive": {
+        "name": "Jellyfin.Plugin.TwoFactorAuthv2.5.21.0.zip",
+        "url": "https://github.com/ZL154/JellyfinSecurity/releases/download/v2.5.21/Jellyfin.Plugin.TwoFactorAuthv2.5.21.0.zip",
+        "sha256": "3ecd0c6f2ae36199e4613e2ca092cbdec8432a5835b1aa296f13ae2fa8a03687"
+      },
+      "plugin": {
+        "guid": "94879a0c-da24-4eb1-aa06-f28b4b9333b1",
+        "name": "Jellyfin Security",
+        "version": "2.5.21.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.TwoFactorAuth.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": [
+        "/twofactorauth/inject"
+      ],
+      "interactionMode": "independent-index-middleware"
+    },
+    {
+      "id": "aniliberty-strm-jf10",
+      "catalogName": "AniLiberty STRM Plugin",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/queukat/AniLibriaStrmPlugin",
+      "sourceRevision": "bdd24197a0e0b1493bdec05c83b8f8404ddadc95",
+      "archive": {
+        "name": "aniliberty-strm-plugin_2.0.0.12.zip",
+        "url": "https://github.com/queukat/AniLibriaStrmPlugin/releases/download/v2.0.0.12/aniliberty-strm-plugin_2.0.0.12.zip",
+        "sha256": "b6dad9387868103166c7dce0ecec9a8c42d44c67d116e3984a04e2e270c57513"
+      },
+      "plugin": {
+        "guid": "cce0798d-c8b7-4265-b08c-dc9e7bd3fc0f",
+        "name": "AniLiberty STRM Plugin",
+        "version": "2.0.0.12",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "AniLibertyStrmPlugin.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": [
+        "/anilibertymetadata/assets/aniliberty-popularity.js"
+      ],
+      "interactionMode": "direct-webroot-writer"
+    },
+    {
+      "id": "powertoys-jellytag-jf10",
+      "catalogName": "jellyfin-powertoys",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/lennykean/jellyfin-powertoys",
+      "sourceRevision": "95c727e63134321cde48550a8963a9f0b0bf1811",
+      "archive": {
+        "name": "JellyfinPowertoys.JellyTag.zip",
+        "url": "https://github.com/lennykean/jellyfin-powertoys/releases/download/v1.3.0.0/JellyfinPowertoys.JellyTag.zip",
+        "sha256": "fd405ee2d140b2fac5f29e0ceaa44d61ecee58f8ba4f3422d117bbc31e1fcd4b"
+      },
+      "plugin": {
+        "guid": "36eb87e0-0373-423b-a547-2acb96e33430",
+        "name": "JellyTag",
+        "version": "1.3.0.0",
+        "targetAbi": "10.11.9.0",
+        "framework": "net9.0",
+        "assembly": "JellyfinPowertoys.JellyTag.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "http-response-transformer-inline"
+    },
+    {
+      "id": "powertoys-privacy-mode-jf10",
+      "catalogName": "jellyfin-powertoys",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/lennykean/jellyfin-powertoys",
+      "sourceRevision": "95c727e63134321cde48550a8963a9f0b0bf1811",
+      "archive": {
+        "name": "JellyfinPowertoys.PrivacyMode.zip",
+        "url": "https://github.com/lennykean/jellyfin-powertoys/releases/download/v1.3.0.0/JellyfinPowertoys.PrivacyMode.zip",
+        "sha256": "0509669fca79535195aa1239de15f9d299030fbd209183d2f0555cf6405b07ae"
+      },
+      "plugin": {
+        "guid": "c03a2469-eed0-4107-95b1-6dfda14fb0fc",
+        "name": "Privacy Mode",
+        "version": "1.3.0.0",
+        "targetAbi": "10.11.9.0",
+        "framework": "net9.0",
+        "assembly": "JellyfinPowertoys.PrivacyMode.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "http-response-transformer-inline"
+    },
+    {
+      "id": "powertoys-remote-trailers-jf10",
+      "catalogName": "jellyfin-powertoys",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/lennykean/jellyfin-powertoys",
+      "sourceRevision": "95c727e63134321cde48550a8963a9f0b0bf1811",
+      "archive": {
+        "name": "JellyfinPowertoys.RemoteTrailers.zip",
+        "url": "https://github.com/lennykean/jellyfin-powertoys/releases/download/v1.3.0.0/JellyfinPowertoys.RemoteTrailers.zip",
+        "sha256": "4438619d79ee13808160cc9908fdff054a7526e6a3c3937640c61b5473fbc820"
+      },
+      "plugin": {
+        "guid": "f0194bb3-788d-43b8-96c9-bb32f996db4a",
+        "name": "Remote Trailers",
+        "version": "1.3.0.0",
+        "targetAbi": "10.11.9.0",
+        "framework": "net9.0",
+        "assembly": "JellyfinPowertoys.RemoteTrailers.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "http-response-transformer-inline-and-config"
+    },
+    {
+      "id": "powertoys-thumbnail-previews-jf10",
+      "catalogName": "jellyfin-powertoys",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/lennykean/jellyfin-powertoys",
+      "sourceRevision": "95c727e63134321cde48550a8963a9f0b0bf1811",
+      "archive": {
+        "name": "JellyfinPowertoys.ThumbnailPreviews.zip",
+        "url": "https://github.com/lennykean/jellyfin-powertoys/releases/download/v1.3.0.0/JellyfinPowertoys.ThumbnailPreviews.zip",
+        "sha256": "f1cf0c422caadb233e5d6fbec11862e45ecf01ae7b7e6c13898aee310acf2b29"
+      },
+      "plugin": {
+        "guid": "6a65ce4e-fb35-4e99-8f37-02bc3979fe7e",
+        "name": "Thumbnail Previews",
+        "version": "1.3.0.0",
+        "targetAbi": "10.11.9.0",
+        "framework": "net9.0",
+        "assembly": "JellyfinPowertoys.ThumbnailPreviews.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "http-response-transformer-inline"
+    },
+    {
+      "id": "jellyfin-tweaks-jf10",
+      "catalogName": "JellyfinTweaks",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/n00bcodr/JellyfinTweaks",
+      "sourceRevision": "ab7319349709313fdbbe221118a61b803f902884",
+      "archive": {
+        "name": "Jellyfin.Plugin.JellyTweaks_10.11.0.zip",
+        "url": "https://github.com/n00bcodr/JellyfinTweaks/releases/download/3.1.0.0/Jellyfin.Plugin.JellyTweaks_10.11.0.zip",
+        "sha256": "6baeb9b519973ef5dd26079ef689b0650ffaf20c9cbba11b5b0ad31fef2ec71a"
+      },
+      "plugin": {
+        "guid": "dfee3828-01df-49df-85b1-5c2b75e5ea1a",
+        "name": "Jellyfin Tweaks",
+        "version": "3.1.0.0",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.JellyTweaks.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [
+        "jellytweaks/script"
+      ],
+      "interactionMode": "file-transformation-index-with-direct-fallback"
+    },
+    {
+      "id": "whisper-subs-jf10",
+      "catalogName": "whisper-subs",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/GeiserX/whisper-subs",
+      "sourceRevision": "418d5413933a19ee8e6dea983e70de0584cc996d",
+      "archive": {
+        "name": "WhisperSubs_4.6.0.1.zip",
+        "url": "https://github.com/GeiserX/whisper-subs/releases/download/v4.6.0.1/WhisperSubs_4.6.0.1.zip",
+        "sha256": "d6204a0adbd59dbdc520433f3058d224c1a61397c08a69c5436c20c1df30951e"
+      },
+      "plugin": {
+        "guid": "97124bd9-c8cd-4a53-a213-e593aa3fef52",
+        "name": "WhisperSubs",
+        "version": "4.6.0.1",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "WhisperSubs.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": [
+        "configurationpage?name=whispersubs.js"
+      ],
+      "interactionMode": "file-transformation-index-with-direct-fallback"
+    },
+    {
+      "id": "jellyfin-oscars-jf10",
+      "catalogName": "Jellyfin Oscars",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/FizzyMUC/jellyfin-oscars-plugin",
+      "sourceRevision": "330eff39247a32e1b97fbc939f769b45ffb1dc8b",
+      "archive": {
+        "name": "jellyfin-oscars-v1.0.6.zip",
+        "url": "https://github.com/FizzyMUC/jellyfin-oscars-plugin/releases/download/v1.0.6/jellyfin-oscars-v1.0.6.zip",
+        "sha256": "c72bb5e84e00bf18be4b985218e2989d823cc0157bf5486aea8a3011927426fc"
+      },
+      "plugin": {
+        "guid": "c531afa3-de20-4055-aca5-a7cc43adf783",
+        "name": "Jellyfin Oscars",
+        "version": "1.0.6.0",
+        "targetAbi": "10.11.6.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.Oscars.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "javascript-injector-registration",
+      "artifactEvidenceNote": "Upstream meta.json carries an empty assemblies array; materialization completes it with the independently verified Jellyfin.Plugin.Oscars.dll identity."
+    },
+    {
+      "id": "mdblist-ratings-jf10",
+      "catalogName": "Jellyfin.Plugin.MDBList_Ratings",
+      "disposition": "testable",
+      "runtime": "jf10",
+      "repository": "https://github.com/Druidblack/Jellyfin.Plugin.MDBList_Ratings",
+      "sourceRevision": "e9a453ffd1f5e034fdc1c491ea43467a12d1ce9c",
+      "archive": {
+        "name": "Release-1.0.0.7.zip",
+        "url": "https://github.com/Druidblack/Jellyfin.Plugin.MDBList_Ratings/releases/download/Release-1.0.0.7/Release-1.0.0.7.zip",
+        "sha256": "907174332efa872e9969ac70b68e9fcbd40638da0d90f27a97e61b75ee51e45d"
+      },
+      "plugin": {
+        "guid": "ab96f8b5-45ef-44be-81d6-99bc01e26b9d",
+        "name": "MDBList Ratings",
+        "version": "1.0.0.7",
+        "targetAbi": "10.11.0.0",
+        "framework": "net9.0",
+        "assembly": "Jellyfin.Plugin.MdbListRatings.dll",
+        "archiveMeta": "absent-generate"
+      },
+      "shellUrlNeedles": [],
+      "interactionMode": "file-transformation-index-with-direct-helper"
+    },
+    {
+      "id": "moonbase-legacy",
+      "catalogName": "Moonbase",
+      "disposition": "quarantined",
+      "runtime": null,
+      "repository": "https://github.com/Moonfin-Client/Plugin",
+      "sourceRevision": "43e97d5e08738d57e5573833d50b24c2a58244cb",
+      "archive": {
+        "name": "Moonfin.Server-2.0.3.0.zip",
+        "url": "https://github.com/Moonfin-Client/Plugin/releases/download/2.0.3/Moonfin.Server-2.0.3.0.zip",
+        "sha256": "c78384ac34c087f65420efb51c67e6550af8d8e4ce61636d1ba5ce9d156c6815"
+      },
+      "plugin": {
+        "guid": "8c5d0e91-4f2a-4b6d-9e3f-1a7c8d9e0f2b",
+        "name": "Moonfin",
+        "version": "2.0.3.0",
+        "targetAbi": "10.10.0.0",
+        "framework": "net8.0",
+        "assembly": "Moonfin.Server.dll",
+        "archiveMeta": "upstream"
+      },
+      "shellUrlNeedles": [
+        "/moonfin/web/loader.js"
+      ],
+      "interactionMode": "legacy-file-transformation-index",
+      "artifactEvidenceNote": "The Awesome Jellyfin row is named Moonbase while the current repository, package, plugin metadata, and client routes identify the product as Moonfin; the catalog row remains the coverage key."
     }
   ],
   "catalogCoverage": [
-    {"name":"Achievement Badges","artifacts":["achievement-badges-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
-    {"name":"HoverTrailer","artifacts":["hover-trailer-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
-    {"name":"InPlayerEpisodePreview","artifacts":["in-player-episode-preview-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
-    {"name":"jellyfin-editors-choice-plugin","artifacts":["editors-choice-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
-    {"name":"Jellyfin-Enhanced","artifacts":["jellyfin-enhanced-jf10","jellyfin-enhanced-jf12"],"jf10":"testable","jf12":"testable","fixtures":[]},
-    {"name":"jellyfin-icon-metadata","artifacts":[],"jf10":"unsupported","jf12":"unsupported","fixtures":["branding-css"]},
-    {"name":"Jellyfin-JavaScript-Injector","artifacts":["javascript-injector-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["javascript-broker"]},
-    {"name":"jellyfin-media-preview-plugin","artifacts":["media-preview-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["javascript-broker"]},
-    {"name":"Jellyfin-MonWUI-Plugin","artifacts":["jmsfusion-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
-    {"name":"Jellyfin.Plugin.ActorPlus","artifacts":["actor-plus-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
-    {"name":"jellyfin-plugin-collection-sections","artifacts":["collection-sections-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["transformation-chain"]},
-    {"name":"jellyfin-plugin-custom-tabs","artifacts":["custom-tabs-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["transformation-chain"]},
-    {"name":"jellyfin-plugin-GetAvatar","artifacts":["get-avatar-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
-    {"name":"jellyfin-plugin-home-sections","artifacts":["home-screen-sections-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["transformation-chain"]},
-    {"name":"jellyfin-plugin-media-bar","artifacts":["media-bar-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["dynamic-static-assets"]},
-    {"name":"jellyfin-plugin-pages","artifacts":["plugin-pages-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["transformation-chain"]},
-    {"name":"jellyfin-plugin-ratings","artifacts":["ratings-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
-    {"name":"jellyfin-plugin-skin-manager","artifacts":["skin-manager-legacy"],"jf10":"quarantined","jf12":"unsupported","fixtures":["branding-css"]},
-    {"name":"Jellyfin-Seasonals","artifacts":["seasonals-jf10"],"jf10":"testable","jf12":"quarantined","fixtures":["jf12-synthetic"]},
-    {"name":"jellyscrub","artifacts":["jellyscrub-legacy"],"jf10":"unsupported","jf12":"unsupported","fixtures":["legacy-direct-writer"]},
-    {"name":"SeerrFin","artifacts":["seerrfin-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":["dynamic-static-assets"]},
-    {"name":"StarTrack","artifacts":["startrack-jf10"],"jf10":"testable","jf12":"unsupported","fixtures":[]},
-    {"name":"Static Assets","artifacts":["static-assets-legacy"],"jf10":"quarantined","jf12":"unsupported","fixtures":["dynamic-static-assets"]}
+    {
+      "catalogIndex": 1,
+      "category": "🎨 UI & Customization",
+      "name": "Achievement Badges",
+      "repository": "https://github.com/ZL154/AchievementBadges_for_Jellyfin",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "achievement-badges-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 2,
+      "category": "🎨 UI & Customization",
+      "name": "HoverTrailer",
+      "repository": "https://github.com/Fovty/HoverTrailer",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "hover-trailer-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 3,
+      "category": "🎨 UI & Customization",
+      "name": "InPlayerEpisodePreview",
+      "repository": "https://github.com/Namo2/InPlayerEpisodePreview",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "in-player-episode-preview-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 4,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-editors-choice-plugin",
+      "repository": "https://github.com/lachlandcp/jellyfin-editors-choice-plugin",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "editors-choice-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 5,
+      "category": "🎨 UI & Customization",
+      "name": "Jellyfin-Enhanced",
+      "repository": "https://github.com/n00bcodr/Jellyfin-Enhanced",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "UPDATE_AND_RETEST",
+      "interactionSurface": "Already covered response-middleware/index injection plugin, but current upstream release is newer than the lock.",
+      "artifacts": [
+        "jellyfin-enhanced-jf10",
+        "jellyfin-enhanced-jf12"
+      ],
+      "jf10": "testable",
+      "jf12": "testable",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 6,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-icon-metadata",
+      "repository": "https://github.com/Druidblack/jellyfin-icon-metadata",
+      "catalogMarkers": [],
+      "classification": "configuration-not-server-plugin",
+      "relevant": true,
+      "coverageStatus": "covered-manual-fixture",
+      "reconciliationDecision": "KEEP_FIXTURE",
+      "interactionSurface": "CSS configuration that changes Jellyfin Web metadata icons; there is no server plugin release artifact.",
+      "artifacts": [],
+      "jf10": "unsupported",
+      "jf12": "unsupported",
+      "fixtures": [
+        "branding-css"
+      ]
+    },
+    {
+      "catalogIndex": 7,
+      "category": "🎨 UI & Customization",
+      "name": "Jellyfin-JavaScript-Injector",
+      "repository": "https://github.com/n00bcodr/Jellyfin-JavaScript-Injector",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "javascript-injector-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "javascript-broker"
+      ]
+    },
+    {
+      "catalogIndex": 8,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-media-preview-plugin",
+      "repository": "https://github.com/spkesDE/jellyfin-media-preview-plugin",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "media-preview-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "javascript-broker"
+      ]
+    },
+    {
+      "catalogIndex": 9,
+      "category": "🎨 UI & Customization",
+      "name": "Jellyfin-MonWUI-Plugin",
+      "repository": "https://github.com/G-grbz/Jellyfin-MonWUI-Plugin",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "jmsfusion-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 10,
+      "category": "🎨 UI & Customization",
+      "name": "Jellyfin.Plugin.ActorPlus",
+      "repository": "https://github.com/Druidblack/Jellyfin.Plugin.ActorPlus",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "actor-plus-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 11,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-collection-sections",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-collection-sections",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "collection-sections-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 12,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-custom-tabs",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-custom-tabs",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "custom-tabs-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 13,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-GetAvatar",
+      "repository": "https://github.com/cedev-1/jellyfin-plugin-GetAvatar",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "get-avatar-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 14,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-home-sections",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-home-sections",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "home-screen-sections-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 15,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-media-bar",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-media-bar",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "media-bar-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "dynamic-static-assets"
+      ]
+    },
+    {
+      "catalogIndex": 16,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-pages",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-pages",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "plugin-pages-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 17,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-ratings",
+      "repository": "https://github.com/K3ntas/jellyfin-plugin-ratings",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "UPDATE_AND_RETEST",
+      "interactionSurface": "Already covered client-injection plugin, but current upstream release is newer than the lock.",
+      "artifacts": [
+        "ratings-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 18,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-skin-manager",
+      "repository": "https://github.com/danieladov/jellyfin-plugin-skin-manager",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-upstream-incompatible",
+      "relevant": true,
+      "coverageStatus": "covered-quarantine-legacy",
+      "reconciliationDecision": "KEEP_QUARANTINE",
+      "interactionSurface": "Downloads/applies skins and may overwrite Branding CustomCss, but latest release targets legacy Jellyfin and is not defensible on 10.11/12.",
+      "artifacts": [
+        "skin-manager-legacy"
+      ],
+      "jf10": "quarantined",
+      "jf12": "unsupported",
+      "fixtures": [
+        "branding-css"
+      ]
+    },
+    {
+      "catalogIndex": 19,
+      "category": "🎨 UI & Customization",
+      "name": "Jellyfin-Seasonals",
+      "repository": "https://github.com/CodeDevMLH/Jellyfin-Seasonals",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "seasonals-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "quarantined",
+      "fixtures": [
+        "jf12-synthetic"
+      ]
+    },
+    {
+      "catalogIndex": 20,
+      "category": "🎨 UI & Customization",
+      "name": "jellyscrub",
+      "repository": "https://github.com/nicknsy/jellyscrub",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "classification": "retired-stale-web-plugin",
+      "relevant": true,
+      "coverageStatus": "covered-unsupported-fixture",
+      "reconciliationDecision": "KEEP_RETIRED_FIXTURE",
+      "interactionSurface": "Historical direct Jellyfin Web scrubbing injection; upstream retired it after native trickplay.",
+      "artifacts": [
+        "jellyscrub-legacy"
+      ],
+      "jf10": "unsupported",
+      "jf12": "unsupported",
+      "fixtures": [
+        "legacy-direct-writer"
+      ]
+    },
+    {
+      "catalogIndex": 21,
+      "category": "🎨 UI & Customization",
+      "name": "SeerrFin",
+      "repository": "https://github.com/varunaditya-plus/SeerrFin",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "seerrfin-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "dynamic-static-assets"
+      ]
+    },
+    {
+      "catalogIndex": 22,
+      "category": "🎨 UI & Customization",
+      "name": "StarTrack",
+      "repository": "https://github.com/ZL154/jellyfin-plugin-startrack",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "KEEP",
+      "interactionSurface": "UI/customization catalog entry with a real current locked artifact; existing matrices/fixtures record the specific shell surface.",
+      "artifacts": [
+        "startrack-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 23,
+      "category": "🎨 UI & Customization",
+      "name": "Static Assets",
+      "repository": "https://github.com/cleverdevil/jelly-static-assets",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "classification": "stale-resource-route-upstream-incompatible",
+      "relevant": true,
+      "coverageStatus": "covered-quarantine-legacy",
+      "reconciliationDecision": "KEEP_QUARANTINE",
+      "interactionSurface": "Exposes arbitrary static CSS/JS/image routes but does not mutate the shell; latest archive has no Jellyfin 10.11/12 claim.",
+      "artifacts": [
+        "static-assets-legacy"
+      ],
+      "jf10": "quarantined",
+      "jf12": "unsupported",
+      "fixtures": [
+        "dynamic-static-assets"
+      ]
+    },
+    {
+      "catalogIndex": 24,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-favorited-songs-playlist",
+      "repository": "https://github.com/Saturn745/jellyfin-favorited-songs-playlist",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Mutates server-side collections/playlists or exposes only plugin admin pages; no plausible global shell/asset interaction.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 25,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-harmonie",
+      "repository": "https://github.com/mxschll/jellyfin-harmonie",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Mutates server-side collections/playlists or exposes only plugin admin pages; no plausible global shell/asset interaction.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 26,
+      "category": "📂 Collections & Playlists",
+      "name": "Jellyfin.Plugin.ACdb",
+      "repository": "https://github.com/jonjonsson/Jellyfin.Plugin.ACdb",
+      "catalogMarkers": [
+        "paid"
+      ],
+      "classification": "auth-paid-or-manual-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "EXCLUDE_OR_MANUAL_ONLY",
+      "interactionSurface": "Paid external collection service; server-side collection/artwork sync and no global shell transform.",
+      "artifacts": [],
+      "jf10": "manual-only",
+      "jf12": "manual-only",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 27,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-plugin-auto-collections",
+      "repository": "https://github.com/KeksBombe/jellyfin-plugin-auto-collections",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Mutates server-side collections/playlists or exposes only plugin admin pages; no plausible global shell/asset interaction.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 28,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-plugin-collection-import",
+      "repository": "https://github.com/lostb1t/jellyfin-plugin-collection-import",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Mutates server-side collections/playlists or exposes only plugin admin pages; no plausible global shell/asset interaction.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 29,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-plugin-mindthegaps",
+      "repository": "https://github.com/IDisposable/jellyfin-plugin-mindthegaps",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Custom report/settings pages are plugin dashboard resources, not global Jellyfin Web shell transforms.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 30,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-plugin-provider-stuff",
+      "repository": "https://github.com/kamilkosek/jellyfin-plugin-provider-stuff",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Mutates server-side collections/playlists or exposes only plugin admin pages; no plausible global shell/asset interaction.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 31,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-smartlists-plugin",
+      "repository": "https://github.com/jyourstone/jellyfin-smartlists-plugin",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Rich dashboard configuration pages are loaded after the shell and do not transform global index/assets.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 32,
+      "category": "📂 Collections & Playlists",
+      "name": "playlist-generator",
+      "repository": "https://github.com/Eeeeelias/playlist-generator",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Mutates server-side collections/playlists or exposes only plugin admin pages; no plausible global shell/asset interaction.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 33,
+      "category": "📂 Collections & Playlists",
+      "name": "TheDwarfsHammer",
+      "repository": "https://github.com/Kamoba/jellyfin-plugin-thedwarfshammer",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Its Web/thedwarfshammer.js is a plugin configuration-page resource only; no global injection registration exists.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 34,
+      "category": "📂 Collections & Playlists",
+      "name": "WikiEpisodeOrder",
+      "repository": "https://github.com/neilmanfredit/wikiepisodeorder-jellyfin-plugin",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Mutates server-side collections/playlists or exposes only plugin admin pages; no plausible global shell/asset interaction.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 35,
+      "category": "▶️ Playback",
+      "name": "intro-skipper",
+      "repository": "https://github.com/intro-skipper/intro-skipper",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Registers a File Transformation callback for main.jellyfin.bundle.js and mutates Branding CustomCss for skip-button behavior.",
+      "artifacts": [
+        "intro-skipper-jf10",
+        "intro-skipper-jf12"
+      ],
+      "jf10": "testable",
+      "jf12": "testable",
+      "fixtures": [
+        "branding-css",
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 36,
+      "category": "▶️ Playback",
+      "name": "jellyfin-plugin-cinemamode",
+      "repository": "https://github.com/CherryFloors/jellyfin-plugin-cinemamode",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Server-side native cinema-mode/playback behavior; no custom global client injection.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 37,
+      "category": "▶️ Playback",
+      "name": "jellyfin-plugin-dedupe-continue-watching",
+      "repository": "https://github.com/SloMR/jellyfin-plugin-dedupe-continue-watching",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Middleware only intercepts Resume/home-section JSON endpoints, never the index shell.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 38,
+      "category": "▶️ Playback",
+      "name": "jellyfin-plugin-discontinue-watching",
+      "repository": "https://github.com/jon4hz/jellyfin-plugin-discontinue-watching",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Registers its authenticated client script with Jellyfin-JavaScript-Injector.",
+      "artifacts": [
+        "discontinue-watching-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "javascript-broker"
+      ]
+    },
+    {
+      "catalogIndex": 39,
+      "category": "▶️ Playback",
+      "name": "jellyfin-plugin-jellysleep",
+      "repository": "https://github.com/jon4hz/jellyfin-plugin-jellysleep",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Registers its authenticated sleep-timer client script with Jellyfin-JavaScript-Injector.",
+      "artifacts": [
+        "jellysleep-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "javascript-broker"
+      ]
+    },
+    {
+      "catalogIndex": 40,
+      "category": "▶️ Playback",
+      "name": "Jellyfin.Plugin.StreamLimit",
+      "repository": "https://github.com/JellyboxAD/Jellyfin.Plugin.StreamLimit",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "A hosted service directly rewrites Jellyfin Web index.html and adds /StreamLimit/inject.js; it is enabled by default.",
+      "artifacts": [
+        "stream-limit-jf10",
+        "stream-limit-jf12"
+      ],
+      "jf10": "testable",
+      "jf12": "testable",
+      "fixtures": [
+        "legacy-direct-writer"
+      ]
+    },
+    {
+      "catalogIndex": 41,
+      "category": "▶️ Playback",
+      "name": "jellyfin-transcode-nag",
+      "repository": "https://github.com/voc0der/jellyfin-transcode-nag",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Uses server/session behavior and native client messaging; no custom global shell assets.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 42,
+      "category": "▶️ Playback",
+      "name": "TheIntroDB",
+      "repository": "https://github.com/TheIntroDB/jellyfin-plugin",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Provides media segments/server data consumed by native clients; no shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 43,
+      "category": "🔗 Integration & Sync",
+      "name": "Gelato",
+      "repository": "https://github.com/lostb1t/Gelato",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Optionally registers bundled local-search JavaScript with Jellyfin-JavaScript-Injector.",
+      "artifacts": [
+        "gelato-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "javascript-broker"
+      ]
+    },
+    {
+      "catalogIndex": 44,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-ani-sync",
+      "repository": "https://github.com/vosmiic/jellyfin-ani-sync",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "External sync/provider or companion-client state only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 45,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-plugin-animethemes",
+      "repository": "https://github.com/EusthEnoptEron/jellyfin-plugin-animethemes",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "External sync/provider or companion-client state only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 46,
+      "category": "🔗 Integration & Sync",
+      "name": "Jellyfin.Plugin.JF_To_Stash_Sync",
+      "repository": "https://github.com/Druidblack/Jellyfin.Plugin.JF_To_Stash_Sync",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "External sync/provider or companion-client state only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 47,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-plugin-letterboxd-sync",
+      "repository": "https://github.com/Gizmo091/jellyfin-plugin-letterboxd-sync",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Registers an index.html File Transformation callback injecting /Jellyfin.Plugin.LetterboxdSync/ClientScript.",
+      "artifacts": [
+        "letterboxd-sync-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 48,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-plugin-listenbrainz",
+      "repository": "https://github.com/lyarenei/jellyfin-plugin-listenbrainz",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "External sync/provider or companion-client state only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 49,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-plugin-streamyfin",
+      "repository": "https://github.com/streamyfin/jellyfin-plugin-streamyfin",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Companion-client settings pages only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 50,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-rpc by *kennethsible*",
+      "repository": "https://github.com/kennethsible/jellyfin-rpc",
+      "catalogMarkers": [],
+      "classification": "client-not-server-plugin",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "EXCLUDE_FROM_PLUGIN_RUNTIME",
+      "interactionSurface": "Standalone desktop/CLI RPC companion executable, not a Jellyfin server plugin.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 51,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-rpc by *Radiicall*",
+      "repository": "https://github.com/JustRadical/jellyfin-rpc",
+      "catalogMarkers": [],
+      "classification": "client-not-server-plugin",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "EXCLUDE_FROM_PLUGIN_RUNTIME",
+      "interactionSurface": "Standalone RPC companion executable, not a Jellyfin server plugin.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 52,
+      "category": "🔗 Integration & Sync",
+      "name": "jellynext",
+      "repository": "https://github.com/luall0/jellynext",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "External sync/provider or companion-client state only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 53,
+      "category": "🔗 Integration & Sync",
+      "name": "Moonbase",
+      "repository": "https://github.com/Moonfin-Client/Plugin",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-upstream-incompatible",
+      "relevant": true,
+      "coverageStatus": "covered-quarantine-legacy",
+      "reconciliationDecision": "ADD_QUARANTINE_FIXTURE",
+      "interactionSurface": "Registers an index.html File Transformation callback injecting the Moonfin loader and hosts a separate Moonfin Web application.",
+      "artifacts": [
+        "moonbase-legacy"
+      ],
+      "jf10": "quarantined",
+      "jf12": "unsupported",
+      "fixtures": [
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 54,
+      "category": "🔗 Integration & Sync",
+      "name": "MyAnimeSync",
+      "repository": "https://github.com/iankiller77/MyAnimeSync",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "External sync/provider or companion-client state only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 55,
+      "category": "🔗 Integration & Sync",
+      "name": "Plexyfin",
+      "repository": "https://github.com/cleverdevil/plexyfin",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "External sync/provider or companion-client state only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 56,
+      "category": "🔗 Integration & Sync",
+      "name": "Shokofin",
+      "repository": "https://github.com/ShokoAnime/Shokofin",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "External sync/provider or companion-client state only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 57,
+      "category": "🔔 Notifications",
+      "name": "Jellyfin-Newsletter",
+      "repository": "https://github.com/Sanidhya30/Jellyfin-Newsletter",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "HTML files are outbound email/newsletter templates, not Jellyfin Web shell resources.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 58,
+      "category": "🔔 Notifications",
+      "name": "Jellyfin-Newsletter-Plugin",
+      "repository": "https://github.com/Cloud9Developer/Jellyfin-Newsletter-Plugin",
+      "catalogMarkers": [
+        "beta"
+      ],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "HTML files are outbound email/newsletter templates, not Jellyfin Web shell resources.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 59,
+      "category": "🔔 Notifications",
+      "name": "jellyfin-plugin-DiscordNotifier",
+      "repository": "https://github.com/cedev-1/jellyfin-plugin-DiscordNotifier",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Outbound notification behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 60,
+      "category": "🔔 Notifications",
+      "name": "jellyfin-plugin-TelegramNotifier",
+      "repository": "https://github.com/RomainPierre7/jellyfin-plugin-TelegramNotifier",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Outbound notification behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 61,
+      "category": "🔔 Notifications",
+      "name": "NotifySync",
+      "repository": "https://github.com/peterdu1109/NotifySync",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Registers an index.html File Transformation callback injecting /NotifySync/client.js.",
+      "artifacts": [
+        "notify-sync-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 62,
+      "category": "🔐 Authentication",
+      "name": "jellyfin-plugin-ldapauth",
+      "repository": "https://github.com/jellyfin/jellyfin-plugin-ldapauth",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Server authentication provider behavior only; no custom global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 63,
+      "category": "🔐 Authentication",
+      "name": "jellyfin-plugin-sso",
+      "repository": "https://github.com/9p4/jellyfin-plugin-sso",
+      "catalogMarkers": [
+        "stale",
+        "beta"
+      ],
+      "classification": "archived-dead-auth-plugin",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "EXCLUDE_ARCHIVED",
+      "interactionSurface": "Repository is archived and catalog-marked stale; authentication integration is retired/manual, with no current shell campaign justified.",
+      "artifacts": [],
+      "jf10": "archived",
+      "jf12": "archived",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 64,
+      "category": "🔐 Authentication",
+      "name": "Jellyfin Security",
+      "repository": "https://github.com/ZL154/JellyfinSecurity",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "An independent IStartupFilter middleware buffers and rewrites /web/index.html, strips request validators/Accept-Encoding, and forces no-store on the modified shell.",
+      "artifacts": [
+        "jellyfin-security-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 65,
+      "category": "🔐 Authentication",
+      "name": "TeleJelly",
+      "repository": "https://github.com/hexxone/TeleJelly",
+      "catalogMarkers": [],
+      "classification": "auth-paid-or-manual-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "EXCLUDE_OR_MANUAL_ONLY",
+      "interactionSurface": "Hosts a separate /sso/Telegram page and needs a Telegram bot; it does not transform Jellyfin Web index.html.",
+      "artifacts": [],
+      "jf10": "manual-only",
+      "jf12": "manual-only",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 66,
+      "category": "📚 Library Management",
+      "name": "AniLiberty STRM Plugin",
+      "repository": "https://github.com/queukat/AniLibriaStrmPlugin",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "A hosted service directly patches/restores Jellyfin Web index.html to add an enabled-by-default popularity-badge script.",
+      "artifacts": [
+        "aniliberty-strm-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "legacy-direct-writer"
+      ]
+    },
+    {
+      "catalogIndex": 67,
+      "category": "📚 Library Management",
+      "name": "GhostLibrary",
+      "repository": "https://github.com/upchui/Jellyfin-GhostLibrary",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 68,
+      "category": "📚 Library Management",
+      "name": "Jellyfin Ignore",
+      "repository": "https://github.com/fdett/jellyfin-ignore",
+      "catalogMarkers": [
+        "stale",
+        "beta"
+      ],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 69,
+      "category": "📚 Library Management",
+      "name": "jellyfin-local-posters",
+      "repository": "https://github.com/NooNameR/Jellyfin.Plugin.LocalPosters",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 70,
+      "category": "📚 Library Management",
+      "name": "jellyfin-musictags-plugin",
+      "repository": "https://github.com/jyourstone/jellyfin-musictags-plugin",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 71,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-air-times",
+      "repository": "https://github.com/k0d13/jellyfin-air-times",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 72,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-enigma2",
+      "repository": "https://github.com/knackebrot/jellyfin-plugin-enigma2",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 73,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-languageTags",
+      "repository": "https://github.com/TheXaman/jellyfin-plugin-languageTags",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 74,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-localrecs",
+      "repository": "https://github.com/rdpharr/jellyfin-plugin-localrecs",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 75,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-media-cleaner",
+      "repository": "https://github.com/shemanaev/jellyfin-plugin-media-cleaner",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 76,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-MediathekViewDL",
+      "repository": "https://github.com/CatNoir2006/jellyfin-plugin-MediathekViewDL",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Vue application is confined to the plugin configuration page; no global shell injection.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 77,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-meilisearch",
+      "repository": "https://github.com/arnesacnussem/jellyfin-plugin-meilisearch",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 78,
+      "category": "📚 Library Management",
+      "name": "jellyfin-powertoys",
+      "repository": "https://github.com/lennykean/jellyfin-powertoys",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Four independently installable packages use HttpResponseTransformer on /web/index.html to inject inline JS/CSS; RemoteTrailers also transforms /web/config.json.",
+      "artifacts": [
+        "powertoys-jellytag-jf10",
+        "powertoys-privacy-mode-jf10",
+        "powertoys-remote-trailers-jf10",
+        "powertoys-thumbnail-previews-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 79,
+      "category": "📚 Library Management",
+      "name": "JellyfinTweaks",
+      "repository": "https://github.com/n00bcodr/JellyfinTweaks",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Registers an index.html File Transformation callback and falls back to direct index.html writes/removal.",
+      "artifacts": [
+        "jellyfin-tweaks-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "legacy-direct-writer",
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 80,
+      "category": "📚 Library Management",
+      "name": "Jellyfin-Xtream-Library",
+      "repository": "https://github.com/firestaerter3/Jellyfin-Xtream-Library",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 81,
+      "category": "📚 Library Management",
+      "name": "JellySTRMprobe",
+      "repository": "https://github.com/firestaerter3/JellySTRMprobe",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 82,
+      "category": "📚 Library Management",
+      "name": "media-upload-plugin",
+      "repository": "https://github.com/GrandguyJS/media-upload-plugin",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Custom plugin/menu pages only; no index.html or global asset transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 83,
+      "category": "📚 Library Management",
+      "name": "quality-gate",
+      "repository": "https://github.com/GeiserX/quality-gate",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 84,
+      "category": "📚 Library Management",
+      "name": "smart-covers",
+      "repository": "https://github.com/GeiserX/smart-covers",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Library scan/metadata/file-management behavior or plugin admin pages only; no global shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 85,
+      "category": "📚 Library Management",
+      "name": "whisper-subs",
+      "repository": "https://github.com/GeiserX/whisper-subs",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Directly patches index.html and also registers a serve-time index.html File Transformation callback.",
+      "artifacts": [
+        "whisper-subs-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "legacy-direct-writer",
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 86,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-imdb-rating-updater",
+      "repository": "https://github.com/voc0der/jellyfin-imdb-rating-updater",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 87,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin Oscars",
+      "repository": "https://github.com/FizzyMUC/jellyfin-oscars-plugin",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Registers its Oscar detail-badge client script with Jellyfin-JavaScript-Injector.",
+      "artifacts": [
+        "jellyfin-oscars-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "javascript-broker"
+      ]
+    },
+    {
+      "catalogIndex": 88,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-AnimeMultiSource",
+      "repository": "https://github.com/webbster64/jellyfin-plugin-AnimeMultiSource",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 89,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-applemusic",
+      "repository": "https://github.com/lyarenei/jellyfin-plugin-applemusic",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 90,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin.Plugin.ArtworkMultiSource",
+      "repository": "https://github.com/Druidblack/Jellyfin.Plugin.ArtworkMultiSource",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 91,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-hikka",
+      "repository": "https://github.com/HotMasya/jellyfin-plugin-hikka",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 92,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-justwatch",
+      "repository": "https://github.com/IDisposable/jellyfin-plugin-justwatch",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 93,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-kinopoisk",
+      "repository": "https://github.com/LinFor/jellyfin-plugin-kinopoisk",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 94,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin.Plugin.MDBList_Ratings",
+      "repository": "https://github.com/Druidblack/Jellyfin.Plugin.MDBList_Ratings",
+      "catalogMarkers": [],
+      "classification": "live-web-interacting-testable",
+      "relevant": true,
+      "coverageStatus": "covered-current-release",
+      "reconciliationDecision": "ADD_RUNTIME_COVERAGE",
+      "interactionSurface": "Registers an index.html transformation through File Transformation to inject rating UI logic; source also contains direct webroot helpers.",
+      "artifacts": [
+        "mdblist-ratings-jf10"
+      ],
+      "jf10": "testable",
+      "jf12": "unsupported",
+      "fixtures": [
+        "transformation-chain"
+      ]
+    },
+    {
+      "catalogIndex": 95,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-myanimelist",
+      "repository": "https://github.com/ryandash/jellyfin-plugin-myanimelist",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 96,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-onepace",
+      "repository": "https://github.com/jwueller/jellyfin-plugin-onepace",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 97,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin Plugin PhoenixAdult",
+      "repository": "https://github.com/DirtyRacer1337/Jellyfin.Plugin.PhoenixAdult",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 98,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-shikimori",
+      "repository": "https://github.com/te9c/jellyfin-plugin-shikimori",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 99,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin Plugin Stash",
+      "repository": "https://github.com/DirtyRacer1337/Jellyfin.Plugin.Stash",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 100,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin Plugin ThePornDB",
+      "repository": "https://github.com/ThePornDatabase/Jellyfin.Plugin.ThePornDB",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    },
+    {
+      "catalogIndex": 101,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-youtube-metadata-plugin",
+      "repository": "https://github.com/ankenyr/jellyfin-youtube-metadata-plugin",
+      "catalogMarkers": [],
+      "classification": "live-server-plugin-not-relevant",
+      "relevant": false,
+      "coverageStatus": "not-required",
+      "reconciliationDecision": "CLASSIFY_NOT_RELEVANT",
+      "interactionSurface": "Metadata/provider behavior only; no global Jellyfin Web shell transform.",
+      "artifacts": [],
+      "jf10": "not-relevant",
+      "jf12": "not-relevant",
+      "fixtures": []
+    }
   ],
   "coverageExpectations": {
-    "catalogCount": 23,
-    "jf10": {"testable": 19, "quarantined": 2, "unsupported": 2},
-    "jf12": {"testable": 1, "quarantined": 1, "unsupported": 21},
+    "catalogCount": 101,
+    "relevantCount": 38,
+    "testableRelevantRowCount": 33,
+    "categoryCounts": {
+      "🎨 UI & Customization": 23,
+      "📂 Collections & Playlists": 11,
+      "▶️ Playback": 8,
+      "🔗 Integration & Sync": 14,
+      "🔔 Notifications": 5,
+      "🔐 Authentication": 4,
+      "📚 Library Management": 20,
+      "🏷️ Metadata Providers": 16
+    },
+    "classificationCounts": {
+      "live-web-interacting-testable": 33,
+      "configuration-not-server-plugin": 1,
+      "live-web-interacting-upstream-incompatible": 2,
+      "retired-stale-web-plugin": 1,
+      "stale-resource-route-upstream-incompatible": 1,
+      "live-server-plugin-not-relevant": 58,
+      "auth-paid-or-manual-not-relevant": 2,
+      "client-not-server-plugin": 2,
+      "archived-dead-auth-plugin": 1
+    },
+    "jf10": {
+      "testable": 33,
+      "unsupported": 2,
+      "quarantined": 3,
+      "not-relevant": 60,
+      "manual-only": 2,
+      "archived": 1
+    },
+    "jf12": {
+      "unsupported": 34,
+      "testable": 3,
+      "quarantined": 1,
+      "not-relevant": 60,
+      "manual-only": 2,
+      "archived": 1
+    },
     "fixtureIds": [
       "branding-css",
       "dynamic-static-assets",
@@ -603,5 +2946,16 @@
       "legacy-direct-writer",
       "transformation-chain"
     ]
+  },
+  "classificationDefinitions": {
+    "live-web-interacting-testable": "Current public plugin with a local/global Jellyfin Web interaction and a defensible current runtime artifact.",
+    "configuration-not-server-plugin": "Web-affecting configuration, but not a Jellyfin server plugin package.",
+    "live-web-interacting-upstream-incompatible": "Live web-affecting plugin whose current package is incompatible with the locked runtimes.",
+    "retired-stale-web-plugin": "Retired historical web plugin retained only as negative/legacy evidence.",
+    "stale-resource-route-upstream-incompatible": "Legacy resource-route plugin retained only as quarantine evidence.",
+    "live-server-plugin-not-relevant": "Live server plugin without a plausible global shell or asset interaction.",
+    "auth-paid-or-manual-not-relevant": "Manual, paid, or credentialed integration outside this shell compatibility slice.",
+    "client-not-server-plugin": "Catalog row is a companion client/executable rather than a server plugin.",
+    "archived-dead-auth-plugin": "Archived authentication plugin with no current runtime campaign."
   }
 }

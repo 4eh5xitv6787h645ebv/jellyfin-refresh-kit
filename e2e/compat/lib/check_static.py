@@ -57,6 +57,29 @@ def main() -> int:
             locked_artifacts["actor-plus-jf10"]["plugin"]["name"] == "Actor Plus",
             "Actor Plus lock name must match the exact upstream Plugin.PluginName",
         )
+        require(
+            locked_artifacts["jellyfin-enhanced-jf10"]["plugin"]["version"] == "12.2.0.0"
+            and locked_artifacts["jellyfin-enhanced-jf12"]["plugin"]["version"]
+            == "12.2.0.0"
+            and locked_artifacts["ratings-jf10"]["plugin"]["version"] == "1.0.373.0",
+            "the three superseded Jellyfin Enhanced/Ratings artifacts were not refreshed",
+        )
+        require(
+            locked_artifacts["moonbase-legacy"]["disposition"] == "quarantined"
+            and locked_artifacts["moonbase-legacy"]["plugin"]["targetAbi"]
+            == "10.10.0.0"
+            and locked_artifacts["moonbase-legacy"]["plugin"]["framework"] == "net8.0",
+            "Moonbase must remain an explicit legacy quarantine, never a current runtime pass",
+        )
+        require(
+            len(lock["catalogCoverage"]) == 101
+            and sum(
+                row["classification"] == artifact_lib.TESTABLE_CLASSIFICATION
+                for row in lock["catalogCoverage"]
+            )
+            == 33,
+            "the authoritative 101-row catalog or 33-row testable slice is incomplete",
+        )
         fixture_path = COMPAT_ROOT / "fixtures" / "stamping.json"
         fixtures = artifact_lib.load_json(fixture_path)
         require(
@@ -88,10 +111,18 @@ def main() -> int:
         compose = (COMPAT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         for runtime in ("jf10", "jf12"):
             image = matrices["runtimes"][runtime]["image"]
-            require(compose.count(image) == 1, f"Compose does not contain exact {runtime} image pin")
-        require(compose.count("read_only: true") == 2, "both Jellyfin services must be read-only")
+            expected_count = 2 if runtime == "jf10" else 1
+            require(
+                compose.count(image) == expected_count,
+                f"Compose does not contain the expected {runtime} image pins",
+            )
+        require(compose.count("read_only: true") == 3, "all Jellyfin roots must be read-only")
         require("internal: true" in compose, "runtime network must be internal-only")
-        require(compose.count('"127.0.0.1:${RK_COMPAT_') == 2, "ports must bind loopback")
+        require(compose.count('"127.0.0.1:${RK_COMPAT_') == 3, "ports must bind loopback")
+        require(
+            "jf10-writable-web:/jellyfin/jellyfin-web" in compose,
+            "direct-writer service lacks its disposable writable webroot volume",
+        )
         forbidden_compose = (
             "container_name:",
             "network_mode: host",
@@ -155,7 +186,8 @@ def main() -> int:
         ):
             require(fragment in common, f"internal bridge fallback lacks assertion: {fragment}")
         require(
-            'compat_container_details "${RUNTIME}" "${OUT}/network.json"' in runtime,
+            'compat_container_details "${SERVICE}" "${RUNTIME}" "${OUT}/network.json"'
+            in runtime,
             "runtime does not retain verified network fallback evidence",
         )
         require(
@@ -169,6 +201,13 @@ def main() -> int:
             '"${OUT}/conditional.html"',
         ):
             require(fragment in runtime, f"safe-degrade conditional capture is missing: {fragment}")
+        for fragment in (
+            'configurations "${MATRIX_ID}"',
+            'probes "${MATRIX_ID}"',
+            '"${OUT}/configurations/${artifact_id}.json"',
+            '"${OUT}/content-probes/${probe_id}.txt"',
+        ):
+            require(fragment in runtime, f"expanded interaction evidence is missing: {fragment}")
 
         analyzer = (COMPAT_ROOT / "lib" / "analyze.py").read_text(encoding="utf-8")
         for fragment in (
@@ -181,6 +220,9 @@ def main() -> int:
             '"missingSafeDegradedMatrices"',
             '"pass-with-limitation"',
             '"expectedPassWithLimitationMatrices"',
+            '"requiredBodyMarkers"',
+            '"contentProbes"',
+            '"matrixConfigurations"',
         ):
             require(fragment in analyzer, f"safe-degrade analyzer assertion is missing: {fragment}")
 
@@ -294,6 +336,53 @@ def main() -> int:
                 "missing, stamped, or duplicate outer-owner tag limitation was accepted",
             )
 
+        negative_catalog_checks: list[str] = []
+        with tempfile.TemporaryDirectory(prefix="rk-compat-lock-negative-") as temporary:
+            negative_root = Path(temporary)
+
+            def require_rejected(label: str, mutated: dict[str, object]) -> None:
+                path = negative_root / f"{label}.json"
+                artifact_lib.write_json(path, mutated)
+                try:
+                    artifact_lib.validate_lock(path)
+                except artifact_lib.HarnessError:
+                    negative_catalog_checks.append(label)
+                else:
+                    raise artifact_lib.HarnessError(
+                        f"negative catalog mutation was accepted: {label}"
+                    )
+
+            missing_row = json.loads(json.dumps(lock))
+            missing_row["catalogCoverage"].pop()
+            require_rejected("missing-authoritative-row", missing_row)
+
+            duplicated_row = json.loads(json.dumps(lock))
+            duplicated_row["catalogCoverage"][-1] = json.loads(
+                json.dumps(duplicated_row["catalogCoverage"][0])
+            )
+            require_rejected("duplicated-authoritative-row", duplicated_row)
+
+            uncovered_testable = json.loads(json.dumps(lock))
+            intro = next(
+                row
+                for row in uncovered_testable["catalogCoverage"]
+                if row["name"] == "intro-skipper"
+            )
+            intro["artifacts"] = []
+            require_rejected("testable-row-without-artifact", uncovered_testable)
+
+            writable_protected_upstream = json.loads(json.dumps(lock))
+            enhanced = next(
+                artifact
+                for artifact in writable_protected_upstream["artifacts"]
+                if artifact["id"] == "jellyfin-enhanced-jf10"
+            )
+            enhanced.pop("repositoryAccess")
+            require_rejected(
+                "protected-upstream-without-readonly-marker",
+                writable_protected_upstream,
+            )
+
         with tempfile.TemporaryDirectory(prefix="rk-compat-static-") as temporary:
             aggregate_root = Path(temporary)
             for matrix in matrices["matrices"]:
@@ -359,6 +448,7 @@ def main() -> int:
             },
             "fixtureCount": len(cases),
             "matrixCount": len(matrices["matrices"]),
+            "negativeCatalogChecks": negative_catalog_checks,
             "safeDegradeCacheMatrices": sorted(safe_degrade_ids),
             "unversionedOuterLimitations": {
                 matrix_id: sorted(artifact_ids)

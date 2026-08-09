@@ -32,7 +32,33 @@ GUID_RE = re.compile(
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")
 SOURCE_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 ALLOWED_DISPOSITIONS = {"testable", "quarantined", "unsupported"}
-ALLOWED_COVERAGE = {"testable", "quarantined", "unsupported"}
+ALLOWED_COVERAGE = {
+    "testable",
+    "quarantined",
+    "unsupported",
+    "not-relevant",
+    "manual-only",
+    "archived",
+}
+TESTABLE_CLASSIFICATION = "live-web-interacting-testable"
+ALLOWED_CLASSIFICATIONS = {
+    TESTABLE_CLASSIFICATION,
+    "configuration-not-server-plugin",
+    "live-web-interacting-upstream-incompatible",
+    "retired-stale-web-plugin",
+    "stale-resource-route-upstream-incompatible",
+    "live-server-plugin-not-relevant",
+    "auth-paid-or-manual-not-relevant",
+    "client-not-server-plugin",
+    "archived-dead-auth-plugin",
+}
+RELEVANT_CLASSIFICATIONS = {
+    TESTABLE_CLASSIFICATION,
+    "configuration-not-server-plugin",
+    "live-web-interacting-upstream-incompatible",
+    "retired-stale-web-plugin",
+    "stale-resource-route-upstream-incompatible",
+}
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_MEMBER_COUNT = 20_000
 MAX_EXPANDED_BYTES = 1024 * 1024 * 1024
@@ -174,36 +200,105 @@ def validate_lock(path: Path) -> dict[str, Any]:
     duplicate_urls = sorted(key for key, count in Counter(archive_urls).items() if count != 1)
     if duplicate_urls:
         raise HarnessError(f"duplicate archive URLs: {duplicate_urls}")
-    if testable_jf12 != ["jellyfin-enhanced-jf12"]:
+    expected_jf12 = {
+        "intro-skipper-jf12",
+        "jellyfin-enhanced-jf12",
+        "stream-limit-jf12",
+    }
+    if set(testable_jf12) != expected_jf12:
         raise HarnessError(
-            "only the dedicated Jellyfin Enhanced net10 artifact may be testable on Jellyfin 12"
+            "Jellyfin 12 testables must be exactly the three audited dedicated net10 artifacts; "
+            f"expected={sorted(expected_jf12)}, actual={sorted(testable_jf12)}"
         )
 
-    coverage_names: list[str] = []
+    coverage_repositories: list[str] = []
+    coverage_indexes: list[int] = []
     known_ids = set(ids)
+    artifacts_by_id = artifact_index(lock)
     fixture_ids = set(expected.get("fixtureIds", []))
     counts: dict[str, Counter[str]] = {"jf10": Counter(), "jf12": Counter()}
+    category_counts: Counter[str] = Counter()
+    classification_counts: Counter[str] = Counter()
+    artifact_references: Counter[str] = Counter()
     for row in coverage:
         if not isinstance(row, dict):
             raise HarnessError("coverage rows must be objects")
         name = str(row.get("name", ""))
-        coverage_names.append(name)
-        for artifact_id in row.get("artifacts", []):
+        repository = str(row.get("repository", ""))
+        category = str(row.get("category", ""))
+        catalog_index = row.get("catalogIndex")
+        classification = row.get("classification")
+        coverage_repositories.append(repository)
+        coverage_indexes.append(catalog_index)
+        category_counts[category] += 1
+        classification_counts[classification] += 1
+        if classification not in ALLOWED_CLASSIFICATIONS:
+            raise HarnessError(f"{name}: invalid classification {classification!r}")
+        if not isinstance(catalog_index, int) or catalog_index < 1:
+            raise HarnessError(f"{name}: invalid catalogIndex {catalog_index!r}")
+        if not isinstance(row.get("relevant"), bool):
+            raise HarnessError(f"{name}: relevant must be a boolean")
+        if row["relevant"] != (classification in RELEVANT_CLASSIFICATIONS):
+            raise HarnessError(f"{name}: relevant conflicts with classification")
+        if not isinstance(row.get("interactionSurface"), str) or not row["interactionSurface"]:
+            raise HarnessError(f"{name}: interactionSurface must be non-empty")
+        if not isinstance(row.get("reconciliationDecision"), str) or not row["reconciliationDecision"]:
+            raise HarnessError(f"{name}: reconciliationDecision must be non-empty")
+        row_artifacts = row.get("artifacts")
+        if not isinstance(row_artifacts, list) or len(row_artifacts) != len(set(row_artifacts)):
+            raise HarnessError(f"{name}: artifacts must be a unique list")
+        for artifact_id in row_artifacts:
             if artifact_id not in known_ids:
                 raise HarnessError(f"{name}: unknown artifact reference {artifact_id}")
+            artifact_references[artifact_id] += 1
         for runtime in ("jf10", "jf12"):
             state = row.get(runtime)
             if state not in ALLOWED_COVERAGE:
                 raise HarnessError(f"{name}: invalid {runtime} coverage state {state!r}")
             counts[runtime][state] += 1
+            matching_testables = [
+                artifact_id
+                for artifact_id in row_artifacts
+                if artifacts_by_id[artifact_id].get("disposition") == "testable"
+                and artifacts_by_id[artifact_id].get("runtime") == runtime
+            ]
+            if state == "testable" and not matching_testables:
+                raise HarnessError(
+                    f"{name}: {runtime} is testable but has no current runtime artifact"
+                )
+            if state != "testable" and matching_testables:
+                raise HarnessError(
+                    f"{name}: {runtime} has a testable artifact but coverage is {state}"
+                )
         for fixture_id in row.get("fixtures", []):
             if fixture_id not in fixture_ids:
                 raise HarnessError(f"{name}: unknown fixture reference {fixture_id}")
+        if classification == TESTABLE_CLASSIFICATION:
+            if row.get("relevant") is not True or not row_artifacts:
+                raise HarnessError(f"{name}: testable web rows must be relevant and artifact-backed")
+            if row.get("coverageStatus") != "covered-current-release":
+                raise HarnessError(f"{name}: current testable row is not marked covered")
+        elif "testable" in {row.get("jf10"), row.get("jf12")}:
+            raise HarnessError(f"{name}: non-testable classification has testable coverage")
 
-    if len(set(coverage_names)) != len(coverage_names):
-        raise HarnessError("catalog coverage names must be unique")
+    if len(set(coverage_repositories)) != len(coverage_repositories):
+        raise HarnessError("catalog coverage repositories must be unique")
+    if coverage_indexes != list(range(1, len(coverage) + 1)):
+        raise HarnessError("catalog coverage rows must be in exact authoritative index order")
     if len(coverage) != expected.get("catalogCount"):
         raise HarnessError("catalog coverage count does not match coverageExpectations")
+    if dict(category_counts) != expected.get("categoryCounts"):
+        raise HarnessError("catalog category counts do not match coverageExpectations")
+    if dict(classification_counts) != expected.get("classificationCounts"):
+        raise HarnessError("catalog classification counts do not match coverageExpectations")
+    relevant_count = sum(row["relevant"] for row in coverage)
+    if relevant_count != expected.get("relevantCount"):
+        raise HarnessError("catalog relevant count does not match coverageExpectations")
+    testable_row_count = sum(
+        row["classification"] == TESTABLE_CLASSIFICATION for row in coverage
+    )
+    if testable_row_count != expected.get("testableRelevantRowCount"):
+        raise HarnessError("testable relevant row count does not match coverageExpectations")
     for runtime in ("jf10", "jf12"):
         if dict(counts[runtime]) != expected.get(runtime):
             raise HarnessError(
@@ -211,35 +306,105 @@ def validate_lock(path: Path) -> dict[str, Any]:
                 f"{expected.get(runtime)}"
             )
 
-    validate_against_audit_if_present(lock)
+    unreferenced = sorted(
+        artifact_id
+        for artifact_id in known_ids
+        if artifact_references[artifact_id] == 0
+        and not artifacts_by_id[artifact_id].get("catalogDependency")
+    )
+    multiply_referenced = sorted(
+        artifact_id for artifact_id, count in artifact_references.items() if count != 1
+    )
+    if unreferenced or multiply_referenced:
+        raise HarnessError(
+            f"catalog artifact mapping mismatch; unreferenced={unreferenced}, "
+            f"multiplyReferenced={multiply_referenced}"
+        )
+
+    validate_catalog_snapshot(lock)
     return lock
 
 
-def validate_against_audit_if_present(lock: dict[str, Any]) -> None:
-    audit_path = Path(str(lock.get("audit", {}).get("source", "")))
+def validate_catalog_snapshot(lock: dict[str, Any]) -> None:
+    audit = lock.get("audit")
+    if not isinstance(audit, dict):
+        raise HarnessError("ecosystem lock needs catalog audit metadata")
+    source = Path(str(audit.get("source", "")))
+    audit_path = source if source.is_absolute() else COMPAT_ROOT / source
     if not audit_path.is_file():
-        return
+        raise HarnessError(f"catalog snapshot is missing: {audit_path}")
     expected_digest = str(lock.get("audit", {}).get("sha256", ""))
     actual_digest = sha256_path(audit_path)
     if actual_digest != expected_digest:
         raise HarnessError(
-            f"ecosystem audit digest changed: {actual_digest} != {expected_digest}"
+            f"catalog snapshot digest changed: {actual_digest} != {expected_digest}"
         )
-    audit = load_json(audit_path)
-    locked_from_audit: dict[str, str] = {}
-    for dependency in audit.get("dependencies_not_in_catalog", []):
-        artifact = dependency.get("artifact")
-        if isinstance(artifact, dict):
-            locked_from_audit[str(artifact.get("url"))] = str(artifact.get("sha256"))
-    for plugin in audit.get("plugins", []):
-        for artifact in plugin.get("artifacts", []):
-            locked_from_audit[str(artifact.get("url"))] = str(artifact.get("sha256"))
-    for item in lock["artifacts"]:
-        archive = item["archive"]
-        if locked_from_audit.get(archive["url"]) != archive["sha256"]:
-            raise HarnessError(
-                f"{item['id']}: URL/digest pair differs from the audited inventory"
-            )
+    snapshot = load_json(audit_path)
+    if not isinstance(snapshot, dict) or snapshot.get("schemaVersion") != 1:
+        raise HarnessError("catalog snapshot must be a schemaVersion 1 object")
+    source_metadata = snapshot.get("source")
+    expectations = snapshot.get("expectations")
+    rows = snapshot.get("rows")
+    if not isinstance(source_metadata, dict) or not isinstance(expectations, dict):
+        raise HarnessError("catalog snapshot metadata is incomplete")
+    if not isinstance(rows, list) or len(rows) != expectations.get("rowCount"):
+        raise HarnessError("catalog snapshot row count is invalid")
+    if source_metadata.get("commit") != audit.get("catalogCommit"):
+        raise HarnessError("catalog snapshot commit differs from ecosystem lock")
+    if source_metadata.get("repository") != audit.get("catalogRepository"):
+        raise HarnessError("catalog snapshot repository differs from ecosystem lock")
+    if any(not isinstance(row, dict) for row in rows):
+        raise HarnessError("catalog snapshot rows must be objects")
+    snapshot_indexes = [row.get("index") for row in rows]
+    if snapshot_indexes != list(range(1, len(rows) + 1)):
+        raise HarnessError("catalog snapshot indexes are not authoritative and contiguous")
+    snapshot_categories = Counter(str(row.get("category", "")) for row in rows)
+    if dict(snapshot_categories) != expectations.get("categoryCounts"):
+        raise HarnessError("catalog snapshot category counts differ from expectations")
+    repository_states: Counter[str] = Counter()
+    for row in rows:
+        evidence = row.get("repositoryEvidence")
+        if not isinstance(evidence, dict):
+            raise HarnessError("catalog snapshot row lacks repository evidence")
+        if evidence.get("archived") is True:
+            state = "archived"
+        elif (
+            evidence.get("available") is True
+            and evidence.get("private") is False
+            and evidence.get("visibility") == "PUBLIC"
+        ):
+            state = "live-public"
+        elif evidence.get("private") is True:
+            state = "private"
+        else:
+            state = "unavailable"
+        repository_states[state] += 1
+        head = evidence.get("headOid")
+        if evidence.get("available") is True and not SOURCE_REVISION_RE.fullmatch(str(head or "")):
+            raise HarnessError("catalog snapshot has invalid repository head evidence")
+        if not isinstance(row.get("catalogMarkers"), list):
+            raise HarnessError("catalog snapshot markers must be arrays")
+    if dict(repository_states) != expectations.get("repositoryStates"):
+        raise HarnessError("catalog snapshot repository states differ from expectations")
+    snapshot_identity = [
+        (row.get("index"), row.get("category"), row.get("name"), row.get("repository"))
+        for row in rows
+    ]
+    if len(set(snapshot_identity)) != len(snapshot_identity):
+        raise HarnessError("catalog snapshot contains a duplicate authoritative row")
+    coverage_identity = [
+        (
+            row.get("catalogIndex"),
+            row.get("category"),
+            row.get("name"),
+            row.get("repository"),
+        )
+        for row in lock["catalogCoverage"]
+    ]
+    if snapshot_identity != coverage_identity:
+        raise HarnessError(
+            "catalog coverage does not classify every authoritative snapshot row exactly once"
+        )
 
 
 def select_artifacts(
@@ -399,7 +564,7 @@ def validate_meta(meta: dict[str, Any], artifact: dict[str, Any]) -> dict[str, A
     if not checks["targetAbi"]["matched"]:
         raise HarnessError(f"{artifact['id']}: upstream meta targetAbi conflicts with lock")
     assemblies = ci_value(meta, "assemblies")
-    if assemblies is not None:
+    if assemblies not in (None, []):
         if not isinstance(assemblies, list) or plugin["assembly"] not in assemblies:
             raise HarnessError(f"{artifact['id']}: upstream meta assemblies omit main DLL")
     checks["assemblies"] = assemblies
@@ -428,7 +593,17 @@ def inspect_archive(path: Path, artifact: dict[str, Any]) -> dict[str, Any]:
         token_checks = {}
         for field in ("guid", "version"):
             token = artifact["plugin"][field]
-            present = token.encode("utf-16-le") in assembly_bytes or token.encode() in assembly_bytes
+            candidates = {token}
+            if field == "guid":
+                # GUID literals are semantically case-insensitive. Several current
+                # upstreams compile an uppercase literal while the fail-closed lock
+                # stores its normalized lowercase form.
+                candidates.add(token.upper())
+            present = any(
+                candidate.encode("utf-16-le") in assembly_bytes
+                or candidate.encode() in assembly_bytes
+                for candidate in candidates
+            )
             token_checks[field] = present
             if not present:
                 raise HarnessError(f"{artifact['id']}: assembly does not contain {field} token")
@@ -554,7 +729,8 @@ def materialize(path: Path, artifact: dict[str, Any], destination: Path) -> dict
         if not isinstance(upstream_meta, dict):
             raise HarnessError(f"{artifact['id']}: materialized upstream meta is not an object")
         upstream_meta.setdefault("targetAbi", artifact["plugin"]["targetAbi"])
-        upstream_meta.setdefault("assemblies", [artifact["plugin"]["assembly"]])
+        if not ci_value(upstream_meta, "assemblies"):
+            upstream_meta["assemblies"] = [artifact["plugin"]["assembly"]]
         with meta_path.open("w", encoding="utf-8", newline="\n") as handle:
             json.dump(upstream_meta, handle, indent=2, sort_keys=True)
             handle.write("\n")

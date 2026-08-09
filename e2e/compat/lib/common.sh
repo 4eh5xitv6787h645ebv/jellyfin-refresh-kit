@@ -20,7 +20,8 @@ RK_COMPAT_ARTIFACT_DIR="${RK_COMPAT_ARTIFACT_DIR:-${RK_COMPAT_DIR}/artifacts}"
 
 RK_COMPAT_JF10_PORT="${RK_COMPAT_JF10_PORT:-18216}"
 RK_COMPAT_JF12_PORT="${RK_COMPAT_JF12_PORT:-18217}"
-export RK_COMPAT_JF10_PORT RK_COMPAT_JF12_PORT
+RK_COMPAT_JF10_WRITABLE_PORT="${RK_COMPAT_JF10_WRITABLE_PORT:-18218}"
+export RK_COMPAT_JF10_PORT RK_COMPAT_JF12_PORT RK_COMPAT_JF10_WRITABLE_PORT
 
 RK_COMPAT_USER="${RK_COMPAT_USER:-rk_compat_admin}"
 RK_COMPAT_PASSWORD="${RK_COMPAT_PASSWORD:-Compat669Pw!x}"
@@ -73,20 +74,21 @@ compat_compose() {
 }
 
 compat_origin() {
-    local runtime="${1:-}" internal_ip="${2:-}" published="${3:-}"
+    local service="${1:-}" internal_ip="${2:-}" published="${3:-}"
     local port loopback
-    case "${runtime}" in
+    case "${service}" in
         jf10) port="${RK_COMPAT_JF10_PORT}" ;;
         jf12) port="${RK_COMPAT_JF12_PORT}" ;;
-        *) compat_die "unknown runtime: ${runtime:-<empty>}" ;;
+        jf10-writable) port="${RK_COMPAT_JF10_WRITABLE_PORT}" ;;
+        *) compat_die "unknown service: ${service:-<empty>}" ;;
     esac
     loopback="http://127.0.0.1:${port}"
     if [ "${published}" = true ]; then
         printf '%s\t%s\n' "${loopback}" published-loopback
         return
     fi
-    [ -n "${internal_ip}" ] || compat_die "${runtime}: verified internal bridge IPv4 is empty"
-    compat_log "${runtime}: Docker did not activate ${loopback}; using the verified project-owned internal bridge IPv4" >&2
+    [ -n "${internal_ip}" ] || compat_die "${service}: verified internal bridge IPv4 is empty"
+    compat_log "${service}: Docker did not activate ${loopback}; using the verified project-owned internal bridge IPv4" >&2
     printf 'http://%s:8096\t%s\n' "${internal_ip}" verified-internal-bridge
 }
 
@@ -128,19 +130,20 @@ compat_stage() {
 }
 
 compat_container_details() {
-    local runtime="$1" report="$2" expected_digest expected_port network_name
+    local service="$1" runtime="$2" report="$3" expected_digest expected_port network_name
     local -a container_ids
-    mapfile -t container_ids < <(compat_compose ps -q "${runtime}")
+    mapfile -t container_ids < <(compat_compose ps -q "${service}")
     [ "${#container_ids[@]}" -eq 1 ] || \
-        compat_die "${runtime} has ${#container_ids[@]} containers in Compose project ${RK_COMPAT_PROJECT}"
+        compat_die "${service} has ${#container_ids[@]} containers in Compose project ${RK_COMPAT_PROJECT}"
     expected_digest="$(python3 "${RK_COMPAT_DIR}/lib/manifest.py" runtime-field "${runtime}" imageDigest)"
-    case "${runtime}" in
+    case "${service}" in
         jf10) expected_port="${RK_COMPAT_JF10_PORT}" ;;
         jf12) expected_port="${RK_COMPAT_JF12_PORT}" ;;
-        *) compat_die "unknown runtime: ${runtime}" ;;
+        jf10-writable) expected_port="${RK_COMPAT_JF10_WRITABLE_PORT}" ;;
+        *) compat_die "unknown service: ${service}" ;;
     esac
     network_name="${RK_COMPAT_PROJECT}_compat-internal"
-    python3 - "${container_ids[0]}" "${RK_COMPAT_PROJECT}" "${runtime}" \
+    python3 - "${container_ids[0]}" "${RK_COMPAT_PROJECT}" "${service}" "${runtime}" \
         "${expected_digest}" "${expected_port}" "${network_name}" "${report}" <<'PY'
 import ipaddress
 import json
@@ -148,7 +151,7 @@ import pathlib
 import subprocess
 import sys
 
-(container_id, project, service, expected_digest, expected_port,
+(container_id, project, service, runtime, expected_digest, expected_port,
  network_name, report_path) = sys.argv[1:]
 
 def inspect(kind, identifier):
@@ -213,6 +216,7 @@ report = {
     "schemaVersion": 1,
     "project": project,
     "service": service,
+    "runtime": runtime,
     "containerId": container.get("Id"),
     "configuredImage": configured_image,
     "expectedImageDigest": expected_digest,

@@ -51,6 +51,33 @@ services:
       retries: 80
     stop_grace_period: 20s
 
+  jf10-writable:
+    image: jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
+    read_only: true
+    init: true
+    ports:
+      - "127.0.0.1:${RK_COMPAT_JF10_WRITABLE_PORT:-18218}:8096"
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    volumes:
+      - jf10-writable-config:/config
+      - jf10-writable-cache:/cache
+      # Docker copies the pinned image directory into this fresh named volume.
+      # The rest of the container root remains read-only.
+      - jf10-writable-web:/jellyfin/jellyfin-web
+    networks:
+      - compat-internal
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 1024
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8096/System/Info/Public >/dev/null || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 80
+    stop_grace_period: 20s
+
 networks:
   compat-internal:
     internal: true
@@ -60,3 +87,6 @@ volumes:
   jf10-cache:
   jf12-config:
   jf12-cache:
+  jf10-writable-config:
+  jf10-writable-cache:
+  jf10-writable-web:

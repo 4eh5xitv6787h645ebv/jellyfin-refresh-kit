@@ -386,6 +386,25 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         }
 
     errors: list[str] = []
+    matrix_configurations: dict[str, Any] = {}
+    for patch in matrix.get("configurationPatches", []):
+        artifact_id = patch["artifactId"]
+        configuration_path = evidence / "configurations" / f"{artifact_id}.json"
+        require_file(configuration_path)
+        effective = read_json(configuration_path)
+        checks = {
+            key: ci(effective, key) == expected
+            for key, expected in patch["payload"].items()
+        }
+        matrix_configurations[artifact_id] = {
+            "expected": patch["payload"],
+            "effective": effective,
+            "checks": checks,
+            "allPassed": all(checks.values()),
+        }
+        for key, passed in checks.items():
+            if not passed:
+                errors.append(f"{artifact_id}: configuration check failed: {key}")
     if editors_choice_configuration is not None:
         effective = editors_choice_configuration["effective"]
         configuration_checks = {
@@ -412,7 +431,8 @@ def cmd_runtime(args: argparse.Namespace) -> int:
     network_checks = {
         "valid": network.get("valid") is True and network.get("allPassed") is True,
         "project": network.get("project", "").startswith("rk-compat-"),
-        "service": network.get("service") == runtime,
+        "service": network.get("service") == matrix["service"],
+        "runtime": network.get("runtime") == runtime,
         "imageDigest": network.get("expectedImageDigest") == runtime_lock["imageDigest"],
         "composeLabels": network.get("composeLabelsValid") is True,
         "internalBridge": network.get("internalBridge") is True,
@@ -509,6 +529,36 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         if not passed:
             errors.append(f"kit check failed: {key}")
 
+    content_probe_results: dict[str, Any] = {}
+    for probe in matrix.get("contentProbes", []):
+        probe_path = evidence / "content-probes" / f"{probe['id']}.txt"
+        require_file(probe_path)
+        probe_text = read_text(probe_path)
+        artifact_checks = {
+            artifact_id: {
+                marker: marker in probe_text for marker in markers
+            }
+            for artifact_id, markers in probe["markers"].items()
+        }
+        content_probe_results[probe["id"]] = {
+            "path": probe["path"],
+            "authenticated": probe["authenticated"],
+            "sha256": sha256(probe_path),
+            "bytes": probe_path.stat().st_size,
+            "artifactChecks": artifact_checks,
+            "allPassed": all(
+                passed
+                for checks in artifact_checks.values()
+                for passed in checks.values()
+            ),
+        }
+        for artifact_id, checks in artifact_checks.items():
+            for marker, passed in checks.items():
+                if not passed:
+                    errors.append(
+                        f"{artifact_id}: content probe {probe['id']} missed marker {marker!r}"
+                    )
+
     inventory_rows = plugin_rows(read_json(evidence / "plugins.json"))
     diagnostics_before = plugin_rows(ci(read_json(evidence / "diagnostics-before.json"), "Plugins", []))
     diagnostics_after = plugin_rows(ci(read_json(evidence / "diagnostics-after.json"), "Plugins", []))
@@ -551,6 +601,7 @@ def cmd_runtime(args: argparse.Namespace) -> int:
     required_unversioned_outer = set(
         matrix.get("requiredUnversionedOuterArtifacts", [])
     )
+    required_present = set(matrix.get("requiredPresentArtifacts", []))
     observed_shell_order: list[str] = []
     for asset in shell_parser.assets:
         for artifact_id in requested_order:
@@ -613,6 +664,15 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         shell = shell_attribution(shell_parser.assets, artifact, generation_after)
         if artifact_id in matrix["requiredStampedArtifacts"] and shell["currentStampCount"] < 1:
             plugin_errors.append("required generation stamp was not observed in the shell")
+        if artifact_id in required_present and shell["tagCount"] < 1:
+            plugin_errors.append("required shell tag was not observed")
+        body_markers = {
+            marker: marker in shell_text
+            for marker in matrix.get("requiredBodyMarkers", {}).get(artifact_id, [])
+        }
+        for marker, present in body_markers.items():
+            if not present:
+                plugin_errors.append(f"required inline body marker was not observed: {marker!r}")
         limitation: dict[str, Any] | None = None
         if artifact_id in required_unversioned_outer:
             limitation_checks = evaluate_unversioned_outer_limitation(shell)
@@ -660,6 +720,7 @@ def cmd_runtime(args: argparse.Namespace) -> int:
                 "diagnostics": diagnostics_row,
                 "assetGeneration": asset_generation,
                 "shell": shell,
+                "bodyMarkers": body_markers,
                 "limitation": limitation,
                 "install": install,
                 "errors": plugin_errors,
@@ -686,6 +747,8 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         "schemaVersion": 1,
         "matrix": args.matrix,
         "runtime": runtime,
+        "service": matrix["service"],
+        "webrootExpectation": matrix["webrootExpectation"],
         "serverVersion": server_version,
         "image": configured_image,
         "network": {"value": network, "checks": network_checks},
@@ -695,6 +758,8 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         "quarantinedAssertions": matrix["quarantinedAssertions"],
         "cacheExpectation": matrix["cacheExpectation"],
         "matrixConfiguration": editors_choice_configuration,
+        "matrixConfigurations": matrix_configurations,
+        "contentProbes": content_probe_results,
         "refreshKit": {
             "expectedGuid": REFRESH_KIT_GUID,
             "generationBefore": generation_before,

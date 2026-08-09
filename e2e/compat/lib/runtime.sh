@@ -16,6 +16,7 @@ MANIFEST_TOOL="${HERE}/manifest.py"
 ARTIFACT_TOOL="${HERE}/artifacts.py"
 ANALYZE_TOOL="${HERE}/analyze.py"
 RUNTIME="$(python3 "${MANIFEST_TOOL}" field "${MATRIX_ID}" runtime)"
+SERVICE="$(python3 "${MANIFEST_TOOL}" field "${MATRIX_ID}" service)"
 ORIGIN=""
 ORIGIN_MODE=""
 STAGE="$(compat_stage "${RUNTIME}")"
@@ -36,7 +37,7 @@ capture_failure() {
     fi
     set +e
     if command -v docker >/dev/null 2>&1; then
-        compat_compose logs --no-color "${RUNTIME}" > "${OUT}/server.log" 2>&1
+        compat_compose logs --no-color "${SERVICE}" > "${OUT}/server.log" 2>&1
     fi
     if [ ! -f "${RESULT}" ]; then
         python3 "${ANALYZE_TOOL}" failure "${MATRIX_ID}" "${PHASE}" \
@@ -164,13 +165,13 @@ python3 "${ARTIFACT_TOOL}" fetch --cache "${RK_COMPAT_CACHE_DIR}/artifacts" \
 
 PHASE="fresh server startup"
 compat_compose down --volumes --remove-orphans >/dev/null 2>&1 || true
-compat_log "${MATRIX_ID}: starting ${RUNTIME} in isolated project ${RK_COMPAT_PROJECT}"
-compat_compose up -d --wait "${RUNTIME}"
+compat_log "${MATRIX_ID}: starting ${SERVICE} (${RUNTIME}) in isolated project ${RK_COMPAT_PROJECT}"
+compat_compose up -d --wait "${SERVICE}"
 IFS=$'\t' read -r CONTAINER CONTAINER_IP LOOPBACK_ACTIVE < <(
-    compat_container_details "${RUNTIME}" "${OUT}/network.json"
+    compat_container_details "${SERVICE}" "${RUNTIME}" "${OUT}/network.json"
 )
 IFS=$'\t' read -r ORIGIN ORIGIN_MODE < <(
-    compat_origin "${RUNTIME}" "${CONTAINER_IP}" "${LOOPBACK_ACTIVE}"
+    compat_origin "${SERVICE}" "${CONTAINER_IP}" "${LOOPBACK_ACTIVE}"
 )
 python3 - "${OUT}/network.json" "${ORIGIN}" "${ORIGIN_MODE}" <<'PY'
 import json
@@ -236,18 +237,29 @@ if [ "${MATRIX_ID}" = "jf10-transform-editors" ]; then
 fi
 
 PHASE="plugin load"
-compat_compose restart "${RUNTIME}" >/dev/null
+compat_compose restart "${SERVICE}" >/dev/null
 compat_wait_http "${ORIGIN}/System/Info/Public" 200 150 2 || {
-    compat_compose logs --no-color "${RUNTIME}" >&2
+    compat_compose logs --no-color "${SERVICE}" >&2
     compat_die "${MATRIX_ID}: server did not recover after plugin installation"
 }
 TOKEN="$(authenticate)"
 printf '%s' "${TOKEN}" > "${WORK}/token"
 AUTH="$(compat_auth_header "${TOKEN}")"
 compat_wait_http "${ORIGIN}/RefreshKit/Generation" 200 90 2 || {
-    compat_compose logs --no-color "${RUNTIME}" >&2
+    compat_compose logs --no-color "${SERVICE}" >&2
     compat_die "${MATRIX_ID}: Refresh Kit endpoint did not load"
 }
+PHASE="matrix plugin configuration"
+mkdir -p "${OUT}/configurations"
+while IFS=$'\t' read -r artifact_id plugin_guid payload; do
+    [ -n "${artifact_id}" ] || continue
+    curl --fail --silent --show-error -o /dev/null \
+        -X POST "${ORIGIN}/Plugins/${plugin_guid}/Configuration" \
+        -H 'Content-Type: application/json' -H "${AUTH}" --data "${payload}"
+    curl --fail --silent --show-error -H "${AUTH}" \
+        -o "${OUT}/configurations/${artifact_id}.json" \
+        "${ORIGIN}/Plugins/${plugin_guid}/Configuration"
+done < <(python3 "${MANIFEST_TOOL}" configurations "${MATRIX_ID}")
 if [ "${MATRIX_ID}" = "jf10-transform-editors" ]; then
     curl --fail --silent --show-error -H "${AUTH}" \
         -o "${OUT}/editors-choice-configuration.json" \
@@ -329,11 +341,23 @@ for route in / /web /web/ /web/index.html; do
     printf '%s\t%s\n' "${route}" "${status}" >> "${OUT}/route-status.tsv"
 done
 
+mkdir -p "${OUT}/content-probes"
+while IFS=$'\t' read -r probe_id probe_path authenticated; do
+    [ -n "${probe_id}" ] || continue
+    if [ "${authenticated}" = true ]; then
+        curl --fail --silent --show-error -H "${AUTH}" \
+            -o "${OUT}/content-probes/${probe_id}.txt" "${ORIGIN}${probe_path}"
+    else
+        curl --fail --silent --show-error \
+            -o "${OUT}/content-probes/${probe_id}.txt" "${ORIGIN}${probe_path}"
+    fi
+done < <(python3 "${MANIFEST_TOOL}" probes "${MATRIX_ID}")
+
 while IFS=$'\t' read -r _ artifact_id remote_folder _; do
     meta_output="${OUT}/runtime-meta/${artifact_id}.json"
     docker exec "${CONTAINER}" cat "/config/plugins/${remote_folder}/meta.json" > "${meta_output}"
 done < "${OUT}/install.tsv"
-compat_compose logs --no-color "${RUNTIME}" > "${OUT}/server.log" 2>&1
+compat_compose logs --no-color "${SERVICE}" > "${OUT}/server.log" 2>&1
 
 PHASE="structured analysis"
 python3 "${ANALYZE_TOOL}" runtime "${MATRIX_ID}" "${OUT}" "${RESULT}"

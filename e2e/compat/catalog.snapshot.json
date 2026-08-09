@@ -1,0 +1,1780 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "https://github.com/awesome-jellyfin/awesome-jellyfin",
+    "branch": "main",
+    "commit": "a60d3d24fe0e16e59518f95ea4743d8996fa81c9",
+    "commitDate": "2026-08-05T08:34:16Z",
+    "commitMessage": "chore: added stale tag to jellyfin-sso (#614)",
+    "commitUrl": "https://github.com/awesome-jellyfin/awesome-jellyfin/commit/a60d3d24fe0e16e59518f95ea4743d8996fa81c9",
+    "auditedAtUtc": "2026-08-08T23:46:19Z",
+    "networkMode": "read-only",
+    "scopeIncluded": "Every top-level row in README.md from ## 🧩 Plugins through (but excluding) ## 👾 Companion Apps & Tools.",
+    "scopeExcluded": "THEMES.md themes, CLIENTS.md clients, README Companion Apps & Tools, snippets, guides, related projects, and communities are not Jellyfin server-plugin candidates."
+  },
+  "expectations": {
+    "rowCount": 101,
+    "categoryCounts": {
+      "🎨 UI & Customization": 23,
+      "📂 Collections & Playlists": 11,
+      "▶️ Playback": 8,
+      "🔗 Integration & Sync": 14,
+      "🔔 Notifications": 5,
+      "🔐 Authentication": 4,
+      "📚 Library Management": 20,
+      "🏷️ Metadata Providers": 16
+    },
+    "repositoryStates": {
+      "live-public": 100,
+      "archived": 1
+    },
+    "withinPluginSectionNonServerRows": [
+      "jellyfin-icon-metadata (CSS configuration)",
+      "jellyfin-rpc by kennethsible (companion executable)",
+      "jellyfin-rpc by Radiicall (companion executable)"
+    ]
+  },
+  "rows": [
+    {
+      "index": 1,
+      "category": "🎨 UI & Customization",
+      "name": "Achievement Badges",
+      "repository": "https://github.com/ZL154/AchievementBadges_for_Jellyfin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-04T18:24:14Z",
+        "headOid": "96838befa52ad432839f0d81fe941d6edcda1ce2",
+        "latestReleaseTag": "v2.2.0",
+        "latestReleasePublishedAt": "2026-07-21T01:16:41Z"
+      }
+    },
+    {
+      "index": 2,
+      "category": "🎨 UI & Customization",
+      "name": "HoverTrailer",
+      "repository": "https://github.com/Fovty/HoverTrailer",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-29T23:29:25Z",
+        "headOid": "990b313a3f095ccbfe109340f69e4448655870bd",
+        "latestReleaseTag": "v0.3.1.0",
+        "latestReleasePublishedAt": "2026-06-29T23:29:29Z"
+      }
+    },
+    {
+      "index": 3,
+      "category": "🎨 UI & Customization",
+      "name": "InPlayerEpisodePreview",
+      "repository": "https://github.com/Namo2/InPlayerEpisodePreview",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-06T08:33:51Z",
+        "headOid": "fd0f0f50daa2c7792a54ce9e1ffe3f959068c1bc",
+        "latestReleaseTag": "v1.6.1",
+        "latestReleasePublishedAt": "2025-12-11T21:42:20Z"
+      }
+    },
+    {
+      "index": 4,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-editors-choice-plugin",
+      "repository": "https://github.com/lachlandcp/jellyfin-editors-choice-plugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-05-22T03:55:42Z",
+        "headOid": "bea2192d9799e03d210383a5036743f36c715820",
+        "latestReleaseTag": "1.5.2",
+        "latestReleasePublishedAt": "2026-04-10T08:42:22Z"
+      }
+    },
+    {
+      "index": 5,
+      "category": "🎨 UI & Customization",
+      "name": "Jellyfin-Enhanced",
+      "repository": "https://github.com/n00bcodr/Jellyfin-Enhanced",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-08T22:43:56Z",
+        "headOid": "ea06d91f398d68b0cb98732cc5781b9d0bcc5013",
+        "latestReleaseTag": "12.2.0.0",
+        "latestReleasePublishedAt": "2026-08-08T22:43:56Z"
+      }
+    },
+    {
+      "index": 6,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-icon-metadata",
+      "repository": "https://github.com/Druidblack/jellyfin-icon-metadata",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-02-19T12:41:59Z",
+        "headOid": "f2190dc45a6b032b3af8325013e75a5842f778fb",
+        "latestReleaseTag": null,
+        "latestReleasePublishedAt": null
+      }
+    },
+    {
+      "index": 7,
+      "category": "🎨 UI & Customization",
+      "name": "Jellyfin-JavaScript-Injector",
+      "repository": "https://github.com/n00bcodr/Jellyfin-JavaScript-Injector",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-19T18:36:06Z",
+        "headOid": "6c24fb69e8ecebd32ad8104d02b2a465cec98888",
+        "latestReleaseTag": "3.5.0.0",
+        "latestReleasePublishedAt": "2026-07-19T18:36:07Z"
+      }
+    },
+    {
+      "index": 8,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-media-preview-plugin",
+      "repository": "https://github.com/spkesDE/jellyfin-media-preview-plugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-08T09:38:05Z",
+        "headOid": "edc47debfb2896f1b270dc3401fee8ed8d1bbf62",
+        "latestReleaseTag": "v0.3.1.1",
+        "latestReleasePublishedAt": "2026-08-08T09:38:00Z"
+      }
+    },
+    {
+      "index": 9,
+      "category": "🎨 UI & Customization",
+      "name": "Jellyfin-MonWUI-Plugin",
+      "repository": "https://github.com/G-grbz/Jellyfin-MonWUI-Plugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-25T12:25:15Z",
+        "headOid": "f1a6f7f6d43295dbf9b7fe1d10eaef8ddb3b4de7",
+        "latestReleaseTag": "v3.7.0",
+        "latestReleasePublishedAt": "2026-06-10T23:07:12Z"
+      }
+    },
+    {
+      "index": 10,
+      "category": "🎨 UI & Customization",
+      "name": "Jellyfin.Plugin.ActorPlus",
+      "repository": "https://github.com/Druidblack/Jellyfin.Plugin.ActorPlus",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-02-22T06:00:37Z",
+        "headOid": "792ee5360c323096223446a01a1298404f49e0ea",
+        "latestReleaseTag": "Release-1.0.0.0",
+        "latestReleasePublishedAt": "2026-02-22T05:32:52Z"
+      }
+    },
+    {
+      "index": 11,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-collection-sections",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-collection-sections",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-11T10:06:21Z",
+        "headOid": "d30740b5575c3b730580fb3a260a4b0c98926dfa",
+        "latestReleaseTag": "2.3.10.0",
+        "latestReleasePublishedAt": "2026-06-11T10:06:21Z"
+      }
+    },
+    {
+      "index": 12,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-custom-tabs",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-custom-tabs",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-11T09:55:15Z",
+        "headOid": "0809e54e86864fab9b15a075eb5e58987df3b00d",
+        "latestReleaseTag": "0.2.10.0",
+        "latestReleasePublishedAt": "2026-06-11T09:55:16Z"
+      }
+    },
+    {
+      "index": 13,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-GetAvatar",
+      "repository": "https://github.com/cedev-1/jellyfin-plugin-GetAvatar",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-02T10:49:47Z",
+        "headOid": "8adac344e33423ddca3f0f7b4f33ace462efae0f",
+        "latestReleaseTag": "v1.6.4.1",
+        "latestReleasePublishedAt": "2026-06-26T08:29:57Z"
+      }
+    },
+    {
+      "index": 14,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-home-sections",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-home-sections",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-01T20:34:30Z",
+        "headOid": "dcf2484838ced76585499c767fae6451fff6f80e",
+        "latestReleaseTag": "2.5.11.0",
+        "latestReleasePublishedAt": "2026-06-11T10:05:44Z"
+      }
+    },
+    {
+      "index": 15,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-media-bar",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-media-bar",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-01T20:34:32Z",
+        "headOid": "2b0faa81239daecc7466de0faa01f8b36451ca5a",
+        "latestReleaseTag": "2.4.12.0",
+        "latestReleasePublishedAt": "2026-06-11T10:07:02Z"
+      }
+    },
+    {
+      "index": 16,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-pages",
+      "repository": "https://github.com/IAmParadox27/jellyfin-plugin-pages",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-12T16:08:15Z",
+        "headOid": "352eed217fe8d762c9105a4bd189b685d6be88be",
+        "latestReleaseTag": "2.4.11.0",
+        "latestReleasePublishedAt": "2026-06-11T09:55:56Z"
+      }
+    },
+    {
+      "index": 17,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-ratings",
+      "repository": "https://github.com/K3ntas/jellyfin-plugin-ratings",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-08T23:43:42Z",
+        "headOid": "f010b0b755a97f3e9ccac8a50c578ba4e9a31b9a",
+        "latestReleaseTag": "v1.0.373.0",
+        "latestReleasePublishedAt": "2026-08-08T23:20:27Z"
+      }
+    },
+    {
+      "index": 18,
+      "category": "🎨 UI & Customization",
+      "name": "jellyfin-plugin-skin-manager",
+      "repository": "https://github.com/danieladov/jellyfin-plugin-skin-manager",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-05-05T10:03:14Z",
+        "headOid": "0e68847fff7770f769eb22f81c164362b29d7e8b",
+        "latestReleaseTag": "2.0.2",
+        "latestReleasePublishedAt": "2024-11-04T22:17:48Z"
+      }
+    },
+    {
+      "index": 19,
+      "category": "🎨 UI & Customization",
+      "name": "Jellyfin-Seasonals",
+      "repository": "https://github.com/CodeDevMLH/Jellyfin-Seasonals",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-26T23:37:33Z",
+        "headOid": "8ba3e3cd1e140a899f370430c4a700b0942f5fac",
+        "latestReleaseTag": "v3.1.0.0",
+        "latestReleasePublishedAt": "2026-07-26T23:34:22Z"
+      }
+    },
+    {
+      "index": 20,
+      "category": "🎨 UI & Customization",
+      "name": "jellyscrub",
+      "repository": "https://github.com/nicknsy/jellyscrub",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2024-11-10T21:56:14Z",
+        "headOid": "8e43d5a117b686a10136014e03c6dccb4f3c9970",
+        "latestReleaseTag": "2.1.0.0",
+        "latestReleasePublishedAt": "2024-11-10T20:56:19Z"
+      }
+    },
+    {
+      "index": 21,
+      "category": "🎨 UI & Customization",
+      "name": "SeerrFin",
+      "repository": "https://github.com/varunaditya-plus/SeerrFin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-28T09:54:50Z",
+        "headOid": "c2fadfcb76e85ab3e7c00ac3fd64a39cd378feaa",
+        "latestReleaseTag": "1.6.5.1",
+        "latestReleasePublishedAt": "2026-07-28T09:54:55Z"
+      }
+    },
+    {
+      "index": 22,
+      "category": "🎨 UI & Customization",
+      "name": "StarTrack",
+      "repository": "https://github.com/ZL154/jellyfin-plugin-startrack",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-22T19:27:47Z",
+        "headOid": "08a5b80f6179fc0230767a8aeefe60275662a379",
+        "latestReleaseTag": "v1.6.4",
+        "latestReleasePublishedAt": "2026-07-20T00:34:58Z"
+      }
+    },
+    {
+      "index": 23,
+      "category": "🎨 UI & Customization",
+      "name": "Static Assets",
+      "repository": "https://github.com/cleverdevil/jelly-static-assets",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2025-04-22T02:05:08Z",
+        "headOid": "2c60b85f9c888765f244b4fb0b1b17b51b039860",
+        "latestReleaseTag": "v0.0.1.0",
+        "latestReleasePublishedAt": "2025-04-22T01:52:27Z"
+      }
+    },
+    {
+      "index": 24,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-favorited-songs-playlist",
+      "repository": "https://github.com/Saturn745/jellyfin-favorited-songs-playlist",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-03-19T00:40:03Z",
+        "headOid": "2201af61b7cf9c79cd8db322c9023edcbc759143",
+        "latestReleaseTag": "1.0.0.2",
+        "latestReleasePublishedAt": "2026-01-26T21:17:43Z"
+      }
+    },
+    {
+      "index": 25,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-harmonie",
+      "repository": "https://github.com/mxschll/jellyfin-harmonie",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-02T14:39:21Z",
+        "headOid": "02507b47b65fa407eba7e4b40539b1db983e02e8",
+        "latestReleaseTag": "v1.6.1",
+        "latestReleasePublishedAt": "2026-08-02T14:39:19Z"
+      }
+    },
+    {
+      "index": 26,
+      "category": "📂 Collections & Playlists",
+      "name": "Jellyfin.Plugin.ACdb",
+      "repository": "https://github.com/jonjonsson/Jellyfin.Plugin.ACdb",
+      "catalogMarkers": [
+        "paid"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-05-26T18:04:26Z",
+        "headOid": "bb742743dd540902448663d65c93e82ab185afe5",
+        "latestReleaseTag": "v.3.0.0.4",
+        "latestReleasePublishedAt": "2026-05-26T18:04:26Z"
+      }
+    },
+    {
+      "index": 27,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-plugin-auto-collections",
+      "repository": "https://github.com/KeksBombe/jellyfin-plugin-auto-collections",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-02-13T08:33:33Z",
+        "headOid": "1502b331313c9898f4707a1982b03880efdb757b",
+        "latestReleaseTag": "0.0.4.1",
+        "latestReleasePublishedAt": "2025-12-04T08:45:45Z"
+      }
+    },
+    {
+      "index": 28,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-plugin-collection-import",
+      "repository": "https://github.com/lostb1t/jellyfin-plugin-collection-import",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-03T11:35:54Z",
+        "headOid": "1a4983dddfcf227525b755cb6bdb946666059572",
+        "latestReleaseTag": "0.48.0.0",
+        "latestReleasePublishedAt": "2026-06-03T11:32:56Z"
+      }
+    },
+    {
+      "index": 29,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-plugin-mindthegaps",
+      "repository": "https://github.com/IDisposable/jellyfin-plugin-mindthegaps",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-04T14:25:29Z",
+        "headOid": "bd4b337eb7425e9e6d39d296bb74f94b7c36d126",
+        "latestReleaseTag": "v10.11.6.0",
+        "latestReleasePublishedAt": "2026-08-04T14:23:59Z"
+      }
+    },
+    {
+      "index": 30,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-plugin-provider-stuff",
+      "repository": "https://github.com/kamilkosek/jellyfin-plugin-provider-stuff",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2025-09-09T21:23:04Z",
+        "headOid": "177dc1749db10eb2e22888c8aaa696bbafdcb09a",
+        "latestReleaseTag": "1.2.0.0",
+        "latestReleasePublishedAt": "2025-09-09T21:23:03Z"
+      }
+    },
+    {
+      "index": 31,
+      "category": "📂 Collections & Playlists",
+      "name": "jellyfin-smartlists-plugin",
+      "repository": "https://github.com/jyourstone/jellyfin-smartlists-plugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-08T23:06:54Z",
+        "headOid": "5b6bcd05e47e37e3976690099aa24202370da83a",
+        "latestReleaseTag": "v10.11.30.2",
+        "latestReleasePublishedAt": "2026-06-28T17:55:17Z"
+      }
+    },
+    {
+      "index": 32,
+      "category": "📂 Collections & Playlists",
+      "name": "playlist-generator",
+      "repository": "https://github.com/Eeeeelias/playlist-generator",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-19T18:40:15Z",
+        "headOid": "12fee8f2a501a96660036408f421ff709e0444d6",
+        "latestReleaseTag": "v1.5.1.0",
+        "latestReleasePublishedAt": "2026-06-19T18:40:15Z"
+      }
+    },
+    {
+      "index": 33,
+      "category": "📂 Collections & Playlists",
+      "name": "TheDwarfsHammer",
+      "repository": "https://github.com/Kamoba/jellyfin-plugin-thedwarfshammer",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-12T21:06:28Z",
+        "headOid": "151e2996b8c0c36edf804f55bcb0c6cf33bb3252",
+        "latestReleaseTag": "1.0.0.0",
+        "latestReleasePublishedAt": "2026-02-02T07:29:18Z"
+      }
+    },
+    {
+      "index": 34,
+      "category": "📂 Collections & Playlists",
+      "name": "WikiEpisodeOrder",
+      "repository": "https://github.com/neilmanfredit/wikiepisodeorder-jellyfin-plugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-06T13:34:52Z",
+        "headOid": "75ea5f8c5775cacfa8c7aaea752667799eb89221",
+        "latestReleaseTag": "v1.0.27",
+        "latestReleasePublishedAt": "2026-08-06T13:13:40Z"
+      }
+    },
+    {
+      "index": 35,
+      "category": "▶️ Playback",
+      "name": "intro-skipper",
+      "repository": "https://github.com/intro-skipper/intro-skipper",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-06T11:51:08Z",
+        "headOid": "6c3b932c210c0b340fe8c67d7ff0ca229e19502e",
+        "latestReleaseTag": "12.0/v1.12.0.1",
+        "latestReleasePublishedAt": "2026-07-04T17:47:17Z"
+      }
+    },
+    {
+      "index": 36,
+      "category": "▶️ Playback",
+      "name": "jellyfin-plugin-cinemamode",
+      "repository": "https://github.com/CherryFloors/jellyfin-plugin-cinemamode",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-08T16:29:27Z",
+        "headOid": "e7685f1c0f6cc09500c03ba71a16aaf201170a12",
+        "latestReleaseTag": "v0.6.0.0",
+        "latestReleasePublishedAt": "2025-10-25T04:07:25Z"
+      }
+    },
+    {
+      "index": 37,
+      "category": "▶️ Playback",
+      "name": "jellyfin-plugin-dedupe-continue-watching",
+      "repository": "https://github.com/SloMR/jellyfin-plugin-dedupe-continue-watching",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-04-29T20:19:23Z",
+        "headOid": "373cab0f7602e2d24047bed641114835e140abc5",
+        "latestReleaseTag": "v1.0.1.0",
+        "latestReleasePublishedAt": "2026-04-29T20:17:18Z"
+      }
+    },
+    {
+      "index": 38,
+      "category": "▶️ Playback",
+      "name": "jellyfin-plugin-discontinue-watching",
+      "repository": "https://github.com/jon4hz/jellyfin-plugin-discontinue-watching",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-04-13T09:38:22Z",
+        "headOid": "7e2a0124e5310f5c935e7e93e06edd45d61bc5a8",
+        "latestReleaseTag": "v0.5.1",
+        "latestReleasePublishedAt": "2025-12-07T22:33:03Z"
+      }
+    },
+    {
+      "index": 39,
+      "category": "▶️ Playback",
+      "name": "jellyfin-plugin-jellysleep",
+      "repository": "https://github.com/jon4hz/jellyfin-plugin-jellysleep",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-22T09:06:23Z",
+        "headOid": "227b1248c9d99babdb12da5a7cdeac539940cc8d",
+        "latestReleaseTag": "v0.8.0",
+        "latestReleasePublishedAt": "2025-11-23T21:04:30Z"
+      }
+    },
+    {
+      "index": 40,
+      "category": "▶️ Playback",
+      "name": "Jellyfin.Plugin.StreamLimit",
+      "repository": "https://github.com/JellyboxAD/Jellyfin.Plugin.StreamLimit",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-17T22:41:02Z",
+        "headOid": "d4a59b8dd855ed3838a75b7dd38a5bf681b306e2",
+        "latestReleaseTag": "v1.1.0.0",
+        "latestReleasePublishedAt": "2026-07-17T22:37:57Z"
+      }
+    },
+    {
+      "index": 41,
+      "category": "▶️ Playback",
+      "name": "jellyfin-transcode-nag",
+      "repository": "https://github.com/voc0der/jellyfin-transcode-nag",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-04T16:10:01Z",
+        "headOid": "1cd2e56fdd1b1ff78d73480bb9a0713eaebff368",
+        "latestReleaseTag": "v1.0.1.26",
+        "latestReleasePublishedAt": "2026-06-17T23:43:01Z"
+      }
+    },
+    {
+      "index": 42,
+      "category": "▶️ Playback",
+      "name": "TheIntroDB",
+      "repository": "https://github.com/TheIntroDB/jellyfin-plugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-28T17:29:23Z",
+        "headOid": "13633988e84b07638200c1f137af8cb979d0b351",
+        "latestReleaseTag": "v1.0.7.2",
+        "latestReleasePublishedAt": "2026-07-01T05:47:20Z"
+      }
+    },
+    {
+      "index": 43,
+      "category": "🔗 Integration & Sync",
+      "name": "Gelato",
+      "repository": "https://github.com/lostb1t/Gelato",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-31T07:44:05Z",
+        "headOid": "ce871802b4e4c6d7ae514623ecc676321b46657e",
+        "latestReleaseTag": "v0.26.15.1",
+        "latestReleasePublishedAt": "2026-05-18T07:34:53Z"
+      }
+    },
+    {
+      "index": 44,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-ani-sync",
+      "repository": "https://github.com/vosmiic/jellyfin-ani-sync",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-04T18:58:09Z",
+        "headOid": "dc8648ed09e60645de17451a2ed19656407f9a77",
+        "latestReleaseTag": "v4.4",
+        "latestReleasePublishedAt": "2026-06-10T18:36:35Z"
+      }
+    },
+    {
+      "index": 45,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-plugin-animethemes",
+      "repository": "https://github.com/EusthEnoptEron/jellyfin-plugin-animethemes",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-02-11T19:23:43Z",
+        "headOid": "6929971b0ef60e0ad11f60aec3d1ebb3c5fc7db3",
+        "latestReleaseTag": "6",
+        "latestReleasePublishedAt": "2026-02-09T18:07:54Z"
+      }
+    },
+    {
+      "index": 46,
+      "category": "🔗 Integration & Sync",
+      "name": "Jellyfin.Plugin.JF_To_Stash_Sync",
+      "repository": "https://github.com/Druidblack/Jellyfin.Plugin.JF_To_Stash_Sync",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-02-05T08:05:37Z",
+        "headOid": "69f0f3a59d213d6b21b1df18ad58a9d90ee07d48",
+        "latestReleaseTag": "1.0.0.2",
+        "latestReleasePublishedAt": "2026-01-31T07:30:59Z"
+      }
+    },
+    {
+      "index": 47,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-plugin-letterboxd-sync",
+      "repository": "https://github.com/Gizmo091/jellyfin-plugin-letterboxd-sync",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-05T20:08:42Z",
+        "headOid": "7712eea4819c4314731b243f2de50ab6ed81390e",
+        "latestReleaseTag": "v2.2.0",
+        "latestReleasePublishedAt": "2026-08-05T19:28:18Z"
+      }
+    },
+    {
+      "index": 48,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-plugin-listenbrainz",
+      "repository": "https://github.com/lyarenei/jellyfin-plugin-listenbrainz",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-06T21:10:32Z",
+        "headOid": "749cc4e13518ecf247c3ca81cbd60e5aefb74c96",
+        "latestReleaseTag": "6.3.1.2",
+        "latestReleasePublishedAt": "2026-06-22T11:22:16Z"
+      }
+    },
+    {
+      "index": 49,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-plugin-streamyfin",
+      "repository": "https://github.com/streamyfin/jellyfin-plugin-streamyfin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-30T22:03:18Z",
+        "headOid": "0419356586f0141b55a7a9c4da0cf4754be1cce2",
+        "latestReleaseTag": "0.67.0.0",
+        "latestReleasePublishedAt": "2026-06-20T16:28:14Z"
+      }
+    },
+    {
+      "index": 50,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-rpc by *kennethsible*",
+      "repository": "https://github.com/kennethsible/jellyfin-rpc",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-08T20:25:52Z",
+        "headOid": "b0109532619539c2cf084d3a0caad78f4adfa25e",
+        "latestReleaseTag": "v1.9.1",
+        "latestReleasePublishedAt": "2026-07-10T04:12:55Z"
+      }
+    },
+    {
+      "index": 51,
+      "category": "🔗 Integration & Sync",
+      "name": "jellyfin-rpc by *Radiicall*",
+      "repository": "https://github.com/JustRadical/jellyfin-rpc",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-28T10:28:11Z",
+        "headOid": "2be229bc372b6b84a74e5eb37268d487344e6955",
+        "latestReleaseTag": "1.3.5",
+        "latestReleasePublishedAt": "2026-04-15T14:39:58Z"
+      }
+    },
+    {
+      "index": 52,
+      "category": "🔗 Integration & Sync",
+      "name": "jellynext",
+      "repository": "https://github.com/luall0/jellynext",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-02-24T14:39:31Z",
+        "headOid": "655fd9bfa0308a03b880d70788927d992427389f",
+        "latestReleaseTag": "v1.3.0.0",
+        "latestReleasePublishedAt": "2026-02-24T14:39:31Z"
+      }
+    },
+    {
+      "index": 53,
+      "category": "🔗 Integration & Sync",
+      "name": "Moonbase",
+      "repository": "https://github.com/Moonfin-Client/Plugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-08T08:37:27Z",
+        "headOid": "66ef9b79c0d3ef58709a9d15645beacece6458c5",
+        "latestReleaseTag": "2.0.3",
+        "latestReleasePublishedAt": "2026-08-08T04:41:25Z"
+      }
+    },
+    {
+      "index": 54,
+      "category": "🔗 Integration & Sync",
+      "name": "MyAnimeSync",
+      "repository": "https://github.com/iankiller77/MyAnimeSync",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-04T22:54:58Z",
+        "headOid": "1be5f4a14237a7678694cfe9cb5c8cf0916457b1",
+        "latestReleaseTag": "v1.6.2.2",
+        "latestReleasePublishedAt": "2026-07-08T02:57:32Z"
+      }
+    },
+    {
+      "index": 55,
+      "category": "🔗 Integration & Sync",
+      "name": "Plexyfin",
+      "repository": "https://github.com/cleverdevil/plexyfin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-15T01:27:28Z",
+        "headOid": "0a66ded0c97749cab3266affdca1e90e2422ab27",
+        "latestReleaseTag": "v0.6.3.0",
+        "latestReleasePublishedAt": "2026-07-15T01:27:49Z"
+      }
+    },
+    {
+      "index": 56,
+      "category": "🔗 Integration & Sync",
+      "name": "Shokofin",
+      "repository": "https://github.com/ShokoAnime/Shokofin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-06T22:58:40Z",
+        "headOid": "62cd70aa94ed250fcc1ae96d920e81e14d8f4b3f",
+        "latestReleaseTag": "v6.0.5",
+        "latestReleasePublishedAt": "2026-03-22T19:55:49Z"
+      }
+    },
+    {
+      "index": 57,
+      "category": "🔔 Notifications",
+      "name": "Jellyfin-Newsletter",
+      "repository": "https://github.com/Sanidhya30/Jellyfin-Newsletter",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-01T14:31:49Z",
+        "headOid": "048d6309e5e4d070bbd682ecd6ac4e184d4894c9",
+        "latestReleaseTag": "v1.6.4.0",
+        "latestReleasePublishedAt": "2026-06-21T12:38:57Z"
+      }
+    },
+    {
+      "index": 58,
+      "category": "🔔 Notifications",
+      "name": "Jellyfin-Newsletter-Plugin",
+      "repository": "https://github.com/Cloud9Developer/Jellyfin-Newsletter-Plugin",
+      "catalogMarkers": [
+        "beta"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2025-10-20T18:55:04Z",
+        "headOid": "04ae554b6d2b16c1c8edf6dd42c8607b29219760",
+        "latestReleaseTag": "v0.6.5.0",
+        "latestReleasePublishedAt": "2025-10-20T18:38:43Z"
+      }
+    },
+    {
+      "index": 59,
+      "category": "🔔 Notifications",
+      "name": "jellyfin-plugin-DiscordNotifier",
+      "repository": "https://github.com/cedev-1/jellyfin-plugin-DiscordNotifier",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-29T17:13:19Z",
+        "headOid": "a8a6c56817abcf3fc092a379ccd1d968587d1be9",
+        "latestReleaseTag": "v1.8.0.0",
+        "latestReleasePublishedAt": "2026-07-28T14:11:18Z"
+      }
+    },
+    {
+      "index": 60,
+      "category": "🔔 Notifications",
+      "name": "jellyfin-plugin-TelegramNotifier",
+      "repository": "https://github.com/RomainPierre7/jellyfin-plugin-TelegramNotifier",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-07T18:49:58Z",
+        "headOid": "4ede050c58ed62bb9cd1d6967c5446b0df1b3353",
+        "latestReleaseTag": "12.3.0.0",
+        "latestReleasePublishedAt": "2026-07-07T18:47:03Z"
+      }
+    },
+    {
+      "index": 61,
+      "category": "🔔 Notifications",
+      "name": "NotifySync",
+      "repository": "https://github.com/peterdu1109/NotifySync",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-25T18:48:10Z",
+        "headOid": "f2bf6cd3a62d7fa13a87fb3e11c7e4f5d74ba275",
+        "latestReleaseTag": "v5.7.19.0",
+        "latestReleasePublishedAt": "2026-07-25T13:33:30Z"
+      }
+    },
+    {
+      "index": 62,
+      "category": "🔐 Authentication",
+      "name": "jellyfin-plugin-ldapauth",
+      "repository": "https://github.com/jellyfin/jellyfin-plugin-ldapauth",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-24T21:37:33Z",
+        "headOid": "dfc29525c23889b2a5ad60dc7f354440d3cb1350",
+        "latestReleaseTag": "v23",
+        "latestReleasePublishedAt": "2026-05-22T14:03:14Z"
+      }
+    },
+    {
+      "index": 63,
+      "category": "🔐 Authentication",
+      "name": "jellyfin-plugin-sso",
+      "repository": "https://github.com/9p4/jellyfin-plugin-sso",
+      "catalogMarkers": [
+        "stale",
+        "beta"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": true,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-05-12T04:53:22Z",
+        "headOid": "f1e157bac29e6d27a0844378f3e1d4a4fdaa577a",
+        "latestReleaseTag": "v4.0.0.3",
+        "latestReleasePublishedAt": "2025-10-21T14:39:25Z"
+      }
+    },
+    {
+      "index": 64,
+      "category": "🔐 Authentication",
+      "name": "Jellyfin Security",
+      "repository": "https://github.com/ZL154/JellyfinSecurity",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-04T17:36:06Z",
+        "headOid": "78b9f89aa32600288b983ba72da45a7d3e0ea77b",
+        "latestReleaseTag": "v2.5.21",
+        "latestReleasePublishedAt": "2026-08-04T17:30:56Z"
+      }
+    },
+    {
+      "index": 65,
+      "category": "🔐 Authentication",
+      "name": "TeleJelly",
+      "repository": "https://github.com/hexxone/TeleJelly",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-17T07:49:03Z",
+        "headOid": "76c812255f226cf6d632678764c4fcddb6576146",
+        "latestReleaseTag": "1.0.11",
+        "latestReleasePublishedAt": "2026-01-02T18:00:23Z"
+      }
+    },
+    {
+      "index": 66,
+      "category": "📚 Library Management",
+      "name": "AniLiberty STRM Plugin",
+      "repository": "https://github.com/queukat/AniLibriaStrmPlugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-19T23:52:54Z",
+        "headOid": "bdd24197a0e0b1493bdec05c83b8f8404ddadc95",
+        "latestReleaseTag": "v2.0.0.12",
+        "latestReleasePublishedAt": "2026-07-19T23:52:48Z"
+      }
+    },
+    {
+      "index": 67,
+      "category": "📚 Library Management",
+      "name": "GhostLibrary",
+      "repository": "https://github.com/upchui/Jellyfin-GhostLibrary",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-05-24T18:28:54Z",
+        "headOid": "cf4f70adc1c0ff5cb66d038dbc0c5644595c65c1",
+        "latestReleaseTag": "v1.0.0.14",
+        "latestReleasePublishedAt": "2026-05-24T18:14:29Z"
+      }
+    },
+    {
+      "index": 68,
+      "category": "📚 Library Management",
+      "name": "Jellyfin Ignore",
+      "repository": "https://github.com/fdett/jellyfin-ignore",
+      "catalogMarkers": [
+        "stale",
+        "beta"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2024-07-07T13:51:05Z",
+        "headOid": "578084432c40fc7dc7617e04d843f5a0223e1a12",
+        "latestReleaseTag": "v0.5",
+        "latestReleasePublishedAt": "2024-07-07T13:51:05Z"
+      }
+    },
+    {
+      "index": 69,
+      "category": "📚 Library Management",
+      "name": "jellyfin-local-posters",
+      "repository": "https://github.com/NooNameR/Jellyfin.Plugin.LocalPosters",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-05-23T08:37:05Z",
+        "headOid": "4722eead634000e7ca5e1c5fb3af43f397990a82",
+        "latestReleaseTag": "0.2.0.2",
+        "latestReleasePublishedAt": "2026-05-23T08:36:10Z"
+      }
+    },
+    {
+      "index": 70,
+      "category": "📚 Library Management",
+      "name": "jellyfin-musictags-plugin",
+      "repository": "https://github.com/jyourstone/jellyfin-musictags-plugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-27T15:53:30Z",
+        "headOid": "f6cdd5e58bf93ec526fc161c762a024a5ea5ddd0",
+        "latestReleaseTag": "v10.11.3.3",
+        "latestReleasePublishedAt": "2026-07-23T14:52:28Z"
+      }
+    },
+    {
+      "index": 71,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-air-times",
+      "repository": "https://github.com/k0d13/jellyfin-air-times",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2025-04-04T07:06:12Z",
+        "headOid": "af7f4068149af5e792a8bcc47cac7e27cbb64250",
+        "latestReleaseTag": null,
+        "latestReleasePublishedAt": null
+      }
+    },
+    {
+      "index": 72,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-enigma2",
+      "repository": "https://github.com/knackebrot/jellyfin-plugin-enigma2",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2024-06-22T18:18:07Z",
+        "headOid": "d38c1595d8fdf129dcdef1f78da4935cf7b3358c",
+        "latestReleaseTag": "6.0.0.0",
+        "latestReleasePublishedAt": "2024-06-22T18:03:21Z"
+      }
+    },
+    {
+      "index": 73,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-languageTags",
+      "repository": "https://github.com/TheXaman/jellyfin-plugin-languageTags",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-03-31T18:25:16Z",
+        "headOid": "731fe8f54fc42909e19323ecc90423772169c3a5",
+        "latestReleaseTag": "v0.5.3.0",
+        "latestReleasePublishedAt": "2026-03-31T18:25:17Z"
+      }
+    },
+    {
+      "index": 74,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-localrecs",
+      "repository": "https://github.com/rdpharr/jellyfin-plugin-localrecs",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-05-30T19:57:30Z",
+        "headOid": "b1c6a5d36d18ee430de8d095ef0007d694d1081c",
+        "latestReleaseTag": "v0.6.1",
+        "latestReleasePublishedAt": "2026-05-30T19:57:31Z"
+      }
+    },
+    {
+      "index": 75,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-media-cleaner",
+      "repository": "https://github.com/shemanaev/jellyfin-plugin-media-cleaner",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-30T17:44:19Z",
+        "headOid": "64dcd7995cd5f223ca31100f95e9975b4dc8ae68",
+        "latestReleaseTag": "v3.2.0",
+        "latestReleasePublishedAt": "2026-07-13T17:56:30Z"
+      }
+    },
+    {
+      "index": 76,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-MediathekViewDL",
+      "repository": "https://github.com/CatNoir2006/jellyfin-plugin-MediathekViewDL",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-17T19:17:07Z",
+        "headOid": "d17ac25a0cbdf49da90709c7f1894ccf4c72b23a",
+        "latestReleaseTag": null,
+        "latestReleasePublishedAt": null
+      }
+    },
+    {
+      "index": 77,
+      "category": "📚 Library Management",
+      "name": "jellyfin-plugin-meilisearch",
+      "repository": "https://github.com/arnesacnussem/jellyfin-plugin-meilisearch",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-21T18:33:03Z",
+        "headOid": "85ae32d985bc96d7e34149eec8bb448b4155d105",
+        "latestReleaseTag": "1.12.1.4",
+        "latestReleasePublishedAt": "2026-07-19T10:54:12Z"
+      }
+    },
+    {
+      "index": 78,
+      "category": "📚 Library Management",
+      "name": "jellyfin-powertoys",
+      "repository": "https://github.com/lennykean/jellyfin-powertoys",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-16T01:43:52Z",
+        "headOid": "9722fc186105b8e7b2de49bd14e4fc00cb55dceb",
+        "latestReleaseTag": "v1.3.0.0",
+        "latestReleasePublishedAt": "2026-07-16T01:43:46Z"
+      }
+    },
+    {
+      "index": 79,
+      "category": "📚 Library Management",
+      "name": "JellyfinTweaks",
+      "repository": "https://github.com/n00bcodr/JellyfinTweaks",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-02-08T19:13:02Z",
+        "headOid": "d41df4df81c7a9856f3595eb9894ad8fea498bee",
+        "latestReleaseTag": "3.1.0.0",
+        "latestReleasePublishedAt": "2026-01-18T19:38:28Z"
+      }
+    },
+    {
+      "index": 80,
+      "category": "📚 Library Management",
+      "name": "Jellyfin-Xtream-Library",
+      "repository": "https://github.com/firestaerter3/Jellyfin-Xtream-Library",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-26T06:51:56Z",
+        "headOid": "1ce3052351b22bd6964d1a1e4f7b23a040158335",
+        "latestReleaseTag": "v1.43.0.0",
+        "latestReleasePublishedAt": "2026-07-26T06:52:58Z"
+      }
+    },
+    {
+      "index": 81,
+      "category": "📚 Library Management",
+      "name": "JellySTRMprobe",
+      "repository": "https://github.com/firestaerter3/JellySTRMprobe",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-12T08:04:38Z",
+        "headOid": "de6fa3dcd4e597d8ca01493cf832c6faee9fcff8",
+        "latestReleaseTag": "v1.2.0.0",
+        "latestReleasePublishedAt": "2026-02-11T19:31:06Z"
+      }
+    },
+    {
+      "index": 82,
+      "category": "📚 Library Management",
+      "name": "media-upload-plugin",
+      "repository": "https://github.com/GrandguyJS/media-upload-plugin",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-24T15:03:54Z",
+        "headOid": "3c1786ecd1376634856fc0e1c4f16677ef5f09f5",
+        "latestReleaseTag": "1.8",
+        "latestReleasePublishedAt": "2026-07-24T14:43:14Z"
+      }
+    },
+    {
+      "index": 83,
+      "category": "📚 Library Management",
+      "name": "quality-gate",
+      "repository": "https://github.com/GeiserX/quality-gate",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-01T18:26:17Z",
+        "headOid": "9d8d57484d7c513a61f06216b0bf75bcab75f16e",
+        "latestReleaseTag": "v3.3.6.0",
+        "latestReleasePublishedAt": "2026-05-23T15:26:46Z"
+      }
+    },
+    {
+      "index": 84,
+      "category": "📚 Library Management",
+      "name": "smart-covers",
+      "repository": "https://github.com/GeiserX/smart-covers",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-01T10:34:30Z",
+        "headOid": "2b89fba1e84fd0edb59f531f2eca3e54929dd499",
+        "latestReleaseTag": "v7.3.2.0",
+        "latestReleasePublishedAt": "2026-07-03T09:54:00Z"
+      }
+    },
+    {
+      "index": 85,
+      "category": "📚 Library Management",
+      "name": "whisper-subs",
+      "repository": "https://github.com/GeiserX/whisper-subs",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-06T23:34:28Z",
+        "headOid": "418d5413933a19ee8e6dea983e70de0584cc996d",
+        "latestReleaseTag": "v4.6.0.1",
+        "latestReleasePublishedAt": "2026-08-06T23:34:28Z"
+      }
+    },
+    {
+      "index": 86,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-imdb-rating-updater",
+      "repository": "https://github.com/voc0der/jellyfin-imdb-rating-updater",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-04T16:10:01Z",
+        "headOid": "38777c08e14b731ab970f10d87647817db1efe4b",
+        "latestReleaseTag": "1.0.0.20",
+        "latestReleasePublishedAt": "2026-08-01T17:59:54Z"
+      }
+    },
+    {
+      "index": 87,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin Oscars",
+      "repository": "https://github.com/FizzyMUC/jellyfin-oscars-plugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-05-17T16:01:35Z",
+        "headOid": "8bd7cfe18d2a7202b394e5c8e5a41c58a4b2639f",
+        "latestReleaseTag": "v1.0.6",
+        "latestReleasePublishedAt": "2026-05-17T16:00:48Z"
+      }
+    },
+    {
+      "index": 88,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-AnimeMultiSource",
+      "repository": "https://github.com/webbster64/jellyfin-plugin-AnimeMultiSource",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-08T09:35:39Z",
+        "headOid": "b090609f80110e9c2c8ccab3271011e14da8d421",
+        "latestReleaseTag": "v1.0.5.0",
+        "latestReleasePublishedAt": "2026-07-08T09:29:44Z"
+      }
+    },
+    {
+      "index": 89,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-applemusic",
+      "repository": "https://github.com/lyarenei/jellyfin-plugin-applemusic",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-28T17:13:14Z",
+        "headOid": "232bfeda325c7a8aa5b61dd4ba81afbf1cc4171e",
+        "latestReleaseTag": "3.0.6.2",
+        "latestReleasePublishedAt": "2026-06-04T21:24:02Z"
+      }
+    },
+    {
+      "index": 90,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin.Plugin.ArtworkMultiSource",
+      "repository": "https://github.com/Druidblack/Jellyfin.Plugin.ArtworkMultiSource",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-02-21T19:05:50Z",
+        "headOid": "37edc857c1f31fa5b2cd2a94ea3372f949e27845",
+        "latestReleaseTag": "Release-1.0.0.0",
+        "latestReleasePublishedAt": "2026-02-21T17:53:53Z"
+      }
+    },
+    {
+      "index": 91,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-hikka",
+      "repository": "https://github.com/HotMasya/jellyfin-plugin-hikka",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2025-10-28T16:57:16Z",
+        "headOid": "d2c4f39122a3d26dbde35116b416ec153a9c3c8f",
+        "latestReleaseTag": "1.0.2.0",
+        "latestReleasePublishedAt": "2025-10-28T16:57:16Z"
+      }
+    },
+    {
+      "index": 92,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-justwatch",
+      "repository": "https://github.com/IDisposable/jellyfin-plugin-justwatch",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-21T03:35:16Z",
+        "headOid": "be0f969926a98e945f994b731ce6dbc502f0552b",
+        "latestReleaseTag": "v10.11.0.5",
+        "latestReleasePublishedAt": "2026-06-17T22:59:56Z"
+      }
+    },
+    {
+      "index": 93,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-kinopoisk",
+      "repository": "https://github.com/LinFor/jellyfin-plugin-kinopoisk",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-22T15:41:08Z",
+        "headOid": "6ab8025c05cf3d54ab61ef08dfee50ed6a75dcf2",
+        "latestReleaseTag": "v10.10.3.0",
+        "latestReleasePublishedAt": "2026-02-18T07:38:14Z"
+      }
+    },
+    {
+      "index": 94,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin.Plugin.MDBList_Ratings",
+      "repository": "https://github.com/Druidblack/Jellyfin.Plugin.MDBList_Ratings",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-04-14T11:26:59Z",
+        "headOid": "7f543d61229658bf4016539c60b6d6c94f10450b",
+        "latestReleaseTag": "Release-1.0.0.7",
+        "latestReleasePublishedAt": "2026-04-14T11:25:13Z"
+      }
+    },
+    {
+      "index": 95,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-myanimelist",
+      "repository": "https://github.com/ryandash/jellyfin-plugin-myanimelist",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-08-07T17:01:41Z",
+        "headOid": "6393b1cab6f308626b1f846288001c610490f5ef",
+        "latestReleaseTag": "v11.11.1.1",
+        "latestReleasePublishedAt": "2026-07-28T18:24:35Z"
+      }
+    },
+    {
+      "index": 96,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-onepace",
+      "repository": "https://github.com/jwueller/jellyfin-plugin-onepace",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-07-20T22:32:04Z",
+        "headOid": "3c9c31ee8dba51369b1760bee558fbd3dd82e2dc",
+        "latestReleaseTag": "v10.9.6.13",
+        "latestReleasePublishedAt": "2024-06-07T16:04:33Z"
+      }
+    },
+    {
+      "index": 97,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin Plugin PhoenixAdult",
+      "repository": "https://github.com/DirtyRacer1337/Jellyfin.Plugin.PhoenixAdult",
+      "catalogMarkers": [
+        "stale"
+      ],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2024-10-29T20:49:58Z",
+        "headOid": "3c9d7f48a9562d2c1c62516fe1d97b48181cc07a",
+        "latestReleaseTag": "2.7.0.47",
+        "latestReleasePublishedAt": "2022-06-23T03:19:50Z"
+      }
+    },
+    {
+      "index": 98,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-plugin-shikimori",
+      "repository": "https://github.com/te9c/jellyfin-plugin-shikimori",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-21T14:59:55Z",
+        "headOid": "f39bbb982131c6839938732ddb206f3d8204c7f1",
+        "latestReleaseTag": "5.0.0.0",
+        "latestReleasePublishedAt": "2026-06-03T15:43:01Z"
+      }
+    },
+    {
+      "index": 99,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin Plugin Stash",
+      "repository": "https://github.com/DirtyRacer1337/Jellyfin.Plugin.Stash",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-03T12:32:09Z",
+        "headOid": "0b69ae32b24296c269b40f68ae5052df52b7e0dd",
+        "latestReleaseTag": "1.2.0.3",
+        "latestReleasePublishedAt": "2025-10-22T20:41:10Z"
+      }
+    },
+    {
+      "index": 100,
+      "category": "🏷️ Metadata Providers",
+      "name": "Jellyfin Plugin ThePornDB",
+      "repository": "https://github.com/ThePornDatabase/Jellyfin.Plugin.ThePornDB",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-06-02T17:28:27Z",
+        "headOid": "21fa9268fda31b0fb28c49c0c531ce00c981a31a",
+        "latestReleaseTag": "1.6.0.11",
+        "latestReleasePublishedAt": "2025-10-22T20:39:14Z"
+      }
+    },
+    {
+      "index": 101,
+      "category": "🏷️ Metadata Providers",
+      "name": "jellyfin-youtube-metadata-plugin",
+      "repository": "https://github.com/ankenyr/jellyfin-youtube-metadata-plugin",
+      "catalogMarkers": [],
+      "repositoryEvidence": {
+        "available": true,
+        "archived": false,
+        "private": false,
+        "visibility": "PUBLIC",
+        "pushedAt": "2026-05-05T08:30:32Z",
+        "headOid": "e2df976b870a26adc913b9353a7e9f319bbb9596",
+        "latestReleaseTag": "v1.0.3.15",
+        "latestReleasePublishedAt": "2026-02-03T11:57:35Z"
+      }
+    }
+  ]
+}
