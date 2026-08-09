@@ -222,7 +222,8 @@ The plugin-detail page opens Jellyfin Web's actual Uninstall confirmation
 (`role=dialog`) but cancels it. While that dialog is rendered, the runner makes
 a unique monitored loose-asset change and requires the runtime to report the
 new generation without reloading the protected document. A real focused field
-on the Refresh Kit configuration page independently proves the text-entry gate.
+on the Refresh Kit configuration page independently proves the active-editor
+(`active_editor`) gate.
 After Cancel and blur, both documents must converge automatically, and plugin
 inventory must prove that cancellation did not uninstall anything.
 

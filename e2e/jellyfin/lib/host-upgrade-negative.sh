@@ -49,16 +49,18 @@ python3 - \
     "${LAB}/docker-compose.yml" \
     "${NEGATIVE_HERE}/host-upgrade.sh" \
     "${NEGATIVE_HERE}/host-upgrade-browser.cjs" \
-    "${NEGATIVE_HERE}/verify-host-upgrade-results.py" <<'PY'
+    "${NEGATIVE_HERE}/verify-host-upgrade-results.py" \
+    "${LAB}/../../jellyfin-refresh-kit.js" <<'PY'
 import pathlib
 import re
 import sys
 
-compose_path, shell_path, browser_path, validator_path = map(pathlib.Path, sys.argv[1:])
+compose_path, shell_path, browser_path, validator_path, runtime_path = map(pathlib.Path, sys.argv[1:])
 compose = compose_path.read_text(encoding="utf-8")
 shell = shell_path.read_text(encoding="utf-8")
 browser = browser_path.read_text(encoding="utf-8")
 validator = validator_path.read_text(encoding="utf-8")
+runtime = runtime_path.read_text(encoding="utf-8")
 
 images = {
     "jellyfin/jellyfin:10.11.10@sha256:f66273e014b307e4ac46778845ebc1e9ee24b2e57c1fc17d5ec5ac3015649bfa",
@@ -138,6 +140,39 @@ validator_requirements = (
 for token in validator_requirements:
     if token not in validator:
         raise SystemExit(f"FATAL: retained playback evidence validator is missing: {token}")
+
+editor_reason = "active_editor"
+if f"return '{editor_reason}'" not in runtime:
+    raise SystemExit("FATAL: product runtime no longer exposes the canonical active-editor reason")
+for label, source in (("browser", browser), ("validator", validator)):
+    if editor_reason not in source:
+        raise SystemExit(f"FATAL: {label} does not require the canonical active-editor reason")
+    if "text_entry" in source:
+        raise SystemExit(f"FATAL: {label} retained the stale text_entry reason")
+
+prepare_start = browser.index("async function prepareConfigEditor(item) {")
+prepare_end = browser.index("async function releaseConfigEditor(item, original) {", prepare_start)
+prepare_editor = browser[prepare_start:prepare_end]
+prepare_order = (
+    "await item.page.bringToFront();",
+    "await item.page.waitForFunction(() => document.visibilityState === 'visible'",
+    "await item.page.focus('#rkConfigExclusions');",
+    "const found = await snapshot(item.page, item.name, item.role);",
+)
+prepare_positions = [prepare_editor.find(token) for token in prepare_order]
+if any(position < 0 for position in prepare_positions) or prepare_positions != sorted(prepare_positions):
+    raise SystemExit("FATAL: initial editor gate does not foreground and prove visibility before focus")
+
+gated_start = browser.index("const originalEditor = await prepareConfigEditor(adminConfig);")
+gated_focus = browser.index("await adminConfig.page.focus('#rkConfigExclusions');", gated_start)
+gated_bring = browser.rfind("await adminConfig.page.bringToFront();", gated_start, gated_focus)
+gated_visible = browser.rfind(
+    "await adminConfig.page.waitForFunction(() => document.visibilityState === 'visible'",
+    gated_start,
+    gated_focus,
+)
+if not (gated_start <= gated_bring < gated_visible < gated_focus):
+    raise SystemExit("FATAL: pending-update editor gate does not foreground and prove visibility before focus")
 
 if re.search(r'JSON\.stringify\([^\n]*(?:adminToken|viewerToken)', browser):
     raise SystemExit("FATAL: token appears to be serialized into retained JSON")

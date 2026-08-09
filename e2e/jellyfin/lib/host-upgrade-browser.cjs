@@ -176,7 +176,7 @@ function assertFinalResult(result) {
   assert.equal(result.dialogSafety.cancelledWithoutUninstall, true, 'dialog cancellation was not proven safe');
   assert.equal(result.dialogSafety.inventoryBefore?.[0]?.canUninstall, true,
     'dialog did not target an uninstallable plugin');
-  assert.equal(result.editorSafety.blockReason, 'text_entry', 'real configuration editor did not gate reload');
+  assert.equal(result.editorSafety.blockReason, 'active_editor', 'real configuration editor did not gate reload');
   assert.equal(result.playbackSafety.realMediaPlayback, true, 'real media playback was not proven');
   assert.ok(PLAYBACK_GATE_REASONS.includes(result.playbackSafety.blockReason),
     'playback did not engage a media safety gate');
@@ -319,7 +319,7 @@ function runSelfTest() {
       cancelledWithoutUninstall: true,
       inventoryBefore: [{ canUninstall: true }],
     },
-    editorSafety: { blockReason: 'text_entry' },
+    editorSafety: { blockReason: 'active_editor' },
     playbackSafety: {
       realMediaPlayback: true,
       blockReason: 'media_element',
@@ -1414,12 +1414,18 @@ async function prepareConfigEditor(item) {
   await navigate(item, '#/configurationpage?name=Jellyfin%20Refresh%20Kit', () => Boolean(
     document.querySelector('#RefreshKitConfigPage #rkConfigExclusions'),
   ));
+  await item.page.bringToFront();
+  await item.page.waitForFunction(() => document.visibilityState === 'visible', {
+    timeout: 30000,
+    polling: 50,
+  });
   const original = await item.page.$eval('#rkConfigExclusions', (field) => field.value);
   await item.page.focus('#rkConfigExclusions');
   await item.page.keyboard.type(' ');
   const found = await snapshot(item.page, item.name, item.role);
+  assert.equal(found.visibility, 'visible', 'real plugin configuration editor is not foregrounded');
   assert.equal(found.activeId, 'rkConfigExclusions', 'real plugin configuration editor is not active');
-  assert.equal(found.kit?.wouldBlockNow, 'text_entry', 'real plugin editor did not engage text-entry gate');
+  assert.equal(found.kit?.wouldBlockNow, 'active_editor', 'real plugin editor did not engage active-editor gate');
   return original;
 }
 
@@ -1850,8 +1856,12 @@ let probeInstalled = false;
     assert.equal(dialogGated.loadCount, dialogBefore.loadCount);
     assert.equal(dialogGated.kit?.wouldBlockNow, 'dialog');
 
-    await adminConfig.page.focus('#rkConfigExclusions');
     await adminConfig.page.bringToFront();
+    await adminConfig.page.waitForFunction(() => document.visibilityState === 'visible', {
+      timeout: 30000,
+      polling: 50,
+    });
+    await adminConfig.page.focus('#rkConfigExclusions');
     await adminConfig.page.waitForFunction((expectedGeneration, expectedEpoch) => {
       const state = window.JellyfinRefreshKit?.get?.('RefreshKitPlugin')?.state?.();
       return state?.latestVersion === expectedGeneration && state?.version !== expectedGeneration
@@ -1860,7 +1870,7 @@ let probeInstalled = false;
     const editorGated = await snapshot(adminConfig.page, adminConfig.name, adminConfig.role);
     assert.equal(editorGated.documentId, editorBefore.documentId);
     assert.equal(editorGated.loadCount, editorBefore.loadCount);
-    assert.equal(editorGated.kit?.wouldBlockNow, 'text_entry');
+    assert.equal(editorGated.kit?.wouldBlockNow, 'active_editor');
 
     const tenAfter = [playbackAfterLeave];
     for (const item of pages.filter((entry) => (

@@ -355,7 +355,7 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
     gated = ten_phase.get("gated")
     require(isinstance(gated, dict), f"{scenario}: ten-tab gated snapshots are missing")
     for key, page_name, reason in (("dialog", "admin-plugin-dialog", "dialog"),
-                                   ("editor", "admin-config-editor", "text_entry")):
+                                   ("editor", "admin-config-editor", "active_editor")):
         page = gated.get(key)
         prior = ten_before_pages.get(page_name)
         require(isinstance(page, dict) and isinstance(prior, dict),
@@ -443,7 +443,7 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
             and dialog_inventory[0].get("canUninstall") is True,
             f"{scenario}: dialog did not target the active uninstallable Refresh Kit plugin")
     editor = data.get("editorSafety")
-    require(isinstance(editor, dict) and editor.get("blockReason") == "text_entry",
+    require(isinstance(editor, dict) and editor.get("blockReason") == "active_editor",
             f"{scenario}: real editor gate differs")
     require(editor.get("documentIdPreservedWhileEditing") is True
             and editor.get("loadCountDeltaWhileEditing") == 0
@@ -823,7 +823,7 @@ def self_test() -> None:
         ten_after = reload_set(ten_before, "ten-after", ten_server)
         gated = {}
         for key, name, reason in (("dialog", "admin-plugin-dialog", "dialog"),
-                                  ("editor", "admin-config-editor", "text_entry")):
+                                  ("editor", "admin-config-editor", "active_editor")):
             gated_page = copy.deepcopy(next(row for row in ten_before if row["name"] == name))
             gated_page["kit"]["latestVersion"] = ten_server["generation"]
             gated_page["kit"]["wouldBlockNow"] = reason
@@ -998,7 +998,7 @@ def self_test() -> None:
                              "blockReason": "dialog", "documentIdPreservedWhileOpen": True,
                              "loadCountDeltaWhileOpen": 0, "cancelledWithoutUninstall": True,
                              "inventoryBefore": inventory, "inventoryAfter": copy.deepcopy(inventory)},
-            "editorSafety": {"blockReason": "text_entry",
+            "editorSafety": {"blockReason": "active_editor",
                              "documentIdPreservedWhileEditing": True,
                              "loadCountDeltaWhileEditing": 0, "convergedAfterBlur": True},
             "playbackSafety": {
