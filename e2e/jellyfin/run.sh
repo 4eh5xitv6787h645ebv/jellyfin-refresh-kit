@@ -434,8 +434,8 @@ cmd_all() {
     # runner then pins that same snapshot instead of requiring a prior build.
     cmd_abi_floor || return $?
     cmd_third_party all || return $?
-    cmd_browser all || return $?
     cmd_compat || return $?
+    cmd_browser all || return $?
     cmd_host_upgrade all
 }
 

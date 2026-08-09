@@ -332,9 +332,9 @@ test_integration() {
         RK_SKIP_BUILD=1 RK_BUILD_SNAPSHOT="${build_snapshot}" \
             bash e2e/jellyfin/run.sh third-party all &&
         RK_SKIP_BUILD=1 RK_BUILD_SNAPSHOT="${build_snapshot}" \
-            bash e2e/jellyfin/run.sh browser all &&
+            bash e2e/jellyfin/run.sh compat &&
         RK_SKIP_BUILD=1 RK_BUILD_SNAPSHOT="${build_snapshot}" \
-            bash e2e/jellyfin/run.sh compat
+            bash e2e/jellyfin/run.sh browser all
     } 2>&1 | tee "${jellyfin_log}"
     pipeline_status=("${PIPESTATUS[@]}")
     jellyfin_rc="${pipeline_status[0]}"

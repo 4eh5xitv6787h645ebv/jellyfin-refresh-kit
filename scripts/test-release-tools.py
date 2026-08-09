@@ -196,6 +196,38 @@ class BuildIsolationTests(unittest.TestCase):
             gate.index("bash e2e/jellyfin/run.sh lifecycle all"),
         )
 
+    def test_compat_restore_precedes_browser_generation_evidence(self) -> None:
+        gate = (ROOT / "test.sh").read_text(encoding="utf-8")
+        runner = (ROOT / "e2e" / "jellyfin" / "run.sh").read_text(encoding="utf-8")
+
+        # compat resets/reprovisions JF12 and its restore check rewrites the
+        # canonical jf12/server evidence. Browser evidence must therefore be
+        # captured afterwards so both artifacts name the same generation;
+        # third-party remains first because compat invalidates its lifecycle
+        # completion prerequisite.
+        for source, commands in (
+            (
+                gate,
+                (
+                    "bash e2e/jellyfin/run.sh third-party all",
+                    "bash e2e/jellyfin/run.sh compat",
+                    "bash e2e/jellyfin/run.sh browser all",
+                    "bash e2e/jellyfin/run.sh host-upgrade all",
+                ),
+            ),
+            (
+                runner,
+                (
+                    "cmd_third_party all",
+                    "cmd_compat || return $?",
+                    "cmd_browser all",
+                    "cmd_host_upgrade all",
+                ),
+            ),
+        ):
+            positions = [source.index(command) for command in commands]
+            self.assertEqual(positions, sorted(positions))
+
 
 class ReleaseAssetTests(unittest.TestCase):
     def test_authenticated_download_redirects_strip_credentials_and_stay_trusted(self) -> None:
@@ -864,6 +896,13 @@ class CanonicalEvidenceSemanticTests(unittest.TestCase):
             },
         }
         evidence_validation.validate_browser("jf10", browser, generation)
+        with self.assertRaisesRegex(
+            evidence_validation.EvidenceValidationError,
+            "browser/server generation differs",
+        ):
+            evidence_validation.validate_browser(
+                "jf10", browser, "g-fedcba9876543210"
+            )
         changed = copy.deepcopy(browser)
         changed["errorAudit"]["unexpectedRefreshKitErrors"]["count"] = 1
         with self.assertRaises(evidence_validation.EvidenceValidationError):
