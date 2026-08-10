@@ -1684,7 +1684,11 @@ def validate_cross_compatibility(
             "cross-generation generation endpoint is incomplete or stale")
     require(_field(public, "Version") == SERVER_VERSIONS["jf12"],
             "cross-generation public host version differs")
-    require(str(_field(plugin_record, "Id") or "").lower() == PLUGIN_GUID
+    # Jellyfin 12's /Plugins serializes the plugin GUID without dashes, so the
+    # identity comparison must be dash-insensitive; the extraction in
+    # e2e/jellyfin/lib/compat.sh already matches records that way.
+    require(str(_field(plugin_record, "Id") or "").lower().replace("-", "")
+            == PLUGIN_GUID.replace("-", "")
             and _field(plugin_record, "Version") == version
             and _field(plugin_record, "Status") == result.get("pluginInventoryStatus"),
             "cross-generation plugin inventory record differs")

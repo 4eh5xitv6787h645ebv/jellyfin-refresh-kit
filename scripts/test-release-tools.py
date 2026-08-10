@@ -963,6 +963,21 @@ class CanonicalEvidenceSemanticTests(unittest.TestCase):
             evidence_validation.validate_cross_compatibility(
                 cross, generation_result, plugin_record, public, build
             )
+            # Jellyfin 12's live /Plugins record carries the GUID without
+            # dashes; the validator must accept exactly that shape while a
+            # genuinely different dashless identity still fails.
+            plugin_record["Id"] = evidence_validation.PLUGIN_GUID.replace("-", "")
+            evidence_validation.validate_cross_compatibility(
+                cross, generation_result, plugin_record, public, build
+            )
+            plugin_record["Id"] = (
+                "0" + evidence_validation.PLUGIN_GUID.replace("-", "")[1:]
+            )
+            with self.assertRaises(evidence_validation.EvidenceValidationError):
+                evidence_validation.validate_cross_compatibility(
+                    cross, generation_result, plugin_record, public, build
+                )
+            plugin_record["Id"] = evidence_validation.PLUGIN_GUID
             cross["loaded"] = False
             with self.assertRaises(evidence_validation.EvidenceValidationError):
                 evidence_validation.validate_cross_compatibility(
