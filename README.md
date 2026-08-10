@@ -162,7 +162,7 @@ The exact generation selected for a shell response is used for the injected runt
 The identity is folded deterministically from:
 
 - selected loaded Jellyfin host assemblies: assembly name/version and module MVID
-- actually loaded plugin assemblies: stable plugin ID/version, assembly identity, and module MVID
+- actually loaded plugin assemblies: the stable plugin ID plus, for each loaded module, its assembly name, assembly version and module MVID. The manifest/instance version text is deliberately *not* folded — it is mutable and an installer can rewrite it in place — so only the versions carried by the loaded assemblies participate
 - active loose client assets: relative path, size, and content hash for `.js`, `.mjs`, `.css`, and `.html`
 - the exact content of the plugin's Jellyfin configuration XML when configuration watching is enabled
 
@@ -182,6 +182,8 @@ Scanning is deterministic and bounded. Per plugin it admits/charges at most 4,00
 Plugin settings can affect UI that is built when the page loads, so configuration changes are watched by default.
 
 Refresh Kit watches Jellyfin's plugin configuration XML rather than a plugin's private data directory. This avoids treating per-user preferences and runtime cache churn as server-wide UI changes.
+
+A configuration file that is a symbolic link (or another reparse point) is never followed, because a plugin picks its own configuration filename and following the link would let that choice read a file outside the configuration store. On a deployment that symlinks the store — NixOS, some ansible layouts — that plugin's settings changes are therefore not detected; the admin diagnostics endpoint reports the skipped files per plugin.
 
 Configuration signals are controlled in three ways:
 
@@ -302,6 +304,10 @@ Open **Dashboard → Plugins → Jellyfin Refresh Kit**.
 | Max reloads per minute | 3 | Rolling automatic-reload ceiling applied to shared same-origin reservation history. Client range: 1–100. Unavailable coordination defers the reload. |
 | Developer mode | Off | Serves the embedded browser runtime with `no-store` instead of immutable caching. |
 
+Clearing a numeric field saves its default rather than zero. `0` is a real,
+distinct value where the range allows it: `0` in **Settings-change cooldown**
+disables the cooldown, and `0` in **Required idle time** removes the idle wait.
+
 ### Excluding noisy configuration files
 
 If a plugin updates its normal configuration XML frequently even when an administrator is not changing settings, add it to **Ignore settings changes from these plugins**.
@@ -315,7 +321,7 @@ The admin diagnostics endpoint shows the loaded identities, content-scan budgets
 | `GET /RefreshKit/Generation` | Anonymous | Returns `{ Version, BuildId, CacheKey, Epoch }`; `CacheKey` contains the current generation and `Epoch` identifies this server process. |
 | `GET /RefreshKit/Generation.txt` | Anonymous | Returns the current generation as plain text. |
 | `GET /RefreshKit/kit.js` | Anonymous | Serves the embedded browser runtime. |
-| `GET /RefreshKit/Diagnostics` | Admin | Returns the current generation and per-plugin inputs used to build it. |
+| `GET /RefreshKit/Diagnostics` | Admin | Returns the current generation and the per-plugin inputs used to build it, read as one atomic snapshot, plus scan budgets, truncation/unavailability flags, skipped reparse-point configuration files, and stamping abort counters. |
 
 The generation and runtime endpoints are intentionally available before login so a stale Jellyfin login page can also detect a plugin change.
 
@@ -324,6 +330,18 @@ current derivation is an implementation detail: adopters must not parse their
 segments, lengths, or hash form, and should only compare or propagate the whole
 string. `Epoch` is also opaque. It is stable only for one loaded server process,
 changes on restart, and is deliberately excluded from cache identities.
+
+Opaque here means unreadable, not secret. The token cannot be enumerated or
+reversed — no plugin name, version, path or count can be recovered from it —
+but it is folded from public material with no per-install entropy, so an
+unauthenticated observer who can already guess an exact host version and plugin
+inventory can compute candidate folds offline and confirm that guess. Watching
+the token also reveals *when* an admin saved plugin settings or when an update
+took effect, a timing oracle inherent to any change signal an anonymous login
+page can read. A per-install salt would remove the first property but would
+break the invariant that identical active bytes produce identical generations
+across nodes, so it is deliberately not used. See
+[`plugin/README.md`](plugin/README.md) for the full statement.
 
 ## Reverse proxies, CDNs, and BaseUrl
 
@@ -397,6 +415,7 @@ Refresh Kit closes the common stale-plugin path, but it cannot control every way
 - **A directly retained pre-2.4.6 `document.createElement` wrapper cannot be retrofitted.** The exact released 2.4.2 wrapper becomes an inert pass-through after a newer manager takes over. Elements it created before handoff and calls through the current wrapper remain versioned; wrappers created by 2.4.6 and newer carry the additive forwarding bridge.
 - **Middleware ordering matters.** Refresh Kit can only stamp tags already present when its HTML transform runs. A later/outer middleware can add tags it never sees or replace response headers afterward.
 - **A real `<noscript>` disables the complete stamping transform.** Server-side code cannot know the user agent's scripting flag, and under scripting-disabled HTML parsing an effective `<base>` inside `<noscript>` can change a relative asset's origin. `ThirdPartyTagStamper` therefore leaves the whole stamping input byte-for-byte unchanged.
+- **A document with more than 512 simultaneously open elements disables the stamping transform.** The tokenizer scans its open-element list per end tag, so an unbounded list would make pathological nesting quadratic inside the shell transform. Past that ceiling the pass is abandoned and the shell is served byte-for-byte unchanged. Both this abort and the `<noscript>` one are counted in admin diagnostics.
 - **A quoted legacy `PUBLIC`/`SYSTEM` doctype is a conservative transform boundary.** The bounded tokenizer does not implement the complete HTML doctype state machine, so such a shell is served unchanged. Jellyfin's ordinary `<!doctype html>` remains transformable.
 - **A real document `<base href>` disables runtime injection.** Refresh Kit's own URL is relative so it follows Jellyfin's configured PathBase; any effective base could redirect that URL to another path or origin. Bases inside inert template content do not trigger this boundary.
 - **Outer response owners use safe degradation.** When another middleware owns the final buffered bytes, Refresh Kit serves the complete transformed shell as `no-store` without its strong validator, while preserving the outer owner's final framing. This is freshness without conditional revalidation.

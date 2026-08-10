@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Text;
 using Xunit;
 
@@ -461,7 +462,16 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
                 + "<noscript><base href=\"https://cdn.example.invalid/root/\"></noscript>"
                 + "<script src=\"/after.js\"></script>";
 
+            // The counters are process-wide and monotonic, so a concurrently
+            // running test can only push them further up; compare against the
+            // value observed immediately before this pass.
+            var before = ThirdPartyTagStamper.Diagnostics.NoScriptBoundaryAborts;
+
             Assert.Same(Html, Stamp(Html));
+            Assert.True(
+                ThirdPartyTagStamper.Diagnostics.NoScriptBoundaryAborts > before,
+                "A noscript boundary must be reported in stamping diagnostics: "
+                + "the served shell looks exactly like one nothing was eligible in.");
         }
 
         [Fact]
@@ -996,6 +1006,110 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
                     "Stamper was not idempotent at deterministic fuzz iteration "
                     + iteration + ": " + html);
             }
+        }
+
+        // ---------------------------------------------------------------
+        // Pathological nesting is bounded, and the bound is observable.
+        // ---------------------------------------------------------------
+
+        [Fact]
+        public void UnboundedUnclosedNesting_AbortsFailClosedInsteadOfGoingQuadratic()
+        {
+            // n unclosed <div>s followed by n end tags that match nothing is the
+            // worst case for the open-element list: every end tag walked the
+            // whole list twice, once in the scope-boundary check and once in the
+            // pop. At 50,000 that is a few billion ordinal comparisons — minutes
+            // of a request thread. With the depth cap the walk stops at element
+            // 513, so the generous wall-clock bound below is a regression alarm
+            // with several orders of magnitude of headroom, not a benchmark.
+            const int Depth = 50_000;
+            var builder = new StringBuilder();
+            builder.Append("<html><body>");
+            for (var index = 0; index < Depth; index++)
+            {
+                builder.Append("<div>");
+            }
+
+            for (var index = 0; index < Depth; index++)
+            {
+                builder.Append("</span>");
+            }
+
+            builder.Append("<script src=\"/plugin/app.js\"></script></body></html>");
+            var html = builder.ToString();
+            var before = ThirdPartyTagStamper.Diagnostics.OpenElementDepthAborts;
+
+            var stopwatch = Stopwatch.StartNew();
+            var result = Stamp(html);
+            stopwatch.Stop();
+
+            // Fail closed: the caller's own instance, byte for byte.
+            Assert.Same(html, result);
+            Assert.True(
+                ThirdPartyTagStamper.Diagnostics.OpenElementDepthAborts > before,
+                "Exceeding the open-element depth must be reported in diagnostics.");
+            Assert.True(
+                stopwatch.Elapsed < TimeSpan.FromSeconds(15),
+                "Pathological nesting must be bounded, but the pass took "
+                + stopwatch.Elapsed);
+        }
+
+        [Fact]
+        public void NestingBelowTheDepthCap_StillStampsNormally()
+        {
+            var depth = ThirdPartyTagStamper.MaxOpenElementDepth - 8;
+            var builder = new StringBuilder();
+            for (var index = 0; index < depth; index++)
+            {
+                builder.Append("<div>");
+            }
+
+            builder.Append("<script src=\"/plugin/deep.js\"></script>");
+            for (var index = 0; index < depth; index++)
+            {
+                builder.Append("</div>");
+            }
+
+            var before = ThirdPartyTagStamper.Diagnostics.OpenElementDepthAborts;
+            var result = Stamp(builder.ToString());
+
+            Assert.Contains(
+                "/plugin/deep.js?rkv=" + Generation,
+                result,
+                StringComparison.Ordinal);
+            Assert.Equal(
+                before,
+                ThirdPartyTagStamper.Diagnostics.OpenElementDepthAborts);
+        }
+
+        [Fact]
+        public void MismatchedEndTagsUnderTheDepthCap_StayBounded()
+        {
+            // The cap also bounds the other half of the quadratic term: a
+            // document that stays under it can still throw unlimited unmatched
+            // end tags, but each one now scans at most a capped list.
+            var builder = new StringBuilder();
+            for (var index = 0; index < ThirdPartyTagStamper.MaxOpenElementDepth - 1; index++)
+            {
+                builder.Append("<div>");
+            }
+
+            for (var index = 0; index < 50_000; index++)
+            {
+                builder.Append("</span>");
+            }
+
+            var html = builder.ToString();
+
+            var stopwatch = Stopwatch.StartNew();
+            var result = Stamp(html);
+            stopwatch.Stop();
+
+            Assert.Same(html, result);
+            Assert.True(
+                stopwatch.Elapsed < TimeSpan.FromSeconds(15),
+                "Unmatched end tags under the cap must stay bounded, but the pass took "
+                + stopwatch.Elapsed);
         }
 
         private static int CountOccurrences(string haystack, string needle)
