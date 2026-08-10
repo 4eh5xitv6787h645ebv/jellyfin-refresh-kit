@@ -1464,8 +1464,10 @@ class CompatibilityEvidenceTests(unittest.TestCase):
         stage = build / "stage"
         stage.mkdir(parents=True)
         (stage / "Jellyfin.Plugin.RefreshKit.dll").write_bytes(b"jf10-stage")
+        # The numeric field keeps the retained stage metadata comparison honest
+        # about Python's bool/int equivalence.
         (stage / "meta.json").write_text(
-            json.dumps({"runtimeFixture": "jf10"}), encoding="utf-8"
+            json.dumps({"runtimeFixture": "jf10", "stageSerial": 1}), encoding="utf-8"
         )
 
         disk_id = "direct-disk"
@@ -3039,6 +3041,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             "summary-result-stale",
             "required-check-missing",
             "required-check-not-bool",
+            "stage-meta-bool",
             "required-raw-body",
         )
         for scenario in scenarios:
@@ -3082,6 +3085,11 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     else:
                         required[check_name] = 1
                     result_path.write_text(json.dumps(result), encoding="utf-8")
+                elif scenario == "stage-meta-bool":
+                    stage_path = artifact_root / str(fixture["disk_id"]) / "stage.json"
+                    stage_value = json.loads(stage_path.read_text(encoding="utf-8"))
+                    stage_value["meta"]["stageSerial"] = True
+                    stage_path.write_text(json.dumps(stage_value), encoding="utf-8")
                 else:
                     raw_path = artifact_root / str(fixture["disk_id"]) / "shell-after.html"
                     raw_path.write_bytes(raw_path.read_bytes() + b" ")
@@ -3096,6 +3104,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                             "summary results",
                             "required cache proof",
                             "retained HTTP bytes",
+                            "compatibility stage metadata",
                         )
                         for error in errors
                     ),
@@ -3249,6 +3258,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
             "summary-result-stale",
             "required-check-missing",
             "required-check-not-bool",
+            "stage-meta-bool",
             "required-raw-body",
         )
         for scenario in scenarios:
@@ -3434,6 +3444,11 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     else:
                         required[check_name] = 1
                     result_path.write_text(json.dumps(result), encoding="utf-8")
+                elif scenario == "stage-meta-bool":
+                    stage_path = disk_directory / "stage.json"
+                    stage_value = json.loads(stage_path.read_text(encoding="utf-8"))
+                    stage_value["meta"]["stageSerial"] = True
+                    stage_path.write_text(json.dumps(stage_value), encoding="utf-8")
                 else:
                     raw_path = disk_directory / "shell-after.html"
                     raw_path.write_bytes(raw_path.read_bytes() + b" ")
@@ -3450,6 +3465,7 @@ class CompatibilityEvidenceTests(unittest.TestCase):
                     "materialization-archive": "result plugins differ",
                     "materialization-assembly": "result plugins differ",
                     "materialization-dlls": "result plugins differ",
+                    "stage-meta-bool": "stage metadata differs from final build",
                 }.get(scenario, ".+")
                 with self.assertRaisesRegex(
                     evidence_validation.EvidenceValidationError,

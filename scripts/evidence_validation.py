@@ -2347,7 +2347,7 @@ def validate_compatibility_tree(
                 f"{matrix_id}: stage validity/runtime differs")
         require(recorded_stage.name == stage_name and recorded_stage.parent.name == build.name,
                 f"{matrix_id}: recorded stage does not name the immutable snapshot")
-        require(stage.get("meta") == load_object(expected_stage / "meta.json"),
+        require(exact_json_value(stage.get("meta"), load_object(expected_stage / "meta.json")),
                 f"{matrix_id}: stage metadata differs from final build")
         require(stage.get("dllSha256") == file_hash(expected_stage / "Jellyfin.Plugin.RefreshKit.dll"),
                 f"{matrix_id}: stage DLL differs from final build")

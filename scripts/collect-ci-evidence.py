@@ -978,7 +978,7 @@ def validate_compatibility_stage(
     except (FileNotFoundError, json.JSONDecodeError):
         strict_errors.append(f"pinned compatibility stage metadata is unavailable: {expected_stage}")
         return
-    if value.get("meta") != expected_meta:
+    if not exact_json_value(value.get("meta"), expected_meta):
         strict_errors.append(f"compatibility stage metadata does not match the pinned snapshot: {label}")
     expected_dll = expected_stage / "Jellyfin.Plugin.RefreshKit.dll"
     if not expected_dll.is_file() or value.get("dllSha256") != file_hash(expected_dll):
