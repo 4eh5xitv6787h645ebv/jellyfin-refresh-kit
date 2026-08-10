@@ -6430,12 +6430,29 @@
          * @param {boolean} [force] Skip the min-gap floor (used by checkNow()).
          * @param {boolean} [isConfirm] This is the one confirmation fetch of the
          *   current cycle. Any other poll OPENS a new cycle.
+         * @param {boolean} [resolveWhileOff] Allow the ONE resolution a
+         *   `mode: 'off'` instance may still want (2.4.8) — see checkNow().
          * @returns {Promise<void>}
          */
-        function poll(force, isConfirm) {
+        function poll(force, isConfirm, resolveWhileOff) {
             if (deactivated) return Promise.resolve();
             if (reloadCommitted) return Promise.resolve();
-            if (cfg.mode === 'off') return Promise.resolve();
+            // MODE 'off' STILL VERSIONS URLS, and it cannot do that before it
+            // knows a version. Configured with a bootVersion it already does
+            // (that IS the baseline); configured without one, its version was
+            // unreachable — the poll loop never runs and nothing else ever
+            // fetches — so `versionedUrl` passed every URL through unchanged
+            // forever while checkNow() silently did nothing about it.
+            //
+            // An explicit checkNow() therefore resolves the baseline exactly
+            // once. Only once: `baselineVersion === null` is the gate, so this
+            // can never reach the candidate/confirmation machinery, never arm a
+            // timer, never announce an update and never touch the reload
+            // engine. Everything 'off' promises to leave alone stays untouched.
+            if (cfg.mode === 'off' &&
+                !(resolveWhileOff === true && baselineVersion === null)) {
+                return Promise.resolve();
+            }
             // Forced checks bypass the spacing floor, not single-flight. They
             // join the active request so an older response cannot arrive last
             // and overwrite a newer candidate/latest value.
@@ -7084,14 +7101,16 @@
             },
             /**
              * Force an immediate version check for this instance, bypassing the
-             * min-gap floor.
+             * min-gap floor. A `mode: 'off'` instance resolves its version ONCE
+             * here (2.4.8) so URL versioning can start; it still never polls,
+             * never announces and never reloads.
              * @returns {Promise<void>}
              */
             checkNow: function () {
                 var current = forwardedHandle();
                 return current
                     ? safe(function () { return current.checkNow(); }, Promise.resolve())
-                    : safe(function () { return poll(true); }, Promise.resolve());
+                    : safe(function () { return poll(true, false, true); }, Promise.resolve());
             },
             /** @returns {Object} Snapshot of this instance's state. */
             state: function () {
@@ -8053,7 +8072,8 @@
 
         /**
          * Force an immediate version check on EVERY instance, bypassing the
-         * min-gap floor.
+         * min-gap floor. `mode: 'off'` instances take the same one-shot
+         * resolution the per-instance checkNow() does (2.4.8).
          * @returns {Promise<void>}
          */
         checkNow: function () {
@@ -8061,7 +8081,7 @@
             if (d) return safe(function () { return d.checkNow(); }, Promise.resolve());
             return safe(function () {
                 return Promise.all(registry.map(function (inst) {
-                    return safe(function () { return inst.poll(true); }, Promise.resolve());
+                    return safe(function () { return inst.poll(true, false, true); }, Promise.resolve());
                 })).then(function () { return undefined; });
             }, Promise.resolve());
         },
