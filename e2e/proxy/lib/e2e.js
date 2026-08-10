@@ -29,20 +29,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(...a);
 
 // Bounded polled wait, mirroring e2e/jellyfin/lib/browser.cjs: a slow login must
-// not be reported as a failure, and an authenticated session must still be
-// asserted by the caller once the wait ends.
+// not be reported as a failure. A navigation can tear down the evaluation
+// context mid-poll, so probe errors are retried until the deadline and only the
+// last one is surfaced. The caller still asserts the authenticated session.
 async function waitUntil(probe, timeoutMs, intervalMs = 400) {
   const deadline = Date.now() + timeoutMs;
+  let lastError;
   while (Date.now() < deadline) {
     try {
       const value = await probe();
       if (value) return value;
     } catch (error) {
-      // A navigation can tear down the evaluation context mid-poll; retry.
+      lastError = error;
     }
     await sleep(intervalMs);
   }
-  return false;
+  if (lastError) throw lastError;
+  throw new Error(`condition did not become true within ${timeoutMs}ms`);
 }
 
 async function authenticated(page) {
