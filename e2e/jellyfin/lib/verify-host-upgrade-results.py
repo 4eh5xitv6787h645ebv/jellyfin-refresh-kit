@@ -258,7 +258,7 @@ def validate_container_identity(identity: Any, image: str, label: str) -> dict[s
 
 def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
     source_image, target_image, source_version, target_version, target_stage = IMAGES[scenario]
-    require(data.get("schemaVersion") == 2, f"{scenario}: unsupported schema")
+    require(data.get("schemaVersion") == 3, f"{scenario}: unsupported schema")
     require(data.get("scenario") == scenario, f"{scenario}: scenario mismatch")
     require(data.get("completed") is True, f"{scenario}: run did not complete")
     require(data.get("failures") == [], f"{scenario}: failures are present")
@@ -354,8 +354,10 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
     ten_after_pages = {entry.get("name"): entry for entry in ten_phase["pagesAfter"]}
     gated = ten_phase.get("gated")
     require(isinstance(gated, dict), f"{scenario}: ten-tab gated snapshots are missing")
-    for key, page_name, reason in (("dialog", "admin-plugin-dialog", "dialog"),
-                                   ("editor", "admin-config-editor", "active_editor")):
+    # Native-uninstall dialog gating is covered by the browser/xUnit/runtime suites; the
+    # host-upgrade lab no longer drives Jellyfin's own uninstall UI, so only the active-editor
+    # gate is asserted here (playback is validated in its own section below).
+    for key, page_name, reason in (("editor", "admin-config-editor", "active_editor"),):
         page = gated.get(key)
         prior = ten_before_pages.get(page_name)
         require(isinstance(page, dict) and isinstance(prior, dict),
@@ -425,23 +427,9 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
     require(contexts[2] == {"name": "anonymous", "userId": None, "userName": None, "authenticated": False},
             f"{scenario}: anonymous context is not exact")
 
-    dialog = data.get("dialogSafety")
-    require(isinstance(dialog, dict) and dialog.get("realJellyfinDialog") is True,
-            f"{scenario}: real dialog evidence is missing")
-    require(dialog.get("role") == "dialog" and dialog.get("blockReason") == "dialog",
-            f"{scenario}: dialog safety gate differs")
-    require(dialog.get("documentIdPreservedWhileOpen") is True
-            and dialog.get("loadCountDeltaWhileOpen") == 0
-            and dialog.get("cancelledWithoutUninstall") is True,
-            f"{scenario}: dialog did not remain/release safely")
-    require(dialog.get("inventoryBefore") == dialog.get("inventoryAfter"),
-            f"{scenario}: dialog cancellation changed inventory")
-    dialog_inventory = dialog.get("inventoryBefore")
-    require(isinstance(dialog_inventory, list) and len(dialog_inventory) == 1
-            and dialog_inventory[0].get("name") == "Jellyfin Refresh Kit"
-            and dialog_inventory[0].get("status") == "Active"
-            and dialog_inventory[0].get("canUninstall") is True,
-            f"{scenario}: dialog did not target the active uninstallable Refresh Kit plugin")
+    # Native-uninstall dialog safety is covered by tests/browser/runtime.test.cjs and the
+    # xUnit/runtime suites; the host-upgrade lab intentionally does not drive Jellyfin's own
+    # uninstall UI, so no dialogSafety evidence is required here.
     editor = data.get("editorSafety")
     require(isinstance(editor, dict) and editor.get("blockReason") == "active_editor",
             f"{scenario}: real editor gate differs")
@@ -783,7 +771,7 @@ def self_test() -> None:
                     "hash": ({"admin-dashboard": "#/dashboard",
                               "admin-background": "#/dashboard",
                               "admin-config-editor": "#/configurationpage?name=Jellyfin%20Refresh%20Kit",
-                              "admin-plugin-dialog": "#/dashboard/plugins/515255fe333249b0b4710be58c8221d8",
+                              "admin-plugin-dialog": "#/dashboard/plugins",
                               "viewer-playback": "#/home",
                               "anonymous-login": "#/login"}.get(role, "#/home")),
                     "kit": {"version": current_server["generation"],
@@ -822,8 +810,7 @@ def self_test() -> None:
         playback_before["kit"]["wouldBlockNow"] = "media_element"
         ten_after = reload_set(ten_before, "ten-after", ten_server)
         gated = {}
-        for key, name, reason in (("dialog", "admin-plugin-dialog", "dialog"),
-                                  ("editor", "admin-config-editor", "active_editor")):
+        for key, name, reason in (("editor", "admin-config-editor", "active_editor"),):
             gated_page = copy.deepcopy(next(row for row in ten_before if row["name"] == name))
             gated_page["kit"]["latestVersion"] = ten_server["generation"]
             gated_page["kit"]["wouldBlockNow"] = reason
@@ -910,9 +897,6 @@ def self_test() -> None:
                                "connectionReused": False} for index in range(clients)],
             })
             wave_before = wave_after
-        inventory = [{"id": "515255fe333249b0b4710be58c8221d8",
-                      "name": "Jellyfin Refresh Kit", "status": "Active",
-                      "canUninstall": True}]
         media_fixture = {
             "deterministicRecipe": "lavfi-testsrc2+sine-120s-h264-aac-v1",
             "localFile": "rk-host-upgrade-120s-v1.mp4",
@@ -965,7 +949,7 @@ def self_test() -> None:
             {"name": "in-place-host-upgrade-converged"},
         ]
         return {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "scenario": scenario,
             "completed": True,
             "failures": [],
@@ -994,10 +978,6 @@ def self_test() -> None:
                 {"name": "anonymous", "userId": None, "userName": None,
                  "authenticated": False},
             ],
-            "dialogSafety": {"realJellyfinDialog": True, "role": "dialog",
-                             "blockReason": "dialog", "documentIdPreservedWhileOpen": True,
-                             "loadCountDeltaWhileOpen": 0, "cancelledWithoutUninstall": True,
-                             "inventoryBefore": inventory, "inventoryAfter": copy.deepcopy(inventory)},
             "editorSafety": {"blockReason": "active_editor",
                              "documentIdPreservedWhileEditing": True,
                              "loadCountDeltaWhileEditing": 0, "convergedAfterBlur": True},

@@ -130,7 +130,7 @@ function validateGenerationPayload(status, headers, rawBody, expectedEpoch = nul
 }
 
 function assertFinalResult(result) {
-  assert.equal(result.schemaVersion, 2, 'result schema is not the real-playback evidence schema');
+  assert.equal(result.schemaVersion, 3, 'result schema is not the real-playback evidence schema');
   assert.equal(result.completed, true, 'result did not reach completion');
   assert.deepEqual(result.failures, [], 'result contains failures');
   assert.equal(result.unexpectedRefreshKitBrowserErrors.length, 0,
@@ -171,11 +171,6 @@ function assertFinalResult(result) {
   assert.equal(result.browserContexts[1].userId.replaceAll('-', '').toLowerCase(),
     result.metadata.users.viewer.id.replaceAll('-', '').toLowerCase(), 'viewer context resolved the wrong user');
   assert.equal(result.browserContexts[2].authenticated, false, 'anonymous context became authenticated');
-  assert.equal(result.dialogSafety.realJellyfinDialog, true, 'real Jellyfin dialog was not proven');
-  assert.equal(result.dialogSafety.blockReason, 'dialog', 'dialog did not engage the runtime safety gate');
-  assert.equal(result.dialogSafety.cancelledWithoutUninstall, true, 'dialog cancellation was not proven safe');
-  assert.equal(result.dialogSafety.inventoryBefore?.[0]?.canUninstall, true,
-    'dialog did not target an uninstallable plugin');
   assert.equal(result.editorSafety.blockReason, 'active_editor', 'real configuration editor did not gate reload');
   assert.equal(result.playbackSafety.realMediaPlayback, true, 'real media playback was not proven');
   assert.ok(PLAYBACK_GATE_REASONS.includes(result.playbackSafety.blockReason),
@@ -284,7 +279,7 @@ function runSelfTest() {
     assert.equal(audit.unexpected.length, 1);
   });
   const minimal = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     completed: true,
     failures: [],
     unexpectedRefreshKitBrowserErrors: [],
@@ -313,12 +308,6 @@ function runSelfTest() {
       { name: 'viewer', userId: 'b'.repeat(32), authenticated: true },
       { name: 'anonymous', userId: null, authenticated: false },
     ],
-    dialogSafety: {
-      realJellyfinDialog: true,
-      blockReason: 'dialog',
-      cancelledWithoutUninstall: true,
-      inventoryBefore: [{ canUninstall: true }],
-    },
     editorSafety: { blockReason: 'active_editor' },
     playbackSafety: {
       realMediaPlayback: true,
@@ -1360,55 +1349,11 @@ async function pollingWave(clients, before, expectedEpoch) {
   };
 }
 
-async function openUninstallDialog(item, pluginRouteId) {
-  assert.match(pluginRouteId || '', /^[0-9a-f-]{32,36}$/i);
-  await navigate(item, `#/dashboard/plugins/${pluginRouteId}`, () => (
-    /Jellyfin Refresh Kit/i.test(document.body?.innerText || '')
-  ));
-  await item.page.waitForFunction(() => [...document.querySelectorAll('button')].some((button) => {
-    const style = getComputedStyle(button);
-    return /^uninstall$/i.test(button.textContent?.trim() || '')
-      && style.display !== 'none' && style.visibility !== 'hidden' && button.getClientRects().length > 0;
-  }), { timeout: 60000, polling: 300 });
-  const clicked = await item.page.evaluate(() => {
-    const button = [...document.querySelectorAll('button')].find((candidate) => {
-      const style = getComputedStyle(candidate);
-      return /^uninstall$/i.test(candidate.textContent?.trim() || '')
-        && style.display !== 'none' && style.visibility !== 'hidden' && candidate.getClientRects().length > 0;
-    });
-    button?.click();
-    return Boolean(button);
-  });
-  assert.equal(clicked, true);
-  await item.page.waitForFunction(() => [...document.querySelectorAll('[role="dialog"]')].some((dialog) => {
-    const style = getComputedStyle(dialog);
-    return /uninstall/i.test(dialog.textContent || '') && /Refresh Kit/i.test(dialog.textContent || '')
-      && style.display !== 'none' && style.visibility !== 'hidden' && dialog.getClientRects().length > 0;
-  }), { timeout: 30000, polling: 200 });
-  const state = await snapshot(item.page, item.name, item.role);
-  assert.equal(state.renderedDialogs, 1, 'expected one rendered Jellyfin confirmation dialog');
-  assert.equal(state.kit?.wouldBlockNow, 'dialog', 'real Jellyfin dialog did not engage the dialog gate');
-  return state;
-}
-
-async function cancelUninstallDialog(item) {
-  const clicked = await item.page.evaluate(() => {
-    const dialogs = [...document.querySelectorAll('[role="dialog"]')];
-    const dialog = dialogs.find((candidate) => /uninstall/i.test(candidate.textContent || ''));
-    if (!dialog) return false;
-    const cancel = [...dialog.querySelectorAll('button')].find((button) => /cancel/i.test(button.textContent || ''));
-    cancel?.click();
-    return Boolean(cancel);
-  });
-  assert.equal(clicked, true, 'real Jellyfin uninstall dialog had no Cancel action');
-  await item.page.waitForFunction(() => ![...document.querySelectorAll('[role="dialog"]')].some((dialog) => {
-    try {
-      const style = getComputedStyle(dialog);
-      return /uninstall/i.test(dialog.textContent || '') && style.display !== 'none'
-        && style.visibility !== 'hidden' && dialog.getClientRects().length > 0;
-    } catch { return true; }
-  }), { timeout: 30000, polling: 200 });
-}
+// Native-uninstall dialog gating is covered by tests/browser/runtime.test.cjs and the
+// xUnit/runtime suites; the host-upgrade lab intentionally does not drive Jellyfin's own
+// uninstall UI (which differs across web builds) and focuses on in-place host upgrade +
+// multi-tab convergence. The former admin-plugin-dialog tab remains a real converging
+// participant, just without opening a native confirmation dialog.
 
 async function prepareConfigEditor(item) {
   await navigate(item, '#/configurationpage?name=Jellyfin%20Refresh%20Kit', () => Boolean(
@@ -1612,7 +1557,7 @@ const startedMs = Date.now();
 const failures = [];
 const captures = [];
 const result = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   scenario,
   origin,
   startedMs,
@@ -1622,7 +1567,6 @@ const result = {
   phases: [],
   browserContexts: [],
   multiTab: { tabCounts: [], finalRoles: [] },
-  dialogSafety: null,
   editorSafety: null,
   playbackSafety: null,
   pollStress: [],
@@ -1782,12 +1726,10 @@ let probeInstalled = false;
     }
 
     const originalEditor = await prepareConfigEditor(adminConfig);
-    await adminDialog.page.bringToFront();
-    const inventoryBeforeDialog = await pluginInventory();
-    assert.equal(inventoryBeforeDialog.length, 1);
-    assert.equal(inventoryBeforeDialog[0].canUninstall, true,
-      'installed Refresh Kit does not expose Jellyfin Web Uninstall');
-    const dialogBefore = await openUninstallDialog(adminDialog, inventoryBeforeDialog[0].id);
+    // The admin-plugin-dialog tab stays open on the real plugins dashboard as an ordinary
+    // authenticated, converging participant. Native-uninstall dialog gating is proven by
+    // tests/browser/runtime.test.cjs and the xUnit/runtime suites, not by driving Jellyfin's
+    // own uninstall UI here (it differs across web builds).
     const editorBefore = await snapshot(adminConfig.page, adminConfig.name, adminConfig.role);
     const playbackStarted = await beginRealPlayback(viewerPlayback, playbackFixture);
     const tenBefore = await Promise.all(pages.map((item) => snapshot(item.page, item.name, item.role)));
@@ -1845,17 +1787,6 @@ let probeInstalled = false;
     assert.match(playbackAfterLeave.hash, /\/home(?:\.html)?(?:[/?]|$)/i,
       'playback tab did not leave media for the real home route before convergence');
 
-    await adminDialog.page.bringToFront();
-    await adminDialog.page.waitForFunction((expectedGeneration, expectedEpoch) => {
-      const state = window.JellyfinRefreshKit?.get?.('RefreshKitPlugin')?.state?.();
-      return state?.latestVersion === expectedGeneration && state?.version !== expectedGeneration
-        && state?.latestEpoch === expectedEpoch && state?.baselineEpoch === expectedEpoch;
-    }, { timeout: 120000, polling: 500 }, tenMutation.after.generation, tenMutation.after.epoch);
-    const dialogGated = await snapshot(adminDialog.page, adminDialog.name, adminDialog.role);
-    assert.equal(dialogGated.documentId, dialogBefore.documentId);
-    assert.equal(dialogGated.loadCount, dialogBefore.loadCount);
-    assert.equal(dialogGated.kit?.wouldBlockNow, 'dialog');
-
     await adminConfig.page.bringToFront();
     await adminConfig.page.waitForFunction(() => document.visibilityState === 'visible', {
       timeout: 30000,
@@ -1873,41 +1804,23 @@ let probeInstalled = false;
     assert.equal(editorGated.kit?.wouldBlockNow, 'active_editor');
 
     const tenAfter = [playbackAfterLeave];
+    // The admin-plugin-dialog tab is now an ordinary converging participant (no native
+    // dialog held open), so it converges in this loop alongside the other tabs; only the
+    // real active-editor and media-playback gates are released explicitly afterward.
     for (const item of pages.filter((entry) => (
-      entry !== adminDialog && entry !== adminConfig && entry !== viewerPlayback
+      entry !== adminConfig && entry !== viewerPlayback
     ))) {
       const before = tenBefore.find((entry) => entry.name === item.name);
       const expectedUser = item.role === 'anonymous-login'
         ? null : (item.name.startsWith('viewer-') ? metadata.users.viewer : metadata.users.admin);
       tenAfter.push(await waitPageConvergence(item, tenMutation.after, expectedUser, before));
     }
-    await adminDialog.page.bringToFront();
-    await cancelUninstallDialog(adminDialog);
-    tenAfter.push(await waitPageConvergence(
-      adminDialog, tenMutation.after, metadata.users.admin,
-      tenBefore.find((entry) => entry.name === adminDialog.name),
-    ));
     await adminConfig.page.bringToFront();
     await releaseConfigEditor(adminConfig, originalEditor);
     tenAfter.push(await waitPageConvergence(
       adminConfig, tenMutation.after, metadata.users.admin,
       tenBefore.find((entry) => entry.name === adminConfig.name),
     ));
-    const inventoryAfterDialog = await pluginInventory();
-    assert.deepEqual(inventoryAfterDialog, inventoryBeforeDialog,
-      'cancelling the real uninstall dialog changed plugin inventory');
-    result.dialogSafety = {
-      realJellyfinDialog: true,
-      source: 'Jellyfin Web plugin-detail Uninstall confirmation',
-      role: 'dialog',
-      blockReason: dialogGated.kit.wouldBlockNow,
-      documentIdPreservedWhileOpen: dialogGated.documentId === dialogBefore.documentId,
-      loadCountDeltaWhileOpen: dialogGated.loadCount - dialogBefore.loadCount,
-      latestGenerationObserved: dialogGated.kit.latestVersion,
-      cancelledWithoutUninstall: true,
-      inventoryBefore: inventoryBeforeDialog,
-      inventoryAfter: inventoryAfterDialog,
-    };
     result.editorSafety = {
       source: 'Refresh Kit real Jellyfin configuration page textarea',
       blockReason: editorGated.kit.wouldBlockNow,
@@ -1942,7 +1855,7 @@ let probeInstalled = false;
       name: 'ten-live-tabs-role-mix-converged', tabs: 10,
       mutation: tenMutation.mutation, serverBefore: twoMutation.after,
       serverAfter: tenMutation.after, pagesBefore: tenBefore,
-      gated: { dialog: dialogGated, editor: editorGated, playback: playbackGated },
+      gated: { editor: editorGated, playback: playbackGated },
       pagesAfter: tenAfter,
     });
 

@@ -109,7 +109,7 @@ requirements = (
     "'viewer-playback'",
     "'anonymous-login'",
     "#/configurationpage?name=Jellyfin%20Refresh%20Kit",
-    "blockReason: dialogGated.kit.wouldBlockNow",
+    "blockReason: editorGated.kit.wouldBlockNow",
     'state?.baselineEpoch === expectedEpoch',
     'generationStatusAfterRestart: 404',
     'responses,',
@@ -128,7 +128,7 @@ for token in requirements:
         raise SystemExit(f"FATAL: browser/result invariant is missing: {token}")
 
 validator_requirements = (
-    'data.get("schemaVersion") == 2',
+    'data.get("schemaVersion") == 3',
     '"viewer-playback"',
     'validate_media_fixture',
     'validate_video_state',
