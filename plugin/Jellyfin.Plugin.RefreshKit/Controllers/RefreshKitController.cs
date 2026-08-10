@@ -18,6 +18,22 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
     /// process-incarnation tokens plus a public MIT-licensed script, never the
     /// detailed server inventory reserved for the authenticated diagnostic.
     /// </para>
+    ///
+    /// <para>
+    /// What "opaque" does and does not buy, stated honestly. The generation
+    /// cannot be reversed or enumerated: no name, version, path or count can be
+    /// read out of it. But it is derived from public material with no
+    /// per-install secret (see <see cref="PluginGenerationProvider.Generation"/>),
+    /// so an unauthenticated observer who can already guess an exact host
+    /// version plus plugin inventory can compute candidate folds offline and
+    /// confirm the guess. The same observer can also watch the token move and
+    /// learn WHEN an admin saved plugin settings, or when a server was updated
+    /// and restarted — a timing oracle inherent to any anonymous change signal,
+    /// which is what these routes exist to be. Both are documented in
+    /// plugin/README.md, and neither can be designed away while the login
+    /// screen must still notice an update: a change signal that page can read
+    /// is a change signal an unauthenticated observer can read.
+    /// </para>
     /// </summary>
     [ApiController]
     [Route("RefreshKit")]
@@ -73,26 +89,36 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
         /// What the generation is actually made of — loaded host identity and
         /// one row per loaded plugin. Admin-only: this is server inventory, not
         /// something the login screen needs.
+        /// <para>
+        /// The whole payload comes from ONE
+        /// <see cref="PluginGenerationProvider.Snapshot"/>. Reading the
+        /// generation, the host and the plugin rows as three separate provider
+        /// properties would be three acquisitions, which can straddle the
+        /// five-second scan-cache boundary and report a generation that the
+        /// listed rows do not explain — precisely the confusion this endpoint is
+        /// consulted to resolve.
+        /// </para>
         /// </summary>
         [HttpGet("Diagnostics")]
         [Authorize(Policy = "RequiresElevation")]
         public ActionResult<object> GetDiagnostics()
         {
-            var provider = _generationProvider;
-            var host = provider.Host;
+            var snapshot = _generationProvider.Snapshot;
+            var host = snapshot.Host;
             RefreshKit.ApplyNoStore(Response);
             return Ok(new
             {
-                Generation = provider.Generation,
+                Generation = snapshot.Generation,
                 KitVersion = Plugin.KitVersion,
                 PluginVersion = RefreshKit.Version,
                 BuildId = RefreshKit.BuildId,
+                Stamping = ThirdPartyTagStamper.Diagnostics,
                 Host = new
                 {
                     host.Identity,
                     host.Modules,
                 },
-                Plugins = provider.Details
+                Plugins = snapshot.Details
                     .Select(d => new
                     {
                         d.Folder,
@@ -114,6 +140,7 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
                         d.ConfigurationIdentity,
                         d.ConfigurationFileCount,
                         d.ConfigurationBytesHashed,
+                        d.ConfigurationReparsePointsSkipped,
                         d.ConfigurationScanTruncated,
                         d.ConfigurationScanUnavailable,
                         d.UsingLastGoodConfiguration,

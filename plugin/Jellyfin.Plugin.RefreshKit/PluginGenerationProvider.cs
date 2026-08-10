@@ -198,9 +198,23 @@ namespace Jellyfin.Plugin.RefreshKit
         /// The current opaque generation token: <c>g-{16 hex}</c>, e.g.
         /// <c>g-9f2a1c0b7d3e5a64</c>. URL- and attribute-safe by construction,
         /// short enough to read in a network trace, and it changes when loaded
-        /// host/plugin code or active browser/configuration content changes. The
-        /// public token deliberately does not disclose the loaded plugin count;
-        /// detailed inventory remains on the admin-authorized diagnostics route.
+        /// host/plugin code or active browser/configuration content changes. It
+        /// carries no readable field: neither the plugin count nor any name,
+        /// version or path can be recovered from it, and the detailed inventory
+        /// stays on the admin-authorized diagnostics route.
+        /// <para>
+        /// It is NOT a secret, though. The fold below mixes in no per-install
+        /// entropy, so every input can be public: plugin GUIDs, the MVIDs of
+        /// published release artifacts, the bytes of shipped client assets and a
+        /// default configuration XML. Someone who can already guess an exact
+        /// host version plus plugin inventory can therefore compute candidate
+        /// folds offline and CONFIRM that guess against the anonymous endpoint.
+        /// Confirmation of an already-formed guess is the accepted cost: a
+        /// per-install salt would defeat it, and would also break the documented
+        /// invariant that two nodes running identical active bytes publish
+        /// identical generations, which is what makes the kit usable behind a
+        /// load balancer.
+        /// </para>
         /// <para>
         /// Read races retain the last coherent process state instead of briefly
         /// publishing an empty generation.
@@ -213,6 +227,28 @@ namespace Jellyfin.Plugin.RefreshKit
 
         /// <summary>Deterministic identity of the loaded Jellyfin host assemblies.</summary>
         public HostFingerprint Host => GetSnapshot().Host;
+
+        /// <summary>
+        /// The generation together with the host and per-plugin rows it was
+        /// folded from, all from ONE acquisition.
+        /// <para>
+        /// Reading <see cref="Generation"/>, <see cref="Host"/> and
+        /// <see cref="Details"/> separately is three independent acquisitions, so
+        /// a report built that way can tear across the
+        /// <see cref="CacheTtlSeconds"/>-second scan-cache boundary and show a
+        /// generation that no listed row explains. Anything that renders more
+        /// than one of the three — diagnostics above all — must read this
+        /// instead.
+        /// </para>
+        /// </summary>
+        public GenerationSnapshot Snapshot
+        {
+            get
+            {
+                var (generation, details, host) = GetSnapshot();
+                return new GenerationSnapshot(generation, details, host);
+            }
+        }
 
         /// <summary>Recompute on the next read, whatever the TTL says.</summary>
         public void Invalidate()
@@ -448,6 +484,7 @@ namespace Jellyfin.Plugin.RefreshKit
                         publishedConfigurationIdentity,
                         configurationSnapshot.FileCount,
                         configurationSnapshot.BytesHashed,
+                        configurationSnapshot.ReparsePointsSkipped,
                         configurationSnapshot.IsTruncated,
                         configurationScanUnavailable,
                         usingLastGoodConfiguration,
@@ -489,6 +526,7 @@ namespace Jellyfin.Plugin.RefreshKit
                         configurationIdentity: string.Empty,
                         configurationFileCount: 0,
                         configurationBytesHashed: 0,
+                        configurationReparsePointsSkipped: 0,
                         configurationScanTruncated: true,
                         configurationScanUnavailable: true,
                         usingLastGoodConfiguration: false,
@@ -1072,12 +1110,13 @@ namespace Jellyfin.Plugin.RefreshKit
             if (_scanLimits.MaxConfigurationBytesPerPlugin == 0
                 || scanBudget.RemainingConfigurationBytes == 0)
             {
-                return ActiveConfigurationSnapshot.Truncated(0, 0, 0);
+                return ActiveConfigurationSnapshot.Truncated(0, 0, 0, 0);
             }
 
             long newestTicks = 0;
             long bytesHashed = 0;
             long bytesReserved = 0;
+            var reparsePointsSkipped = 0;
             var material = new List<string>();
             foreach (var configuredName in configurationFileNames
                 .OrderBy(name => name, StringComparer.Ordinal))
@@ -1105,6 +1144,14 @@ namespace Jellyfin.Plugin.RefreshKit
                         // Do not let a plugin-selected filename turn generation
                         // polling into a content oracle outside the configuration
                         // store through a symbolic link.
+                        //
+                        // The skip is silent in the generation on purpose: a
+                        // symlinked file contributes exactly what a missing one
+                        // does. That makes a symlinked-configuration deployment
+                        // (NixOS, an ansible-managed store) look identical to a
+                        // plugin with no configuration at all, so the skip is
+                        // counted and reported in diagnostics instead.
+                        reparsePointsSkipped++;
                         continue;
                     }
 
@@ -1116,7 +1163,8 @@ namespace Jellyfin.Plugin.RefreshKit
                         return ActiveConfigurationSnapshot.Truncated(
                             newestTicks,
                             material.Count,
-                            bytesHashed);
+                            bytesHashed,
+                            reparsePointsSkipped);
                     }
 
                     // As with assets, reserve before the read. A configuration
@@ -1170,6 +1218,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 newestTicks,
                 material.Count,
                 bytesHashed,
+                reparsePointsSkipped,
                 isTruncated: false,
                 isUsable: true);
         }
@@ -1559,11 +1608,13 @@ namespace Jellyfin.Plugin.RefreshKit
                 0,
                 0,
                 0,
+                0,
                 isTruncated: false,
                 isUsable: true);
 
             public static readonly ActiveConfigurationSnapshot Unavailable = new ActiveConfigurationSnapshot(
                 HashMaterial("rk-active-configuration-v1\n<unavailable>"),
+                0,
                 0,
                 0,
                 0,
@@ -1573,12 +1624,14 @@ namespace Jellyfin.Plugin.RefreshKit
             public static ActiveConfigurationSnapshot Truncated(
                 long newestTicks,
                 int fileCount,
-                long bytesHashed) =>
+                long bytesHashed,
+                int reparsePointsSkipped) =>
                 new ActiveConfigurationSnapshot(
                     HashMaterial("rk-active-configuration-v1\n<budget-exceeded>"),
                     newestTicks,
                     fileCount,
                     bytesHashed,
+                    reparsePointsSkipped,
                     isTruncated: true,
                     isUsable: true);
 
@@ -1587,6 +1640,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 long newestTicks,
                 int fileCount,
                 long bytesHashed,
+                int reparsePointsSkipped,
                 bool isTruncated,
                 bool isUsable)
             {
@@ -1594,6 +1648,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 NewestTicks = newestTicks;
                 FileCount = fileCount;
                 BytesHashed = bytesHashed;
+                ReparsePointsSkipped = reparsePointsSkipped;
                 IsTruncated = isTruncated;
                 IsUsable = isUsable;
             }
@@ -1605,6 +1660,13 @@ namespace Jellyfin.Plugin.RefreshKit
             public int FileCount { get; }
 
             public long BytesHashed { get; }
+
+            /// <summary>
+            /// Configuration files that exist but were excluded because they are
+            /// reparse points. They contribute nothing to the identity, so only
+            /// this counter distinguishes them from an absent file.
+            /// </summary>
+            public int ReparsePointsSkipped { get; }
 
             public bool IsTruncated { get; }
 
@@ -1730,6 +1792,33 @@ namespace Jellyfin.Plugin.RefreshKit
         public long MaxConfigurationBytesPerPlugin { get; }
 
         public long MaxTotalConfigurationBytesPerScan { get; }
+    }
+
+    /// <summary>
+    /// One coherent read of the provider: the published generation and exactly
+    /// the host/plugin state it was folded from. Immutable, so a caller can
+    /// project it into a response without a second provider read.
+    /// </summary>
+    public sealed class GenerationSnapshot
+    {
+        internal GenerationSnapshot(
+            string generation,
+            IReadOnlyList<PluginFingerprint> details,
+            HostFingerprint host)
+        {
+            Generation = generation ?? string.Empty;
+            Details = details ?? Array.Empty<PluginFingerprint>();
+            Host = host ?? HostFingerprint.Empty;
+        }
+
+        /// <summary>The opaque generation token published for this state.</summary>
+        public string Generation { get; }
+
+        /// <summary>The per-plugin rows folded into <see cref="Generation"/>.</summary>
+        public IReadOnlyList<PluginFingerprint> Details { get; }
+
+        /// <summary>The loaded Jellyfin host identity folded into <see cref="Generation"/>.</summary>
+        public HostFingerprint Host { get; }
     }
 
     /// <summary>Path-independent fingerprint of the loaded Jellyfin host.</summary>
@@ -1872,6 +1961,7 @@ namespace Jellyfin.Plugin.RefreshKit
             string configurationIdentity,
             int configurationFileCount,
             long configurationBytesHashed,
+            int configurationReparsePointsSkipped,
             bool configurationScanTruncated,
             bool configurationScanUnavailable,
             bool usingLastGoodConfiguration,
@@ -1895,6 +1985,7 @@ namespace Jellyfin.Plugin.RefreshKit
             ConfigurationIdentity = configurationIdentity;
             ConfigurationFileCount = configurationFileCount;
             ConfigurationBytesHashed = configurationBytesHashed;
+            ConfigurationReparsePointsSkipped = configurationReparsePointsSkipped;
             ConfigurationScanTruncated = configurationScanTruncated;
             ConfigurationScanUnavailable = configurationScanUnavailable;
             UsingLastGoodConfiguration = usingLastGoodConfiguration;
@@ -1956,6 +2047,17 @@ namespace Jellyfin.Plugin.RefreshKit
 
         public long ConfigurationBytesHashed { get; }
 
+        /// <summary>
+        /// How many of this plugin's configuration files existed but were
+        /// excluded from the scan because they are reparse points (a symbolic
+        /// link or a junction). Refresh Kit refuses to follow one, so such a file
+        /// contributes exactly what an absent file does and mechanism 3 cannot
+        /// see settings changes for this plugin — a deployment that symlinks its
+        /// plugin-configuration store (NixOS, ansible) is otherwise
+        /// indistinguishable from a plugin that has no configuration.
+        /// </summary>
+        public int ConfigurationReparsePointsSkipped { get; }
+
         public bool ConfigurationScanTruncated { get; }
 
         public bool ConfigurationScanUnavailable { get; }
@@ -1987,6 +2089,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 ConfigurationIdentity,
                 ConfigurationFileCount,
                 ConfigurationBytesHashed,
+                ConfigurationReparsePointsSkipped,
                 ConfigurationScanTruncated,
                 ConfigurationScanUnavailable,
                 true,

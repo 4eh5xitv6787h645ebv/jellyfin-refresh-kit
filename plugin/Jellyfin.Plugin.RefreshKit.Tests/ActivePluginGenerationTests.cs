@@ -276,6 +276,108 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Fact]
+        public void SymlinkedConfigurationIsSkippedButReportedInDiagnostics()
+        {
+            // A symlinked plugin-configuration store is normal on NixOS and on
+            // ansible-managed servers. Refresh Kit refuses to follow the link,
+            // which is deliberate — a plugin-selected filename must not become a
+            // content oracle for files outside the store — but the resulting
+            // identity is exactly the "this plugin has no configuration"
+            // identity, so mechanism 3 silently does nothing there. Only the
+            // diagnostics counter tells the two apart.
+            var folder = NewPluginFolder("Demo_1.0.0.0", "asset");
+            var descriptor = Descriptor(folder, "11111111-1111-1111-1111-111111111111", "Demo.xml");
+            var target = Path.Combine(_root, "external-Demo.xml");
+            File.WriteAllText(target, "<Config><Enabled>true</Enabled></Config>");
+            File.CreateSymbolicLink(Path.Combine(_configurations, "Demo.xml"), target);
+
+            var provider = Provider(() => new[] { descriptor });
+            var detail = Assert.Single(provider.Details);
+
+            Assert.Equal(1, detail.ConfigurationReparsePointsSkipped);
+            Assert.Equal(0, detail.ConfigurationFileCount);
+            Assert.Equal(0, detail.ConfigurationBytesHashed);
+            Assert.False(detail.ConfigurationScanUnavailable);
+            Assert.False(detail.ConfigurationScanTruncated);
+
+            // Same identity as a plugin whose configuration file is simply
+            // absent, and it stays there when the link target changes.
+            var absentRoot = Path.Combine(_root, "absent-node");
+            var absentConfigurations = Path.Combine(absentRoot, "configurations");
+            Directory.CreateDirectory(absentConfigurations);
+            var absentPlugin = NodePlugin(
+                absentRoot,
+                "Demo_1.0.0.0",
+                DemoId,
+                "11111111-1111-1111-1111-111111111111",
+                "Demo.xml");
+            var absentProvider = new PluginGenerationProvider(
+                () => new[] { absentPlugin },
+                absentConfigurations);
+            var absentDetail = Assert.Single(absentProvider.Details);
+
+            Assert.Equal(absentDetail.ConfigurationIdentity, detail.ConfigurationIdentity);
+            Assert.Equal(0, absentDetail.ConfigurationReparsePointsSkipped);
+
+            File.WriteAllText(target, "<Config><Enabled>false</Enabled></Config>");
+            provider.Invalidate();
+            var afterEdit = Assert.Single(provider.Details);
+
+            Assert.Equal(detail.ConfigurationIdentity, afterEdit.ConfigurationIdentity);
+            Assert.Equal(1, afterEdit.ConfigurationReparsePointsSkipped);
+        }
+
+        [Fact]
+        public void SnapshotReadsTheGenerationAndItsRowsInOneAcquisition()
+        {
+            // Every property read is its own acquisition, so a report built from
+            // three of them can straddle the five-second scan-cache boundary and
+            // pair a generation with rows that never produced it. The clock here
+            // jumps past the TTL on every call, which makes that tearing
+            // deterministic instead of a race.
+            var pool = new[]
+            {
+                NodePlugin(_root, "Node1", Guid.NewGuid(), "11111111-1111-1111-1111-111111111111"),
+                NodePlugin(_root, "Node2", Guid.NewGuid(), "22222222-2222-2222-2222-222222222222"),
+                NodePlugin(_root, "Node3", Guid.NewGuid(), "33333333-3333-3333-3333-333333333333"),
+                NodePlugin(_root, "Node4", Guid.NewGuid(), "44444444-4444-4444-4444-444444444444"),
+            };
+            var scans = 0;
+            var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var provider = new PluginGenerationProvider(
+                () => pool.Take(Math.Min(++scans, pool.Length)).ToList(),
+                _configurations,
+                () =>
+                {
+                    now = now.AddSeconds(10);
+                    return now;
+                });
+
+            // One acquisition: the token is exactly the one a provider that only
+            // ever saw these rows publishes.
+            var first = provider.Snapshot;
+            Assert.Single(first.Details);
+            Assert.Equal(
+                new PluginGenerationProvider(() => pool.Take(1).ToList(), _configurations).Generation,
+                first.Generation);
+
+            // Two separate property reads are two scans, and they disagree.
+            var tornGeneration = provider.Generation;
+            var tornDetails = provider.Details;
+            Assert.Equal(3, tornDetails.Count);
+            Assert.NotEqual(
+                new PluginGenerationProvider(() => pool.Take(3).ToList(), _configurations).Generation,
+                tornGeneration);
+
+            var atomic = provider.Snapshot;
+            Assert.Equal(4, atomic.Details.Count);
+            Assert.Equal(
+                new PluginGenerationProvider(() => pool.Take(4).ToList(), _configurations).Generation,
+                atomic.Generation);
+            Assert.Equal(HostFingerprint.Empty.Identity, atomic.Host.Identity);
+        }
+
+        [Fact]
         public void ActiveConfigurationUsesContentIdentityAndKeepsDebounce()
         {
             var folder = NewPluginFolder("Demo_1.0.0.0", "asset");
