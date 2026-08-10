@@ -17,13 +17,14 @@ case "${TARGET}" in jf10|jf12) ;; *) rk_die "usage: prepare-lifecycle-repository
 rk_require curl md5sum python3 sha256sum
 rk_pin_build_snapshot
 
+# The published-baseline download gate verifies both pinned digests: MD5 alone
+# is collision-broken. The generated in-lab repository metadata further below
+# still publishes MD5 only, because that is Jellyfin's plugin-manifest checksum
+# contract.
 case "${TARGET}" in
     jf10)
         ABI="10.11.0.0"
         DEFAULT_BASE_URL="https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.0.0.0/jellyfin-refresh-kit_1.0.0.0.zip"
-        # The download gate verifies both digests. MD5 alone is collision-broken;
-        # the in-lab repository metadata below still publishes MD5 only because
-        # that is Jellyfin's plugin-manifest checksum contract.
         DEFAULT_BASE_MD5="57ad873276ad2f998596fead0767af57"
         DEFAULT_BASE_SHA256="5605810d30c12621931cc9145256bc0cce14968552a842f2db7474e13f3ee367"
         ;;
