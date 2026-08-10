@@ -17,6 +17,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Primitives;
 using Xunit;
 
@@ -25,6 +27,8 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
     [Collection(RefreshKitStaticOptionsCollection.Name)]
     public class RefreshKitMiddlewareCacheTests
     {
+        private const string StackedOuterPluginName = "Stacked Outer Kit";
+
         [Fact]
         public async Task VaryVariants_DoNotReuseValidatorsOrBodiesAcrossRequestValues()
         {
@@ -1711,6 +1715,95 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             }
         }
 
+        [Fact]
+        public async Task StackedRefreshKitInstances_ForwardTheInnerOwnersTransformedShell()
+        {
+            var source = new StackedShellSource();
+            await using var application = await CreateNestedKestrelApplicationAsync(
+                source.InvokeAsync,
+                CreateStackedOuterKit());
+
+            var response = await application.SendAsync(headers: new Dictionary<string, string>
+            {
+                ["Accept-Encoding"] = "identity",
+            });
+
+            // The inner instance is the innermost transforming owner, so its
+            // representation reaches the client exactly as it committed it.
+            Assert.Equal(StatusCodes.Status200OK, response.StatusCode);
+            Assert.Contains(
+                "plugin=\"Jellyfin Refresh Kit\"",
+                response.BodyText,
+                StringComparison.Ordinal);
+            Assert.Contains("stacked shell", response.BodyText, StringComparison.Ordinal);
+            Assert.StartsWith("\"rk-", response.Header("ETag"), StringComparison.Ordinal);
+            Assert.Equal("text/html; charset=utf-8", response.Header("Content-Type"));
+            Assert.Equal(response.Body.Length.ToString(), response.Header("Content-Length"));
+            Assert.Equal(string.Empty, response.Header("Content-Encoding"));
+            Assert.DoesNotContain(
+                "no-store",
+                response.Header("Cache-Control"),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(1, source.FullResponses);
+
+            // The outer instance stands down instead of claiming the shell: its
+            // own tag is absent, which is the documented ordering boundary.
+            Assert.DoesNotContain(
+                "plugin=\"" + StackedOuterPluginName + "\"",
+                response.BodyText,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain("stacked-outer.js", response.BodyText, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task StackedRefreshKitInstances_AnswerARevisitWithTheInnerOwners304()
+        {
+            var source = new StackedShellSource();
+            var outerLog = new RecordingLogger();
+            await using var application = await CreateNestedKestrelApplicationAsync(
+                source.InvokeAsync,
+                CreateStackedOuterKit(outerLog));
+
+            var first = await application.SendAsync(headers: new Dictionary<string, string>
+            {
+                ["Accept-Encoding"] = "identity",
+            });
+            // A body write after a synthesized 304 aborts the Kestrel connection,
+            // so completing this request at all is part of the assertion.
+            var revisit = await application.SendAsync(headers: new Dictionary<string, string>
+            {
+                ["Accept-Encoding"] = "identity",
+                ["If-None-Match"] = first.Header("ETag"),
+            });
+
+            Assert.Equal(StatusCodes.Status200OK, first.StatusCode);
+            Assert.Equal(StatusCodes.Status304NotModified, revisit.StatusCode);
+            Assert.Empty(revisit.Body);
+            Assert.Equal(first.Header("ETag"), revisit.Header("ETag"));
+            Assert.Equal(string.Empty, revisit.Header("Content-Encoding"));
+            Assert.DoesNotContain(
+                "no-store",
+                revisit.Header("Cache-Control"),
+                StringComparison.OrdinalIgnoreCase);
+
+            // The stood-down outer instance no longer suppresses the client's
+            // validators, so the owner revalidates the source instead of
+            // rebuilding the shell.
+            Assert.Equal(1, source.FullResponses);
+            Assert.Equal(1, source.ConditionalResponses);
+
+            // The outer instance announced the stand-down exactly once and never
+            // claimed an injection of its own.
+            Assert.Single(
+                outerLog.Messages,
+                message => message.Contains("Standing down", StringComparison.Ordinal));
+            Assert.DoesNotContain(
+                outerLog.Messages,
+                message => message.Contains(
+                    "injected the client script",
+                    StringComparison.Ordinal));
+        }
+
         [Theory]
         [InlineData("source-fallback")]
         [InlineData("overflow")]
@@ -2555,6 +2648,95 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
                 .Addresses
                 .Single();
             return new KestrelMiddlewareApplication(host, new Uri(address));
+        }
+
+        // A SECOND embedded copy of the kit, registered ahead of the one under
+        // test so ASP.NET composes it outermost — the shape two plugins that
+        // both adopt RefreshKit.cs produce on one server. Its own options
+        // instance keeps it out of the static registration the collection
+        // serializes, and its distinct plugin name makes ownership visible in
+        // the emitted markup.
+        private static RefreshKitScriptInjectionFilter CreateStackedOuterKit(
+            ILogger? logger = null)
+        {
+            var options = new RefreshKitOptions
+            {
+                PluginName = StackedOuterPluginName,
+                BasePath = "StackedOuterKit",
+                ScriptPaths = new[] { "stacked-outer.js" },
+            };
+            return new RefreshKitScriptInjectionFilter(
+                options,
+                logger ?? NullLogger.Instance,
+                () => RefreshKit.BuildScriptTags(options));
+        }
+
+        private sealed class RecordingLogger : ILogger
+        {
+            private readonly List<string> _messages = new List<string>();
+
+            public IReadOnlyList<string> Messages
+            {
+                get
+                {
+                    lock (_messages)
+                    {
+                        return _messages.ToArray();
+                    }
+                }
+            }
+
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                lock (_messages)
+                {
+                    _messages.Add(formatter(state, exception));
+                }
+            }
+        }
+
+        private sealed class StackedShellSource
+        {
+            private const string SourceETag = "\"stacked-source\"";
+
+            private static readonly byte[] Shell = Encoding.UTF8.GetBytes(
+                "<html><body><main>stacked shell</main></body></html>");
+
+            private int _fullResponses;
+            private int _conditionalResponses;
+
+            public int FullResponses => Volatile.Read(ref _fullResponses);
+
+            public int ConditionalResponses => Volatile.Read(ref _conditionalResponses);
+
+            public async Task InvokeAsync(HttpContext context)
+            {
+                context.Response.ContentType = "text/html; charset=utf-8";
+                context.Response.Headers["Cache-Control"] = "no-cache";
+                context.Response.Headers["ETag"] = SourceETag;
+                if (context.Request.Headers["If-None-Match"].ToString().Contains(
+                    SourceETag,
+                    StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref _conditionalResponses);
+                    context.Response.StatusCode = StatusCodes.Status304NotModified;
+                    return;
+                }
+
+                Interlocked.Increment(ref _fullResponses);
+                context.Response.ContentLength = Shell.Length;
+                await context.Response.Body.WriteAsync(Shell).ConfigureAwait(false);
+            }
         }
 
         private sealed class NestedIdentityBufferingStartupFilter : IStartupFilter

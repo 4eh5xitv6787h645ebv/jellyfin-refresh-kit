@@ -161,9 +161,27 @@
 //    namespace into their OWN assembly; identical namespaces in different
 //    assemblies are perfectly legal at runtime (they are distinct types with
 //    distinct statics). Each plugin gets its own middleware instance, its own
-//    cache, and its own `plugin="…"` scrub identity, so their tags coexist and
-//    neither scrubs the other's. The only true collision risk is route names,
-//    which is exactly why the version controller is opt-in.
+//    cache, and its own `plugin="…"` scrub identity, so their tags never scrub
+//    each other. The only true collision risk is route names, which is exactly
+//    why the version controller is opt-in.
+//    ONE instance owns each shell response: the INNERMOST one that transforms
+//    it. Startup filters compose first-registered-outermost, so the innermost
+//    instance finishes first and commits its own representation — status,
+//    framing, and its strong `rk-` ETag — through the outer instance's response
+//    body feature. The outer instance sees that explicit StartAsync arrive
+//    before it had decided anything, and STANDS DOWN for that response: no
+//    injection, no late-status rewrite, no metadata hardening and no
+//    precondition evaluation, so the owner's bytes and validators reach the
+//    wire byte-for-byte. Once such an owner has committed a complete shell, the
+//    outer instance also steps aside from the START of later shell requests, so
+//    the owner keeps seeing the client's own `If-None-Match` and can answer it
+//    with a real 304. Consequence: the outer instance's tags are NOT on that
+//    page. That is the same ownership boundary as the documented
+//    middleware-ordering caveat — a plugin cannot make itself outermost, and an
+//    outer instance must never mangle an inner owner's response to get its tag
+//    in. (An outer non-kit response BUFFER is a different shape: nothing has
+//    committed there, so this file still transforms and then serves the
+//    complete shell `no-store` without validators, exactly as before.)
 //
 // -----------------------------------------------------------------------------
 
@@ -283,6 +301,13 @@ namespace Jellyfin.Plugin.RefreshKit
         /// returned string is spliced into the tag VERBATIM — you own its
         /// escaping and quoting. Typical use is handing config to the JS kit:
         /// <c>data-version-url="../MyPlugin/RefreshVersion"</c>.
+        /// <para>
+        /// The block is emitted BEFORE the kit's own <c>src</c>. HTML keeps the
+        /// FIRST occurrence of a duplicated attribute, so an author-supplied
+        /// <c>src="…"</c> here would shadow the versioned URL the kit builds and
+        /// silently disable cache-busting for that tag. Never emit <c>src</c>
+        /// (or <c>defer</c>) from this callback.
+        /// </para>
         /// </summary>
         public Func<string, string?>? ExtraAttributes { get; set; }
 
@@ -539,6 +564,12 @@ namespace Jellyfin.Plugin.RefreshKit
                 throw new ArgumentException("RefreshKitOptions.ScriptPaths needs at least one entry.", nameof(options));
             }
 
+            ValidateSrcComponent(options.BasePath, nameof(RefreshKitOptions.BasePath));
+            foreach (var scriptPath in options.ScriptPaths)
+            {
+                ValidateSrcComponent(scriptPath, nameof(RefreshKitOptions.ScriptPaths));
+            }
+
             Options = options;
 
             // Resolved through a factory so the filter gets the options instance
@@ -550,6 +581,47 @@ namespace Jellyfin.Plugin.RefreshKit
                 sp.GetService<IResponseCompressionProvider>()));
 
             return services;
+        }
+
+        // BasePath and every ScriptPaths entry are spliced into the injected
+        // src VERBATIM — unlike PluginName (attribute-escaped) and the cache key
+        // (URL-escaped) — because a route segment has no legitimate reason to
+        // contain anything exotic. Validate that assumption once, at
+        // registration, instead of emitting a corrupt tag on every request: a
+        // quote or an angle bracket ends the attribute (or the whole element),
+        // whitespace starts a new attribute, and '&', '\', '?' or '#' silently
+        // re-point the URL the browser actually fetches. Same fail-fast contract
+        // as the required-value checks above: an author error, surfaced on first
+        // run, never at request time.
+        private static void ValidateSrcComponent(string? value, string optionName)
+        {
+            foreach (var character in value ?? string.Empty)
+            {
+                if (character > ' '
+                    && character != '\u007F'
+                    && character != '"'
+                    && character != '\''
+                    && character != '<'
+                    && character != '>'
+                    && character != '&'
+                    && character != '\\'
+                    && character != '`'
+                    && character != '?'
+                    && character != '#')
+                {
+                    continue;
+                }
+
+                throw new ArgumentException(
+                    "RefreshKitOptions."
+                        + optionName
+                        + " is spliced into the injected script src unescaped, so it must not"
+                        + " contain whitespace, control characters, quotes, or any of"
+                        + " < > & \\ ` ? # — got \""
+                        + (value ?? string.Empty)
+                        + "\".",
+                    "options");
+            }
         }
 
         /// <summary>
@@ -2787,6 +2859,8 @@ namespace Jellyfin.Plugin.RefreshKit
             .ToArray();
         private int _cachedBodyBytes;
         private int _loggedOnce;
+        private int _loggedFailClosedOnce;
+        private int _downstreamOwnsShellResponse;
 
         internal RefreshKitScriptInjectionFilter(RefreshKitOptions options, ILogger logger)
             : this(options, logger, () => RefreshKit.BuildScriptTags(options), null)
@@ -2859,6 +2933,19 @@ namespace Jellyfin.Plugin.RefreshKit
 
             // Kill switch: "do nothing", never "fail the request".
             if (!_options.ResolveEnabled())
+            {
+                await nextMw().ConfigureAwait(false);
+                return;
+            }
+
+            // A downstream component (realistically a second embedded copy of
+            // this file, nearer the shell) has already committed a complete
+            // shell response of its own through this instance's body feature.
+            // It owns the entity; stay out of the request entirely from here on
+            // so its validators and the client's conditional headers keep
+            // reaching each other untouched. See the stand-down note in the
+            // file header.
+            if (Volatile.Read(ref _downstreamOwnsShellResponse) != 0)
             {
                 await nextMw().ConfigureAwait(false);
                 return;
@@ -2964,6 +3051,12 @@ namespace Jellyfin.Plugin.RefreshKit
                 var originalBody = context.Response.Body;
                 var originalBodyFeature = context.Features.Get<IHttpResponseBodyFeature>();
                 byte[]? committedReplacementBody = null;
+                // Set by the response body feature installed below, and only
+                // ever by a DOWNSTREAM caller: this middleware restores the
+                // host's own feature before it starts the response itself, so
+                // an explicit StartAsync arriving at our feature means someone
+                // nearer the shell is committing a response of its own.
+                var downstreamStartedResponse = false;
                 void StartOriginalResponse()
                 {
                     var downstreamMethod = context.Request.Method;
@@ -2974,6 +3067,18 @@ namespace Jellyfin.Plugin.RefreshKit
 
                     try
                     {
+                        // Sync-over-async, deliberately: the synchronous
+                        // Stream.Flush/Write overloads are a commitment boundary
+                        // with no async continuation to hand back, and the async
+                        // overloads reach this same callback from an already
+                        // awaited path. What is awaited here is one header
+                        // commit on the feature below us, not body I/O: it is
+                        // bounded by the four-stripe admission gate and the
+                        // 2 MiB transform cap, and the caller already chose
+                        // synchronous response I/O. Splitting the commitment
+                        // callback into sync and async variants would fork the
+                        // most delicate path in this file; if that is ever done,
+                        // do it well away from a release.
                         (originalBodyFeature?.StartAsync(context.RequestAborted)
                             ?? context.Response.StartAsync(context.RequestAborted))
                             .GetAwaiter()
@@ -3037,7 +3142,39 @@ namespace Jellyfin.Plugin.RefreshKit
                             clientIfNoneMatch,
                             originalIfUnmodifiedSince,
                             originalIfModifiedSince);
+                        if (downstreamStartedResponse)
+                        {
+                            // A downstream owner is committing its own response
+                            // through our stream before this middleware decided
+                            // anything. Whatever it writes next goes straight to
+                            // the transport, so our final callback can no longer
+                            // suppress a body or restate framing for it: stand
+                            // down completely and let its status, framing,
+                            // validators and conditional answers reach the wire
+                            // untouched. A retained shell of ours can no longer
+                            // be proven to describe this resource either.
+                            if (requestCanUseSharedCache
+                                && IsSharedCacheSafeRequest(context.Request))
+                            {
+                                RemoveCachedBase(baseCacheKey);
+                            }
+
+                            responseFinalization.StandDownForDownstreamOwner();
+                        }
+
                         StartOriginalResponse();
+                        if (downstreamStartedResponse
+                            && context.Response.HasStarted
+                            && context.Response.StatusCode == StatusCodes.Status200OK)
+                        {
+                            // The owner reached the real transport with a
+                            // complete shell of its own; an outer response
+                            // BUFFER absorbing the start instead is the
+                            // documented safe-degradation shape and keeps the
+                            // provisional path StartOriginalResponse just ran.
+                            NoteDownstreamOwnedShellResponse();
+                        }
+
                         return responseFinalization.SourceFallbackBodyAllowed;
                     });
                 // Do not use HttpResponse.Body's setter here. Its
@@ -3048,7 +3185,9 @@ namespace Jellyfin.Plugin.RefreshKit
                 // without a prior SendFile delegate so file sends fall back through
                 // the same bounded stream as ordinary writes.
                 context.Features.Set<IHttpResponseBodyFeature>(
-                    new BoundedResponseBodyFeature(buffer));
+                    new BoundedResponseBodyFeature(
+                        buffer,
+                        () => downstreamStartedResponse = true));
                 // HEAD describes the representation a corresponding GET would send.
                 // Run the downstream shell producer once as GET so a cold HEAD can
                 // derive the exact transformed ETag/length and evaluate concrete
@@ -3225,6 +3364,10 @@ namespace Jellyfin.Plugin.RefreshKit
                                 }
                             }
                         }
+                        else
+                        {
+                            LogFailClosedShellOnce();
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -3311,6 +3454,49 @@ namespace Jellyfin.Plugin.RefreshKit
                 "{Plugin}: refresh-kit injection error (serving original HTML): {Message}",
                 _options.PluginName,
                 ex.Message);
+
+        // The scrubber/inserter refuses a shell it cannot prove it understands —
+        // a quoted legacy doctype, a real <base href>, a document with no
+        // accepted </body> token, foreign-content or scope violations. Serving
+        // it unchanged is the correct answer, but a silent one is
+        // indistinguishable from "the plugin is broken", so say it once per
+        // loaded instance. The shape is stable for a given jellyfin-web build,
+        // so once is enough to diagnose it.
+        private void LogFailClosedShellOnce()
+        {
+            if (Interlocked.Exchange(ref _loggedFailClosedOnce, 1) != 0)
+            {
+                return;
+            }
+
+            _logger.LogInformation(
+                "{Plugin}: served index.html unchanged — its markup offers no injection"
+                    + " point this parser will accept (a quoted legacy doctype, a real"
+                    + " <base href>, or no usable </body>). Injection is deliberately"
+                    + " fail-closed for those shapes.",
+                _options.PluginName);
+        }
+
+        // Latched once per loaded instance. Middleware composition does not
+        // change while the process runs, so an owner that committed the shell
+        // itself will do so on every later shell request too; continuing to
+        // buffer and strip the client's conditional headers in front of it
+        // would only cost that owner its revalidation without ever letting this
+        // instance inject.
+        private void NoteDownstreamOwnedShellResponse()
+        {
+            if (Interlocked.Exchange(ref _downstreamOwnsShellResponse, 1) != 0)
+            {
+                return;
+            }
+
+            _logger.LogInformation(
+                "{Plugin}: a downstream component committed the app shell response itself"
+                    + " (typically another plugin embedding this refresh kit, registered"
+                    + " nearer the shell). Standing down: its response is forwarded"
+                    + " untouched and this instance no longer injects into index.html.",
+                _options.PluginName);
+        }
 
         // The base cache key covers everything known before the source runs: the
         // complete request target (authority, PathBase, path and query), request
@@ -4926,12 +5112,30 @@ namespace Jellyfin.Plugin.RefreshKit
         /// inspected. Direct file sends instead use the framework fallback copy
         /// through the bounded stream. An explicit downstream StartAsync or
         /// FlushAsync retains its normal commit/passthrough semantics.
+        /// <para>
+        /// An explicit StartAsync is additionally reported to the middleware.
+        /// Only downstream code can reach this feature — the middleware puts the
+        /// host's own feature back before it starts anything itself — so such a
+        /// call is a downstream component committing its own response, which is
+        /// exactly the shape a second embedded copy of this file produces.
+        /// </para>
         /// </summary>
         private sealed class BoundedResponseBodyFeature : StreamResponseBodyFeature
         {
-            public BoundedResponseBodyFeature(Stream stream)
+            private readonly Action _onDownstreamStart;
+
+            public BoundedResponseBodyFeature(Stream stream, Action onDownstreamStart)
                 : base(stream)
             {
+                _onDownstreamStart = onDownstreamStart;
+            }
+
+            public override Task StartAsync(CancellationToken cancellationToken = default)
+            {
+                // Recorded BEFORE the base flush, because that flush is what
+                // runs the middleware's commitment callback.
+                _onDownstreamStart();
+                return base.StartAsync(cancellationToken);
             }
 
             public override Task SendFileAsync(
@@ -5238,6 +5442,7 @@ namespace Jellyfin.Plugin.RefreshKit
             private readonly Action _releaseRepresentationGateLease;
             private int _bodyFinalized;
             private int _provisionallyFinalized;
+            private int _downstreamOwnedResponse;
             private int _outerMetadataFinalized;
             private int _outerFramingSnapshotRegistered;
             private int _outerBodyPending;
@@ -5346,11 +5551,42 @@ namespace Jellyfin.Plugin.RefreshKit
                 BodySelection = ResponseBodySelection.None;
             }
 
+            /// <summary>
+            /// Suppresses this middleware's final callback for a response a
+            /// downstream owner committed through our body feature. Ordered
+            /// after the provisional check in <see cref="OnStartingAsync"/>, so
+            /// an outer response buffer that absorbs the same start keeps its
+            /// existing safe-degradation behaviour unchanged.
+            /// </summary>
+            public void StandDownForDownstreamOwner() =>
+                Volatile.Write(ref _downstreamOwnedResponse, 1);
+
             public Task OnStartingAsync()
             {
-                return Volatile.Read(ref _provisionallyFinalized) != 0
-                    ? FinalizeOuterOwnedMetadataAsync()
+                if (Volatile.Read(ref _provisionallyFinalized) != 0)
+                {
+                    return FinalizeOuterOwnedMetadataAsync();
+                }
+
+                return Volatile.Read(ref _downstreamOwnedResponse) != 0
+                    ? CompleteDownstreamOwnedResponse()
                     : EnsureBodyFinalizedAsync();
+            }
+
+            private Task CompleteDownstreamOwnedResponse()
+            {
+                // Nothing to decide: no late-status rewrite, no metadata
+                // hardening, no precondition evaluation. The owner's headers are
+                // committed as it wrote them, and its body is already streaming
+                // through our passthrough stream — a synthesized 304/412 here
+                // would strip framing from bytes we cannot recall.
+                if (Interlocked.Exchange(ref _bodyFinalized, 1) == 0)
+                {
+                    BodySelection = ResponseBodySelection.None;
+                    _releaseRepresentationGateLease();
+                }
+
+                return Task.CompletedTask;
             }
 
             private Task CaptureOuterFramingAsync()
@@ -6188,30 +6424,6 @@ namespace Jellyfin.Plugin.RefreshKit
                 IReadOnlyList<CachedHeader> revalidationHeaders)
             {
                 foreach (var current in revalidationHeaders)
-                {
-                    var cachedIndex = Array.FindIndex(
-                        ReplayHeaders,
-                        header => header.Name.Equals(
-                            current.Name,
-                            StringComparison.OrdinalIgnoreCase));
-                    if (cachedIndex < 0
-                        || !ReplayHeaders[cachedIndex].HasSameValues(current))
-                    {
-                        return false;
-                    }
-                }
-
-                return true;
-            }
-
-            public bool HasSameReplayHeaders(IReadOnlyList<CachedHeader> headers)
-            {
-                if (ReplayHeaders.Length != headers.Count)
-                {
-                    return false;
-                }
-
-                foreach (var current in headers)
                 {
                     var cachedIndex = Array.FindIndex(
                         ReplayHeaders,
