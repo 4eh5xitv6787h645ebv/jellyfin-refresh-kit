@@ -127,6 +127,12 @@ request receives the full `200` body rather than an invalid `304`. In both
 paths the middleware **fails open**: if it cannot safely process a response, it
 serves the host's original bytes rather than breaking the page.
 
+A component *inside* this one that commits the shell itself — realistically
+another plugin that embeds the same `RefreshKit.cs` — is the mirror image of
+that buffer: it already owns the wire, so Refresh Kit stands down and forwards
+its response untouched, validators included. See
+[the ordering caveat](#ordering-caveat).
+
 This is the same `RefreshKit.cs` machinery documented in the root README,
 vendored into the plugin (see *Repository layout* below).
 
@@ -173,6 +179,19 @@ order, which no plugin can control:
   later response buffer, mechanism 1 uses the explicit `no-store`
   safe-degradation path instead of claiming an `rk-` validator for somebody
   else's final bytes.
+* **A plugin that embeds `RefreshKit.cs` itself and lands INSIDE this one** —
+  that instance is the innermost transforming owner, so it commits the finished
+  shell (its own strong `rk-` ETag, media type and length) before this plugin's
+  middleware can transform anything. This plugin then **stands down** for that
+  response: the owner's bytes, validators and conditional answers are forwarded
+  untouched, and once such an owner has committed a complete shell, later shell
+  requests are passed straight through so it keeps seeing the client's own
+  `If-None-Match`. The stand-down is logged once. The visible cost is that this
+  plugin's stamping and its own tag are absent from that page — the adopting
+  plugin's kit is serving it, correctly revalidating, with its own versioned
+  URLs. Standing down is the only safe answer: rewriting an owner's committed
+  framing would strip the media type and length from bytes already on their way
+  to the browser.
 
 The compatibility matrices preserve one concrete limitation rather than hiding
 it: GetAvatar's single eligible outer-owned tag remains unstamped in both
@@ -546,6 +565,11 @@ Nothing about the copy-the-file path changes.
 * This plugin's own tag carries `plugin="Jellyfin Refresh Kit"`, and the
   middleware scrubs exactly that marker — so it never removes or double-injects
   another plugin's tags, and another embedding plugin never scrubs this one's.
+* A plugin that also embeds the **server** half (`RefreshKit.cs`) coexists with
+  this one. Whichever instance ends up nearest the shell owns the response, and
+  the outer instance stands down for it rather than rewriting a committed
+  response — see [the ordering caveat](#ordering-caveat). Plugin load order
+  decides which is which, and no plugin can choose it.
 * The shipped runtime is **not a committed duplicate**: the csproj embeds
   `../../jellyfin-refresh-kit.js` from the repository root at build time, so the
   plugin always ships the same bytes the single-file path documents.
@@ -763,6 +787,11 @@ artifacts/CI result before claiming a particular revision passed a heavy suite.
 * **Nested outer response buffers** — the complete transformed shell is served
   `no-store` without entity validators, using the outer owner's final framing.
   This is safe freshness degradation, not strong-ETag/`304` compatibility.
+* **A downstream plugin that embeds `RefreshKit.cs` owns the shell.** When
+  another plugin's copy of the kit commits the response first, this plugin
+  stands down for it: no injection, no stamping, no late header rewriting, and
+  no `rk-` validator of its own. Freshness is then that plugin's kit's job,
+  which it does with the same machinery.
 * **Cross-origin assets are never stamped.** A plugin loading its client code
   from a CDN (jsDelivr, unpkg) cannot be helped from here; the CDN's own
   `@latest` resolution TTL is invisible to both the server and the browser.

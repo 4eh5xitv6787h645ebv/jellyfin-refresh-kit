@@ -556,6 +556,18 @@ public ActionResult GetScript()
 }
 ```
 
+`BasePath` and each `ScriptPaths` entry are spliced into the injected `src` exactly as given, so `AddRefreshKit` rejects values containing whitespace, control characters, quotes, or any of `< > & \ ` ? #` — an author mistake that would otherwise emit a corrupt tag on every request now fails on first run.
+
+### More than one plugin embedding the helper
+
+Two plugins can each copy `RefreshKit.cs` in. Each gets its own middleware instance, its own representation cache, and its own `plugin="…"` scrub identity, so their tags never scrub each other and the only real collision risk is route names (which is why the version controller is opt-in).
+
+The **innermost** instance owns the shell response. ASP.NET composes startup filters first-registered-outermost and Jellyfin's plugin load order is not something a plugin can choose, so the instance nearest the shell finishes first and commits its own representation — status, framing, and its strong `rk-` ETag. An outer instance recognises that commitment arriving through its own response body feature before it had decided anything and **stands down** for that response: it forwards the owner's bytes, validators, and conditional answers untouched, and it does not inject, rewrite a late status, harden metadata, or evaluate preconditions. Once such an owner has committed a complete shell, the outer instance also steps aside from the start of later shell requests, so the owner keeps seeing the client's own `If-None-Match` and can answer it with a real `304`. It logs the stand-down once.
+
+The consequence is the same ownership boundary as the [standalone plugin's ordering caveat](plugin/README.md#ordering-caveat): the outer instance's tag is not on that page. If your plugin's tag must always be present, inject it yourself rather than relying on being outermost; two instances still coexist safely, and a page that already carries the inner owner's tag is a correctly revalidating page.
+
+An outer response **buffer** that is not a kit instance is a different shape — nothing has committed there, so the helper still transforms and then serves the complete shell `no-store` without validators, exactly as before.
+
 ### Optional version endpoint
 
 If the JavaScript runtime should poll the same identity used by the server helper, expose a plugin-specific route by subclassing `RefreshKitVersionControllerBase`:
@@ -587,12 +599,12 @@ Using the same cache identity for the page's boot version and the polled version
 | Option | Required | Purpose |
 | --- | --- | --- |
 | `PluginName` | Yes | Stable identity used by the injected tag and the helper's own-tag scrub logic. |
-| `BasePath` | Yes | Controller route segment used to build relative script URLs. |
-| `ScriptPaths` | Yes | Ordered script paths. Because injected tags use `defer`, this is also execution order. |
+| `BasePath` | Yes | Controller route segment used to build relative script URLs. Spliced into `src` unescaped, so it is validated at registration. |
+| `ScriptPaths` | Yes | Ordered script paths. Because injected tags use `defer`, this is also execution order. Each entry is spliced into `src` unescaped and validated at registration. |
 | `DevMode` | No | Live flag used by script-cache handling and stamped into the tag. Dev mode also adds `dev=1` to the script URL; that marker remains `no-store` even if the setting changes before the request, so an immutable production response cannot poison the dev URL. |
 | `VersionProvider` | No | Replaces the assembly-derived cache identity with a custom one. |
 | `EpochProvider` | No | Supplies an opaque process-incarnation sidecar for JSON version responses. It must be stable for the loaded process and change on a genuine restart; it is never part of cache identity. |
-| `ExtraAttributes` | No | Adds plugin-owned attributes to emitted script tags, including JS-kit configuration. |
+| `ExtraAttributes` | No | Adds plugin-owned attributes to emitted script tags, including JS-kit configuration. Emitted before the kit's `src`, so never return a `src` of your own: HTML keeps the first occurrence and it would shadow the versioned URL. |
 | `Enabled` | No | Live kill switch for the middleware. |
 
 If `jellyfin-refresh-kit.js` is one of the injected scripts, put it **before** scripts that create runtime assets so its interception is active first.
@@ -607,6 +619,7 @@ If `jellyfin-refresh-kit.js` is one of the injected scripts, put it **before** s
 - All nodes behind a load balancer should expose one generation for the same deployed build. If epochs are enabled, each epoch must be stable for its process; fresh epochs bound legitimate restarts and finite mixed-node cycles, but a flapping deployment can still delay convergence.
 - A CDN's own `latest`/resolution cache cannot be fixed by client-side versioning if the CDN maps the requested URL to stale content.
 - JavaScript cannot add response `ETag` or `Cache-Control` headers; use the server helper when those guarantees are required.
+- When two plugins embed `RefreshKit.cs`, the innermost instance owns the shell response and the outer one stands down, so the outer plugin's tag is not injected on that page. See [More than one plugin embedding the helper](#more-than-one-plugin-embedding-the-helper).
 
 ---
 
