@@ -384,6 +384,10 @@ test_integration() {
 }
 
 test_compatibility() {
+    # The static negative gates below run the Node-based browser-driver
+    # self-tests, and the fast/integration paths install the locked
+    # dependencies before reaching them; this path must do the same.
+    install_browser_dependencies
     validate_static_inputs
     prepare_validation_build_snapshot
     local result=0 compatibility_rc=0 build_snapshot
