@@ -4953,6 +4953,12 @@
         // two engines calling location.reload() is exactly the double-fire the
         // one-navigation-one-slot latch exists to prevent.
         if (handedOff) return;
+        // The document is being replaced (a non-persisted pagehide was
+        // observed), so a navigation HAS committed. Starting another one now
+        // would spend a budget slot on a reload this document will never
+        // perform — and that is a slot the document arriving in its place does
+        // not get.
+        if (navigationCommitted) return;
         // A blocked/ignored navigation must reconcile a fresh endpoint read
         // before stale intent is allowed back through the safety gates.
         if (reloadRevalidationPending) {
