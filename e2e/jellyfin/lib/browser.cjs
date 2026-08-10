@@ -326,8 +326,14 @@ function auditCapturedErrors(captures, restartWindow) {
   ].filter(Boolean).join('\n');
   const isTransportNoise = (event) => (
     (event.kind === 'response' && event.status >= 500)
-    || (event.kind === 'requestfailed' && /ERR_|reset|closed|refused|timed?\s*out/i.test(event.error || ''))
-    || /failed to load resource:.*(?:5\d\d|ERR_)|net::ERR_|service unavailable|websocket.*(?:failed|closed)/i
+    // A requestfailed is by definition a network-level failure (the request did
+    // not complete) — never a logic error — whatever the exact errorText, which
+    // Chromium reports inconsistently (net::ERR_ABORTED, empty, etc.) when a
+    // connection is dropped by a restart. Treat every requestfailed as
+    // transport noise; it is only excused when it also occurs at/after the
+    // restart (atOrAfterRestart) below.
+    || event.kind === 'requestfailed'
+    || /failed to load resource:.*(?:5\d\d|ERR_)|net::ERR_|service unavailable|websocket.*(?:failed|closed)|failed to fetch|networkerror|load failed|connection (?:reset|refused|closed|aborted)/i
       .test(haystack(event))
   );
   const isNotificationPermission = (event) => (
@@ -786,6 +792,17 @@ function recordFailure(message) {
     }
     result.errorAudit = auditCapturedErrors(captures, result.restartWindow);
     if (result.errorAudit.unexpectedRefreshKitErrors.count > 0) {
+      // Print the offending events to the log so a CI failure is diagnosable
+      // without the (unretained-on-failure) result.json artifact.
+      for (const event of result.errorAudit.unexpectedRefreshKitErrors.events) {
+        console.error(
+          `  unexpected RK event: page=${event.page} kind=${event.kind}`
+          + ` ms=${event.elapsedMs} status=${event.status ?? ''}`
+          + ` text=${JSON.stringify(clipped(event.text || '', 200))}`
+          + ` url=${JSON.stringify(redactUrl(event.url || event.source || ''))}`
+          + ` error=${JSON.stringify(event.error || '')}`,
+        );
+      }
       recordFailure(
         `${result.errorAudit.unexpectedRefreshKitErrors.count} unexpected `
         + 'RefreshKit-attributed browser/network error(s); see result.json errorAudit',
