@@ -14,19 +14,24 @@ source "${HERE}/common.sh"
 TARGET="${1:-}"
 case "${TARGET}" in jf10|jf12) ;; *) rk_die "usage: prepare-lifecycle-repository.sh jf10|jf12" ;; esac
 
-rk_require curl md5sum python3
+rk_require curl md5sum python3 sha256sum
 rk_pin_build_snapshot
 
 case "${TARGET}" in
     jf10)
         ABI="10.11.0.0"
         DEFAULT_BASE_URL="https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.0.0.0/jellyfin-refresh-kit_1.0.0.0.zip"
+        # The download gate verifies both digests. MD5 alone is collision-broken;
+        # the in-lab repository metadata below still publishes MD5 only because
+        # that is Jellyfin's plugin-manifest checksum contract.
         DEFAULT_BASE_MD5="57ad873276ad2f998596fead0767af57"
+        DEFAULT_BASE_SHA256="5605810d30c12621931cc9145256bc0cce14968552a842f2db7474e13f3ee367"
         ;;
     jf12)
         ABI="12.0.0.0"
         DEFAULT_BASE_URL="https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.0.0.0/jellyfin-refresh-kit_1.0.0.0_jf12.zip"
         DEFAULT_BASE_MD5="1b7ad43803d1756bcb18c4c0351efcd1"
+        DEFAULT_BASE_SHA256="f68922742911de4643877561f66e6c7921c2ec49034d3383938a01177fa5f837"
         ;;
 esac
 
@@ -79,9 +84,12 @@ PY
 
 BASE_URL="${DEFAULT_BASE_URL}"
 BASE_MD5="${DEFAULT_BASE_MD5}"
+BASE_SHA256="${DEFAULT_BASE_SHA256}"
 [[ "${BASE_URL}" =~ ^https:// ]] || rk_die "baseline package URL must use HTTPS"
 [[ "${BASE_MD5}" =~ ^[0-9a-fA-F]{32}$ ]] || rk_die "baseline checksum is not an MD5 digest"
+[[ "${BASE_SHA256}" =~ ^[0-9a-fA-F]{64}$ ]] || rk_die "baseline checksum is not a SHA-256 digest"
 BASE_MD5="${BASE_MD5,,}"
+BASE_SHA256="${BASE_SHA256,,}"
 
 REPOSITORY_ROOT="${RK_STATE_DIR}/repository"
 TARGET_DIR="${REPOSITORY_ROOT}/${TARGET}"
@@ -90,12 +98,18 @@ BASE_PACKAGE="${TARGET_DIR}/baseline.zip"
 CANDIDATE_COPY="${TARGET_DIR}/candidate.zip"
 
 if [ ! -f "${BASE_PACKAGE}" ] || \
-   [ "$(md5sum "${BASE_PACKAGE}" 2>/dev/null | awk '{print $1}')" != "${BASE_MD5}" ]; then
+   [ "$(md5sum "${BASE_PACKAGE}" 2>/dev/null | awk '{print $1}')" != "${BASE_MD5}" ] || \
+   [ "$(sha256sum "${BASE_PACKAGE}" 2>/dev/null | awk '{print $1}')" != "${BASE_SHA256}" ]; then
     rm -f -- "${BASE_PACKAGE}.part"
     rk_log "${TARGET}: downloading published lifecycle baseline ${BASE_VERSION}"
     curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
         --output "${BASE_PACKAGE}.part" "${BASE_URL}"
     ACTUAL_BASE_MD5="$(md5sum "${BASE_PACKAGE}.part" | awk '{print $1}')"
+    ACTUAL_BASE_SHA256="$(sha256sum "${BASE_PACKAGE}.part" | awk '{print $1}')"
+    [ "${ACTUAL_BASE_SHA256}" = "${BASE_SHA256}" ] || {
+        rm -f -- "${BASE_PACKAGE}.part"
+        rk_die "${TARGET}: published baseline SHA-256 ${ACTUAL_BASE_SHA256} != ${BASE_SHA256}"
+    }
     [ "${ACTUAL_BASE_MD5}" = "${BASE_MD5}" ] || {
         rm -f -- "${BASE_PACKAGE}.part"
         rk_die "${TARGET}: published baseline checksum ${ACTUAL_BASE_MD5} != ${BASE_MD5}"
