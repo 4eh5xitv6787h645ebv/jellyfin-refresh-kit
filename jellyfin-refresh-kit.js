@@ -81,7 +81,9 @@
  *     (and a handoff preserves it). If patterns of two instances overlap on a
  *     URL, the first-registered instance wins and the manager logs ONE
  *     console.warn naming the overlapping instances the first time it happens.
- *     URLs already carrying v= always pass through untouched. A handoff cannot
+ *     URLs already carrying a version-ish query parameter (v, ver, version,
+ *     hash, build, cb, the plugin's own rkv, …) always pass through untouched.
+ *     A handoff cannot
  *     UNINSTALL the old wrapper (other code may hold a reference to it by
  *     then), so the old one flips to a permanent inert pass-through and the
  *     new manager stacks its own on top: still exactly one wrapper that does
@@ -2236,7 +2238,25 @@
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Does the URL's QUERY STRING already carry a `v=` parameter? A path
+     * Query keys that already make a URL change per release (or per request),
+     * so a URL carrying one is somebody's deliberate cache-busting scheme.
+     *
+     * Kept deliberately in step with the standalone plugin's server-side
+     * stamper (ThirdPartyTagStamper.VersionishKeys), because the two run on the
+     * same page and must COMPOSE: the plugin stamps third-party tags with its
+     * own `rkv=`, and until 2.4.8 this runtime recognized only `v=`, so an
+     * `rkv`-stamped URL that also matched an adopter's assetPatterns went out
+     * carrying BOTH identities — two spellings of the same asset, two cache
+     * entries, and a needless miss on every release. Matching is
+     * case-insensitive on the key only; values stay opaque.
+     * @type {RegExp}
+     */
+    var VERSION_PARAM_PATTERN = new RegExp(
+        '(^|&)(?:v|ver|vers|version|rev|revision|hash|build|buildid|' +
+        'cb|cachebust|cachebuster|nocache|_|rkv)=', 'i');
+
+    /**
+     * Does the URL's QUERY STRING already carry a version-ish parameter? A path
      * segment named "v=" is not a parameter, and a fragment is not sent to the
      * server at all — never clobber a caller's own cache-busting;
      * double-versioning is a cache-miss storm.
@@ -2248,7 +2268,7 @@
         var base = hashAt === -1 ? url : url.slice(0, hashAt);
         var qAt = base.indexOf('?');
         var query = qAt === -1 ? '' : base.slice(qAt + 1);
-        return !!query && /(^|&)v=/.test(query);
+        return !!query && VERSION_PARAM_PATTERN.test(query);
     }
 
     /**
@@ -2282,7 +2302,8 @@
     /**
      * The PAGE-LEVEL versioning decision, used by the single interceptor (and
      * the manager-level versionedUrl API):
-     *   • URLs already carrying v= pass through untouched, always.
+     *   • URLs already carrying a version-ish query parameter (see
+     *     hasVersionParam) pass through untouched, always.
      *   • All registered instances' assetPatterns are consulted; the FIRST
      *     REGISTERED instance whose patterns match AND has a resolved version
      *     versions the URL with THAT instance's version. An instance that
@@ -5637,7 +5658,9 @@
          *   • the URL matches one of ITS assetPatterns OR `force` is set (entry
          *     scripts are explicitly this instance's own, so they are versioned
          *     whether or not the adopter bothered to list a matching pattern),
-         *   • the URL does not already carry a `v=` parameter.
+         *   • the URL does not already carry a version-ish query parameter
+         *     (see hasVersionParam — `v=`, the standalone plugin's `rkv=`, and
+         *     the other cache-busting spellings the server-side stamper knows).
          * @param {string} url
          * @param {boolean} [force] Skip the assetPattern check (bootstrap entries).
          * @returns {string} The versioned URL, or the input unchanged.
@@ -7047,7 +7070,8 @@
             },
             /**
              * Version a URL with THIS instance's version/patterns. `force` skips
-             * the pattern match (still never clobbers an existing v=).
+             * the pattern match (still never clobbers an existing version-ish
+             * parameter).
              * @param {string} url
              * @param {boolean} [force]
              * @returns {string}
