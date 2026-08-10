@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace Jellyfin.Plugin.RefreshKit
 {
@@ -119,6 +120,29 @@ namespace Jellyfin.Plugin.RefreshKit
         public const string StampParameter = "rkv";
 
         /// <summary>
+        /// Hard ceiling on simultaneously open elements the walker will track.
+        ///
+        /// <para>
+        /// The open-element list is scanned linearly by
+        /// <see cref="EndTagCrossesHtmlScopeBoundary"/>, <see cref="PopElement"/>
+        /// and their neighbours, so an unbounded list makes a pathological
+        /// document — n unclosed <c>&lt;div&gt;</c>s followed by n end tags that
+        /// match nothing — cost O(n²) inside a request that is transforming the
+        /// app shell. A real Jellyfin shell nests a couple of dozen elements
+        /// deep; 512 is far above any honest page and far below the point where
+        /// the quadratic term matters. Exceeding it aborts the whole pass
+        /// fail-closed, which is this tokenizer's one established failure mode:
+        /// the ORIGINAL string instance is returned and the shell is served
+        /// unstamped rather than half-parsed.
+        /// </para>
+        /// </summary>
+        internal const int MaxOpenElementDepth = 512;
+
+        private static long _noScriptBoundaryAborts;
+
+        private static long _openElementDepthAborts;
+
+        /// <summary>
         /// Query keys that already make a URL change per release. A tag carrying
         /// one of these is somebody's deliberate cache-busting scheme and is left
         /// exactly as its author wrote it.
@@ -151,6 +175,19 @@ namespace Jellyfin.Plugin.RefreshKit
         private static readonly Regex ContentHashedFileRegex = new Regex(
             "(?:^|[.\\-])[0-9a-fA-F]{8,}(?=(?:\\.[a-zA-Z0-9_\\-]+)+$)",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+        /// <summary>
+        /// Process-lifetime counters for the two silent, whole-pass abort
+        /// reasons. Both leave a served shell completely unstamped while
+        /// everything else keeps working, so without a counter an admin
+        /// investigating "mechanism 2 does nothing on my server" has nothing to
+        /// look at. Diagnostics only: no stamping decision reads them, and the
+        /// bytes returned by <see cref="Stamp"/> never depend on them.
+        /// </summary>
+        public static StampingDiagnostics Diagnostics => new StampingDiagnostics(
+            Interlocked.Read(ref _noScriptBoundaryAborts),
+            Interlocked.Read(ref _openElementDepthAborts),
+            MaxOpenElementDepth);
 
         /// <summary>
         /// Stamps every eligible third-party tag in <paramref name="html"/>.
@@ -331,6 +368,7 @@ namespace Jellyfin.Plugin.RefreshKit
                     // enabled and ordinary markup when it is disabled. A server
                     // cannot know the eventual UA flag, so URL stamping cannot
                     // safely infer an effective base in either parse.
+                    Interlocked.Increment(ref _noScriptBoundaryAborts);
                     return html;
                 }
 
@@ -368,12 +406,19 @@ namespace Jellyfin.Plugin.RefreshKit
                         name,
                         elementNamespace,
                         attributes);
-                PushElement(
+                if (!TryPushElement(
                     elements,
                     name,
                     elementNamespace,
                     selfClosing,
-                    annotationXmlHtmlIntegrationPoint);
+                    annotationXmlHtmlIntegrationPoint))
+                {
+                    // Deeper than any honest shell. Give the caller its own
+                    // bytes back rather than keep walking a document whose
+                    // per-token scans are no longer bounded.
+                    Interlocked.Increment(ref _openElementDepthAborts);
+                    return html;
+                }
 
                 if (elementNamespace == MarkupNamespace.Html && IsRawTextElement(name))
                 {
@@ -1071,7 +1116,13 @@ namespace Jellyfin.Plugin.RefreshKit
                         ? value - 'A' + 10
                         : -1;
 
-        private static void PushElement(
+        /// <summary>
+        /// Tracks one opening tag, or reports that the document has exceeded
+        /// <see cref="MaxOpenElementDepth"/> open elements and the pass must
+        /// abort. An element that is never tracked (a void element, a
+        /// self-closing foreign element) cannot exceed the ceiling.
+        /// </summary>
+        private static bool TryPushElement(
             List<ElementContext> elements,
             string name,
             MarkupNamespace elementNamespace,
@@ -1081,7 +1132,12 @@ namespace Jellyfin.Plugin.RefreshKit
             if ((elementNamespace != MarkupNamespace.Html && selfClosing)
                 || (elementNamespace == MarkupNamespace.Html && IsHtmlVoidElement(name)))
             {
-                return;
+                return true;
+            }
+
+            if (elements.Count >= MaxOpenElementDepth)
+            {
+                return false;
             }
 
             // The self-closing flag is ignored on non-void HTML elements.
@@ -1091,6 +1147,7 @@ namespace Jellyfin.Plugin.RefreshKit
                         || name.Equals("desc", StringComparison.OrdinalIgnoreCase)
                         || name.Equals("title", StringComparison.OrdinalIgnoreCase)));
             elements.Add(new ElementContext(name, elementNamespace, isHtmlIntegrationPoint));
+            return true;
         }
 
         private static void PopElement(List<ElementContext> elements, string name)
@@ -1858,5 +1915,42 @@ namespace Jellyfin.Plugin.RefreshKit
 
             public string Value { get; }
         }
+    }
+
+    /// <summary>
+    /// How often stamping gave up on a whole document since this process
+    /// started, by reason. Every counter here describes a pass that returned the
+    /// shell byte-for-byte unchanged, which is invisible in the served page and
+    /// therefore worth reporting to an admin.
+    /// </summary>
+    public sealed class StampingDiagnostics
+    {
+        internal StampingDiagnostics(
+            long noScriptBoundaryAborts,
+            long openElementDepthAborts,
+            int openElementDepthLimit)
+        {
+            NoScriptBoundaryAborts = noScriptBoundaryAborts;
+            OpenElementDepthAborts = openElementDepthAborts;
+            OpenElementDepthLimit = openElementDepthLimit;
+        }
+
+        /// <summary>
+        /// Passes abandoned because the document contains an HTML-namespace
+        /// <c>&lt;noscript&gt;</c>. Its contents are raw text or markup
+        /// depending on a UA flag the server cannot know, so nothing in that
+        /// document is stamped. A non-zero value here means mechanism 2 is
+        /// effectively off for this shell, whatever the setting says.
+        /// </summary>
+        public long NoScriptBoundaryAborts { get; }
+
+        /// <summary>
+        /// Passes abandoned because the document kept more than
+        /// <see cref="OpenElementDepthLimit"/> elements open at once.
+        /// </summary>
+        public long OpenElementDepthAborts { get; }
+
+        /// <summary>The open-element ceiling that produced those aborts.</summary>
+        public int OpenElementDepthLimit { get; }
     }
 }
