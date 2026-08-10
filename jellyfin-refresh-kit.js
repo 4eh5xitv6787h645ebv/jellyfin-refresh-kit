@@ -858,9 +858,10 @@
      *           assumed still existed. `hasVersionParam` recognizes every
      *           cache-busting key the standalone plugin's server-side stamper
      *           does — `rkv` first among them — so the two never double-stamp
-     *           one URL. `checkNow()` resolves the version of a `mode: 'off'`
-     *           instance once, so URL versioning can start without a
-     *           bootVersion.
+     *           one URL. `checkNow()` can finally make the ONE version
+     *           resolution a `mode: 'off'` instance is entitled to, so an
+     *           endpoint that was down during boot no longer leaves that
+     *           instance versioning nothing for the life of the tab.
      */
     var KIT_VERSION = '2.4.8';
 
@@ -5644,7 +5645,16 @@
          * @type {string|null}
          */
         var notifiedVersion = null;
-        /** @type {string|null} Epoch paired with notifiedVersion. */
+        /**
+         * Epoch paired with notifiedVersion. DELIBERATELY WRITE-ONLY inside
+         * this closure: no decision reads it, because announcement identity is
+         * the GENERATION (replica epoch rotation for one generation is not
+         * another update — that rule is the reason it must not be read). It is
+         * maintained and carried across handoffs so the pair stays coherent for
+         * a future manager, and removing it would silently drop a field from
+         * the transfer record that other kit copies already send and restore.
+         * @type {string|null}
+         */
         var notifiedEpoch = null;
         /**
          * The non-baseline generation whose bounded tuple evidence is being
@@ -6676,17 +6686,20 @@
             if (deactivated) return Promise.resolve();
             if (reloadCommitted) return Promise.resolve();
             // MODE 'off' STILL VERSIONS URLS, and it cannot do that before it
-            // knows a version. Configured with a bootVersion it already does
-            // (that IS the baseline); configured without one, its version was
-            // unreachable — the poll loop never runs and nothing else ever
-            // fetches — so `versionedUrl` passed every URL through unchanged
-            // forever while checkNow() silently did nothing about it.
+            // knows a version. start() therefore gives it ONE resolution
+            // attempt (firstVersionAttempt) — but exactly one, and nothing ever
+            // retried it: an endpoint that was down for those few hundred
+            // milliseconds left the instance with no baseline, `versionedUrl`
+            // passing every URL through unchanged for the life of the tab, and
+            // checkNow() — documented as checking every registered source —
+            // silently doing nothing about it.
             //
-            // An explicit checkNow() therefore resolves the baseline exactly
-            // once. Only once: `baselineVersion === null` is the gate, so this
-            // can never reach the candidate/confirmation machinery, never arm a
-            // timer, never announce an update and never touch the reload
-            // engine. Everything 'off' promises to leave alone stays untouched.
+            // An explicit checkNow() is therefore allowed to make that
+            // resolution, and only that: `baselineVersion === null` is the
+            // gate, so it can never reach the candidate/confirmation machinery,
+            // never arm a timer, never announce an update and never touch the
+            // reload engine. Everything 'off' promises to leave alone stays
+            // untouched.
             if (cfg.mode === 'off' &&
                 !(resolveWhileOff === true && baselineVersion === null)) {
                 return Promise.resolve();
@@ -6782,7 +6795,18 @@
             }, cfg.pollSeconds * 1000);
         }
 
-        /** Visibility catch-up for this instance (shared onWake fans out to these). */
+        /**
+         * Visibility catch-up for this instance (shared onWake fans out to
+         * these).
+         *
+         * The first branch looks like resumeTransferredObservation() and is
+         * deliberately NOT it: that function is the RESUME path and declines
+         * while the document is hidden, whereas this one is only ever reached
+         * with the document visible and must also stand the carried
+         * confirmation down (the wake poll IS that confirmation). Folding one
+         * into the other would make the hidden check — which belongs to the
+         * caller here — decide for both.
+         */
         function wake() {
             if (cfg.mode === 'off') return;
             if (observationPendingFromHandoff) {
@@ -7339,9 +7363,10 @@
             },
             /**
              * Force an immediate version check for this instance, bypassing the
-             * min-gap floor. A `mode: 'off'` instance resolves its version ONCE
-             * here (2.4.8) so URL versioning can start; it still never polls,
-             * never announces and never reloads.
+             * min-gap floor. A `mode: 'off'` instance whose single startup
+             * resolution never landed takes it here instead (2.4.8), so URL
+             * versioning can still start; it never polls, never announces and
+             * never reloads.
              * @returns {Promise<void>}
              */
             checkNow: function () {
@@ -8322,8 +8347,8 @@
 
         /**
          * Force an immediate version check on EVERY instance, bypassing the
-         * min-gap floor. `mode: 'off'` instances take the same one-shot
-         * resolution the per-instance checkNow() does (2.4.8).
+         * min-gap floor. An unresolved `mode: 'off'` instance takes the same
+         * one-shot resolution the per-instance checkNow() offers it (2.4.8).
          * @returns {Promise<void>}
          */
         checkNow: function () {
