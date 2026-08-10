@@ -218,6 +218,44 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.DoesNotContain("dev=1", production, StringComparison.Ordinal);
         }
 
+        [Theory]
+        // BasePath and every ScriptPaths entry land inside the injected src
+        // unescaped, so each of these would either end the attribute, start a
+        // new one, or silently re-point the URL the browser fetches.
+        [InlineData("My\"Plugin", "kit.js")]
+        [InlineData("My'Plugin", "kit.js")]
+        [InlineData("My Plugin", "kit.js")]
+        [InlineData("My\nPlugin", "kit.js")]
+        [InlineData("My<Plugin", "kit.js")]
+        [InlineData("My&Plugin", "kit.js")]
+        [InlineData("My\\Plugin", "kit.js")]
+        [InlineData("Plugin?x=1", "kit.js")]
+        [InlineData("Plugin", "kit.js\" onload=\"alert(1)")]
+        [InlineData("Plugin", "kit js.js")]
+        [InlineData("Plugin", "kit.js?flavour=a")]
+        [InlineData("Plugin", "kit.js#fragment")]
+        public void UnsafeSrcComponents_AreRejectedWhenTheKitIsRegistered(
+            string basePath,
+            string scriptPath)
+        {
+            var services = new ServiceCollection();
+            var options = new RefreshKitOptions
+            {
+                PluginName = PluginName,
+                BasePath = basePath,
+                ScriptPaths = new[] { scriptPath },
+            };
+
+            var error = Assert.Throws<ArgumentException>(
+                () => RefreshKit.AddRefreshKit(services, options));
+
+            Assert.Equal("options", error.ParamName);
+            Assert.Contains("script src", error.Message, StringComparison.Ordinal);
+            // Registration fails before anything is registered or published, so
+            // the author sees the mistake on first run instead of a corrupt tag.
+            Assert.Empty(services);
+        }
+
         [Fact]
         public void DevelopmentUrlMarker_RemainsNoStoreAcrossALiveFlagRace()
         {
