@@ -236,6 +236,17 @@ IndexedDB is unavailable, corrupt, cannot commit, or exceeds the bounded wall
 or monotonic deadline, automatic reload fails closed and the update remains
 pending.
 
+That first-run rule reads like a one-off migration step, and on an ordinary
+browser it is one. Where it is **not** temporary: the first authoritative IDB
+record is only written by a reservation that got past this check, so a browser
+profile in which `localStorage` or `sessionStorage` is permanently unreachable
+— storage blocked for the site, a hardened privacy mode, a sandboxed frame with
+no storage access — never completes the migration and therefore refuses every
+automatic-reload reservation, indefinitely, not just at first run. Update
+detection, notifications, and URL versioning are unaffected; only the automatic
+reload is withheld, which is the intended fail-closed direction when the kit
+cannot prove how many reloads this origin has already spent.
+
 The shared object is reservation history, not cross-tab configuration. Each
 document applies the minimum `reloadBudget` among the instances registered on
 that document. Runtime copies older than 2.4.7 do not participate in the mutex,
@@ -256,6 +267,17 @@ record permanently prevents a later epoch from claiming that ambiguous history
 fresh; an unresolved-generation record conservatively disables automatic
 updates for that instance for the rest of the tab session. Epochs never enter
 asset URLs, ETags, or the generation itself.
+
+A scripted reload keeps the current document alive until the new response
+commits, so the runtime cannot tell a host that refused the navigation from an
+origin that is simply slow to answer. Runtime 2.4.8 and newer therefore treat
+the survival watchdog as a suspicion rather than a verdict: detection comes
+straight back, the safety records the attempt wrote are kept, and no second
+navigation is committed for a further 12 seconds — long enough for a slow
+origin to land the reload it was already performing, rather than cancelling it
+and spending another budget slot on a duplicate. Only a reload call that throws
+proves nothing was started, and only that case retracts what the attempt
+recorded.
 
 If a reload is currently unsafe, the update remains pending until a safe
 opportunity appears. These probes cannot inspect closed shadow roots or prove
@@ -486,7 +508,7 @@ Important options:
 | `bootVersion` | — | Build identity that produced the current document; should represent the same identity as the version endpoint. |
 | `pollSeconds` | 60 | Visible-tab polling interval, clamped to 15–3600 seconds. |
 | `idleSeconds` | 5 | Required idle time before automatic reload, clamped to 0–300 seconds. |
-| `assetPatterns` | None | URL patterns whose dynamically-created assets should receive versioning. |
+| `assetPatterns` | None | URL patterns whose dynamically-created assets should receive versioning. A URL that already carries a cache-busting query parameter (`v`, `ver`, `version`, `rev`, `hash`, `build`, `cb`, `nocache`, `_`, or the standalone plugin's own `rkv`, …) is left exactly as its author wrote it. |
 | `entryScripts` | None | Ordered entry URLs for bootstrap mode. |
 | `entryTimeoutMs` | 3000 | Maximum initial version wait before bootstrap entries fall back to unversioned loading. |
 | `mode` | `auto` | `auto` reloads, `notify` reports updates without reloading, `off` leaves URL versioning active without update polling behaviour. |
@@ -507,7 +529,7 @@ When several kit instances share one page, reload safety resolves conservatively
 | `get(name)` | Returns the named instance handle, including its versions, `versionedUrl`, `checkNow`, and `state`. |
 | `instances()` | Returns registered instance names in registration order. |
 | `versionedUrl(url, force)` | Versions a URL outside normal interception. Pattern matching uses all instances and the first registered match; `force=true` uses the first registered instance. |
-| `checkNow()` | Immediately checks all registered version sources. |
+| `checkNow()` | Immediately checks all registered version sources, bypassing the polling interval's spacing floor. A `mode: 'off'` instance is not polled, but if its single startup version resolution failed it is made here (runtime 2.4.8 and newer), so URL versioning can still start. |
 | `state()` | Returns diagnostic state for instances and the shared reload engine. |
 
 Handles returned by Refresh Kit 2.4.5 and newer remain safe to retain when a

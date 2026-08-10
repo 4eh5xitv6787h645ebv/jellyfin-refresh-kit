@@ -81,7 +81,9 @@
  *     (and a handoff preserves it). If patterns of two instances overlap on a
  *     URL, the first-registered instance wins and the manager logs ONE
  *     console.warn naming the overlapping instances the first time it happens.
- *     URLs already carrying v= always pass through untouched. A handoff cannot
+ *     URLs already carrying a version-ish query parameter (v, ver, version,
+ *     hash, build, cb, the plugin's own rkv, …) always pass through untouched.
+ *     A handoff cannot
  *     UNINSTALL the old wrapper (other code may hold a reference to it by
  *     then), so the old one flips to a permanent inert pass-through and the
  *     new manager stacks its own on top: still exactly one wrapper that does
@@ -582,10 +584,15 @@
  *   throws, a beforeunload confirm the user answers with "Stay") cannot be
  *   detected any way but empirically: the kit arms a 3s survival watchdog after
  *   every reload call, and a document still alive when it fires re-opens the
- *   commit latch, re-arms the instances it disarmed, retracts the version
- *   transition it recorded for a navigation that never happened, and retries.
- *   The budget slot already spent is NOT refunded — that is what stops such a
- *   host from being asked once a second forever.
+ *   commit latch, re-arms the instances it disarmed, reconciles a fresh
+ *   endpoint observation and gets back in line. "Still here" is NOT proof
+ *   though — a reload keeps the old document alive until the new response
+ *   commits, so a slow origin looks identical — so since 2.4.8 that path keeps
+ *   the safety records the attempt wrote and holds the NEXT navigation back for
+ *   a further 12s, while only a synchronous throw from reload() (which does
+ *   prove nothing was started) retracts them. The budget slot already spent is
+ *   NOT refunded either way — that is what stops such a host from being asked
+ *   once a second forever.
  * • THE MEDIA GATE is deliberately coarse: any <video>/<audio> on the page that
  *   represents a real session blocks the auto-reload, not just Jellyfin's own
  *   player. Since 2.1.1 "a real session" means playing, or paused with a
@@ -834,8 +841,29 @@
      *           Equal-millisecond reservations retain their multiplicity, and
      *           lifecycle/handoff cancellation fails closed without leaving a
      *           queued lock attempt behind.
+     *   2.4.8 — THE SURVIVAL WATCHDOG STOPS TREATING A SLOW ORIGIN AS A REFUSAL.
+     *           A scripted reload keeps this document alive until the new
+     *           response commits, so "still here 3s later" also describes a
+     *           navigation that is merely in flight. That path no longer
+     *           retracts the LEFT/transition records the attempt wrote (only a
+     *           synchronous throw from reload(), which proves nothing started,
+     *           still does), and it holds the NEXT navigation back for 12s
+     *           instead of cancelling the one on its way and spending a second
+     *           budget slot on it; a non-persisted `pagehide` is taken as
+     *           positive proof the navigation committed. Engine-level refusals
+     *           (budget, strict history, in-flight navigation) now re-arm the
+     *           hidden tab's ONE single shot instead of the 1Hz ladder's timer,
+     *           which also ends the stranded-update trap where the ladder's
+     *           timer cancelled the hidden settle shot the next evaluation
+     *           assumed still existed. `hasVersionParam` recognizes every
+     *           cache-busting key the standalone plugin's server-side stamper
+     *           does — `rkv` first among them — so the two never double-stamp
+     *           one URL. `checkNow()` can finally make the ONE version
+     *           resolution a `mode: 'off'` instance is entitled to, so an
+     *           endpoint that was down during boot no longer leaves that
+     *           instance versioning nothing for the life of the tab.
      */
-    var KIT_VERSION = '2.4.7';
+    var KIT_VERSION = '2.4.8';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -1019,6 +1047,28 @@
      * @type {number}
      */
     var RELOAD_SURVIVAL_WATCHDOG_MS = 3000;
+
+    /**
+     * How long AFTER a survived reload attempt this document refuses to commit
+     * a SECOND navigation (2.4.8).
+     *
+     * The watchdog above is a heuristic with exactly one blind spot: a scripted
+     * reload keeps the current document alive until the new response COMMITS,
+     * so an origin whose time-to-first-byte outlasts the watchdog window is
+     * indistinguishable, from in here, from a host that refused the navigation.
+     * Calling location.reload() again inside that window is the harmful move —
+     * it CANCELS the navigation that was already on its way, restarts the very
+     * wait that just timed out, and spends a second budget slot on a reload
+     * that was already happening.
+     *
+     * So survival re-opens DETECTION at once (that half is cheap and correct
+     * either way) while the NAVIGATION stays closed for this much longer. A
+     * genuinely refused reload is therefore retried a few seconds later than it
+     * used to be; a slow origin is simply left alone to finish committing.
+     * Expressed as a multiple of the watchdog so the two always scale together.
+     * @type {number}
+     */
+    var RELOAD_NAVIGATION_SUSPECT_MS = RELOAD_SURVIVAL_WATCHDOG_MS * 4;
 
     /**
      * Floor between two version fetches (PER INSTANCE — each instance has its
@@ -2161,6 +2211,26 @@
     /** @type {number|null} setTimeout handle for the reload-survival watchdog. */
     var reloadWatchdogTimer = null;
     /**
+     * Wall-clock deadline before which NO new navigation may be committed,
+     * because a previous location.reload() may still be in flight (2.4.8). Set
+     * by the survival watchdog — which cannot tell "the host refused it" from
+     * "the origin has not committed the new document yet" — and never by the
+     * synchronous-throw path, where the refusal is proven. 0 means no such
+     * doubt is outstanding.
+     * @type {number}
+     */
+    var reloadNavigationSuspectUntil = 0;
+    /**
+     * POSITIVE NAVIGATION-COMMIT SIGNAL (2.4.8). True once this document has
+     * observed `pagehide` without bfcache persistence: the document is being
+     * replaced, so nothing may be retracted, re-armed or re-navigated on the
+     * way out. It is the one moment the kit learns for certain that a
+     * navigation DID commit, and it closes the race where the watchdog and the
+     * commit land in the same turn.
+     * @type {boolean}
+     */
+    var navigationCommitted = false;
+    /**
      * Instances disarmed by the reload attempt currently in flight, so the
      * watchdog can put them back exactly as they were if the document survives.
      * @type {Array<Object>}
@@ -2168,8 +2238,16 @@
     var reloadDisarmed = [];
     /**
      * [storageKey, entry] records the in-flight reload attempt WROTE (and that
-     * did not already exist), so a navigation that never lands does not leave
-     * the flap guard believing this tab ran a version it never ran.
+     * did not already exist), so a navigation PROVEN not to have started does
+     * not leave the flap guard believing this tab ran a version it never ran.
+     *
+     * Retraction is reserved for that proof — a synchronous throw from
+     * location.reload() (2.4.8). The survival watchdog is not proof: a document
+     * that is still here may simply be waiting for a slow origin to commit, and
+     * retracting the LEFT records of a departure that then happens anyway is
+     * the one genuinely unsafe outcome available here — it erases the evidence
+     * the flap guard exists to keep. The list is therefore emptied WITHOUT
+     * removing anything from storage on the watchdog path.
      * @type {Array<string[]>}
      */
     var reloadRecordsWritten = [];
@@ -2236,7 +2314,25 @@
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Does the URL's QUERY STRING already carry a `v=` parameter? A path
+     * Query keys that already make a URL change per release (or per request),
+     * so a URL carrying one is somebody's deliberate cache-busting scheme.
+     *
+     * Kept deliberately in step with the standalone plugin's server-side
+     * stamper (ThirdPartyTagStamper.VersionishKeys), because the two run on the
+     * same page and must COMPOSE: the plugin stamps third-party tags with its
+     * own `rkv=`, and until 2.4.8 this runtime recognized only `v=`, so an
+     * `rkv`-stamped URL that also matched an adopter's assetPatterns went out
+     * carrying BOTH identities — two spellings of the same asset, two cache
+     * entries, and a needless miss on every release. Matching is
+     * case-insensitive on the key only; values stay opaque.
+     * @type {RegExp}
+     */
+    var VERSION_PARAM_PATTERN = new RegExp(
+        '(^|&)(?:v|ver|vers|version|rev|revision|hash|build|buildid|' +
+        'cb|cachebust|cachebuster|nocache|_|rkv)=', 'i');
+
+    /**
+     * Does the URL's QUERY STRING already carry a version-ish parameter? A path
      * segment named "v=" is not a parameter, and a fragment is not sent to the
      * server at all — never clobber a caller's own cache-busting;
      * double-versioning is a cache-miss storm.
@@ -2248,7 +2344,7 @@
         var base = hashAt === -1 ? url : url.slice(0, hashAt);
         var qAt = base.indexOf('?');
         var query = qAt === -1 ? '' : base.slice(qAt + 1);
-        return !!query && /(^|&)v=/.test(query);
+        return !!query && VERSION_PARAM_PATTERN.test(query);
     }
 
     /**
@@ -2282,7 +2378,8 @@
     /**
      * The PAGE-LEVEL versioning decision, used by the single interceptor (and
      * the manager-level versionedUrl API):
-     *   • URLs already carrying v= pass through untouched, always.
+     *   • URLs already carrying a version-ish query parameter (see
+     *     hasVersionParam) pass through untouched, always.
      *   • All registered instances' assetPatterns are consulted; the FIRST
      *     REGISTERED instance whose patterns match AND has a resolved version
      *     versions the URL with THAT instance's version. An instance that
@@ -3435,7 +3532,7 @@
             });
         }
         lastBlockReason = 'reload_budget';
-        scheduleRetry(BUDGET_WINDOW_MS);
+        scheduleEngineRetry(BUDGET_WINDOW_MS);
     }
 
     /** Fail one still-current acquisition and preserve the pending update. */
@@ -4736,11 +4833,100 @@
     }
 
     /**
+     * Re-arm the ONE re-evaluation an ENGINE-LEVEL refusal wants — reload
+     * budget, strict-history verification, or a navigation that may still be in
+     * flight — on the timer this document's visibility actually allows (2.4.8).
+     *
+     * scheduleRetry() alone breaks the hidden-tab promise twice over: it arms
+     * the 1Hz ladder's timer in a background tab, and its opening clearRetry()
+     * cancels the hidden single shot that the settle path assumes still exists
+     * — after which the next evaluation reads 'hidden_settling', re-arms
+     * nothing, and the update is stranded until the user comes back (the same
+     * trap documented at the failed-reload barrier). Every refusal routed
+     * through here is DEADLINE-driven: nothing it is waiting for can change
+     * sooner, so the hidden tab's one single shot is armed for exactly that
+     * deadline instead of the generic hidden cadence.
+     *
+     * @param {number} delayMs When the refusal can first change.
+     */
+    function scheduleEngineRetry(delayMs) {
+        if (document.visibilityState === 'hidden') {
+            clearRetry();
+            // With hidden-tab reloading switched off, a hidden tab holds NO
+            // timer at all — the pre-2.4.0 promise the flag restores — and the
+            // ordinary wake re-tests this refusal. (Reachable only when the tab
+            // was hidden while a reservation was already in flight; the gate
+            // chain refuses with 'hidden' long before this on any other path.)
+            if (hiddenReloadEnabled()) armHiddenRetry(delayMs);
+            return;
+        }
+        scheduleRetry(delayMs);
+    }
+
+    /**
+     * How much longer a possibly-in-flight navigation blocks a new one.
+     * Clamped to the window's own length, so a forward clock step taken while
+     * the deadline was set cannot park the reload engine indefinitely.
+     * @returns {number} Remaining ms, or 0 when no doubt is outstanding.
+     */
+    function reloadNavigationSuspectRemainingMs() {
+        if (reloadNavigationSuspectUntil <= 0) return 0;
+        var left = reloadNavigationSuspectUntil - Date.now();
+        if (left <= 0) return 0;
+        return Math.min(left, RELOAD_NAVIGATION_SUSPECT_MS);
+    }
+
+    /**
      * Attempt the shared reload if every gate passes; otherwise arm a retry.
      * Called on: any instance's update detection, every interaction settle, and
      * each retry tick. ONE reload serves every pending instance at once —
      * after it, each instance's assets re-resolve at their own (new or
      * unchanged) versions.
+     *
+     * ── THE THREE-VALUED RETURN IS A CONTRACT, NOT AN ACCIDENT ───────────────
+     * This function is entered in three distinct PHASES, and the reload-budget
+     * mutex reads the return value differently in each. Anything that changes a
+     * `return` in here must satisfy all three columns:
+     *
+     *   1. ORDINARY PASS — tryReload() with no argument (detection, retry tick,
+     *      interaction settle, wake). Returns `undefined` ALWAYS; no caller
+     *      inspects it. Its job is to run the gates and, when they pass, start
+     *      an asynchronous budget reservation (beginBudgetReservation) and
+     *      return. It NEVER navigates.
+     *
+     *   2. PRE-PUT PASS — tryReload(attempt) with attempt.committed !== true,
+     *      called synchronously from inside the granted IndexedDB readwrite
+     *      transaction (processBudgetReads). The caller issues put() in the
+     *      SAME task, so the answer must be synchronous and exact:
+     *        • `true`      → every gate passes; APPEND a slot and commit it.
+     *        • `false`     → refuse. Either the token is stale/overdue (a
+     *                        deferral has already been arranged) or a gate
+     *                        closed; no slot may be appended. The caller
+     *                        inspects retryTimer to learn whether that gate
+     *                        armed its own retry before deciding whether a
+     *                        migration-repair commit must re-arm one.
+     *        • `undefined` → same meaning as `false` for the caller
+     *                        (`!== true` is the test), and it is what every
+     *                        early gate return produces. Do not "tidy" these
+     *                        into `true`.
+     *      NOTHING in this phase may navigate: it runs inside the transaction.
+     *
+     *   3. POST-COMMIT PASS — tryReload(attempt) with attempt.committed === true
+     *      and attempt.granted === true, called from tx.oncomplete. The slot is
+     *      already spent. The return value is IGNORED; the side effect is the
+     *      point — this is the only phase allowed to claim epoch/LEFT/transition
+     *      records and call location.reload(). A refusal here leaves the slot
+     *      conservatively spent and no navigation, which is the documented
+     *      fail-closed outcome.
+     *
+     * The guard block at the top of the body is what routes a call into its
+     * phase; `preCommitBudgetCheck` is phase 2 and `underBudgetMutex` without it
+     * is phase 3.
+     * ─────────────────────────────────────────────────────────────────────────
+     *
+     * @param {Object} [budgetAttempt] The reservation token when this call is
+     *   phase 2 or 3; omitted for phase 1.
+     * @returns {boolean|undefined} See the phase table above.
      */
     function tryReload(budgetAttempt) {
         var underBudgetMutex = !!budgetAttempt;
@@ -4773,6 +4959,12 @@
         // two engines calling location.reload() is exactly the double-fire the
         // one-navigation-one-slot latch exists to prevent.
         if (handedOff) return;
+        // The document is being replaced (a non-persisted pagehide was
+        // observed), so a navigation HAS committed. Starting another one now
+        // would spend a budget slot on a reload this document will never
+        // perform — and that is a slot the document arriving in its place does
+        // not get.
+        if (navigationCommitted) return;
         // A blocked/ignored navigation must reconcile a fresh endpoint read
         // before stale intent is allowed back through the safety gates.
         if (reloadRevalidationPending) {
@@ -4794,6 +4986,24 @@
 
         var pending = pendingInstances();
         if (pending.length === 0) return;
+
+        // A PREVIOUS reload() MAY STILL BE IN FLIGHT (2.4.8). The survival
+        // watchdog re-opened this engine on a heuristic — "the document is
+        // still here" — which a slow-committing origin satisfies just as well
+        // as a host that refused the navigation. Detection is already back on;
+        // NAVIGATION waits out the doubt, because reloading again now would
+        // cancel the navigation that is on its way, restart its wait, and spend
+        // a second budget slot on a reload that was already happening. The
+        // reservation is not even opened, so nothing is consumed by waiting.
+        var suspectLeft = reloadNavigationSuspectRemainingMs();
+        if (suspectLeft > 0) {
+            if (lastBlockReason !== 'reload_in_flight') {
+                lastBlockReason = 'reload_in_flight';
+                safe(function () { console.debug(LOG, 'reload deferred:', 'reload_in_flight'); });
+            }
+            scheduleEngineRetry(suspectLeft);
+            return;
+        }
 
         // MASKED POST-PLAYBACK WINDOW (2.4.0): coming out of the player, the
         // view is already being torn down and rebuilt, so the idle requirement
@@ -4930,7 +5140,7 @@
                 });
             }
             lastBlockReason = 'epoch_history';
-            scheduleRetry(BUDGET_WINDOW_MS);
+            scheduleEngineRetry(BUDGET_WINDOW_MS);
             return;
         }
 
@@ -4951,7 +5161,7 @@
                 });
             }
             lastBlockReason = 'safety_history';
-            scheduleRetry(BUDGET_WINDOW_MS);
+            scheduleEngineRetry(BUDGET_WINDOW_MS);
             return;
         }
 
@@ -5016,7 +5226,10 @@
             location.reload();
         } catch (err) {
             safe(function () { console.debug(LOG, 'location.reload() threw:', err); });
-            safe(recoverFailedReload);
+            // A synchronous throw is the ONE proof available that no navigation
+            // was started, so this is the only recovery allowed to retract what
+            // the attempt wrote.
+            safe(function () { recoverFailedReload(true); });
             return;
         }
         armReloadSurvivalWatchdog();
@@ -5041,7 +5254,10 @@
             if (fired) return;
             fired = true;
             reloadWatchdogTimer = null;
-            safe(recoverFailedReload);
+            // Heuristic, never proof: pass no proven-refusal flag, so recovery
+            // keeps this attempt's safety records and holds the next navigation
+            // back until the doubt has expired.
+            safe(function () { recoverFailedReload(false); });
         };
         reloadWatchdogTimer = safe(function () {
             return setTimeout(survived, RELOAD_SURVIVAL_WATCHDOG_MS);
@@ -5061,8 +5277,12 @@
      * an ignored reload from retrying a target the endpoint already withdrew.
      * @param {Object[]} instances
      * @param {boolean} emitWarning
+     * @param {boolean} [refusalProven] True only when location.reload() threw,
+     *   which is the one case in which "the navigation did not happen" is a
+     *   fact rather than the survival watchdog's inference. It changes the
+     *   wording of the one warning and nothing else.
      */
-    function beginFailedReloadRevalidation(instances, emitWarning) {
+    function beginFailedReloadRevalidation(instances, emitWarning, refusalProven) {
         var unique = [];
         for (var i = 0; i < instances.length; i++) {
             if (instances[i] && unique.indexOf(instances[i]) === -1) unique.push(instances[i]);
@@ -5085,15 +5305,26 @@
             if (emitWarning && !warnedReloadSurvived) {
                 warnedReloadSurvived = true;
                 safe(function () {
-                    console.warn(LOG, 'location.reload() did not navigate — this document is still here ' +
-                        (RELOAD_SURVIVAL_WATCHDOG_MS / 1000) + 's later, so the host blocked, ignored or ' +
-                        'cancelled the reload. The transition recorded for the navigation that never ' +
-                        'happened was retracted and a fresh endpoint observation was reconciled before ' +
-                        (stillPending.length
-                            ? 'retrying the still-pending update for ' + stillPending.join(', ')
-                            : 'discarding the withdrawn/stale update') + '. One reload-budget slot was ' +
-                        'spent and is not refunded (that is what keeps a host which refuses reloads ' +
-                        'from being asked once a second). (Warned once.)');
+                    var outcome = stillPending.length
+                        ? 'retrying the still-pending update for ' + stillPending.join(', ')
+                        : 'discarding the withdrawn/stale update';
+                    console.warn(LOG, refusalProven === true
+                        ? 'location.reload() THREW, so no navigation was ever started — a sandboxed ' +
+                          'or otherwise restricted host. The transition recorded for it was retracted ' +
+                          'and a fresh endpoint observation was reconciled before ' + outcome + '. One ' +
+                          'reload-budget slot was spent and is not refunded (that is what keeps a host ' +
+                          'which refuses reloads from being asked once a second). (Warned once.)'
+                        : 'location.reload() has not navigated: this document is still here ' +
+                          (RELOAD_SURVIVAL_WATCHDOG_MS / 1000) + 's later. Either the host blocked, ' +
+                          'ignored or cancelled the reload, or the origin has simply not committed the ' +
+                          'new document yet — the two are indistinguishable from in here. A fresh ' +
+                          'endpoint observation was reconciled before ' + outcome + ', but no SECOND ' +
+                          'navigation may be committed for another ' +
+                          (RELOAD_NAVIGATION_SUSPECT_MS / 1000) + 's, and the version transition and ' +
+                          'left-version records this attempt wrote are KEPT: retracting evidence of a ' +
+                          'departure that may still be landing is the one unsafe option available here. ' +
+                          'One reload-budget slot was spent and is not refunded (that is what keeps a ' +
+                          'host which refuses reloads from being asked once a second). (Warned once.)');
                 });
             }
 
@@ -5120,24 +5351,58 @@
 
     /**
      * The watchdog fired (or reload() threw): this document is still here, so
-     * the navigation did not happen. Undo the commit completely — re-open the
-     * latch, re-arm the instances it disarmed, retract the flip records this
-     * attempt wrote (a version transition that never occurred must not make the
-     * flap guard refuse the real one later) — warn ONCE, and get back in line.
+     * the navigation has not happened. Re-open the latch, re-arm the instances
+     * it disarmed, warn ONCE, and get back in line.
      *
-     * The budget slot is deliberately NOT refunded: the reservation is what
-     * stops a host that refuses reloads from being asked once a second forever,
-     * and the retry ladder re-tests as soon as the rolling window rolls.
+     * WHAT "STILL HERE" DOES AND DOES NOT PROVE (2.4.8). A synchronous throw
+     * from location.reload() proves no navigation was ever started. The
+     * watchdog proves nothing of the sort: a reload keeps the old document
+     * alive until the new response COMMITS, so an origin slower than the
+     * watchdog window looks exactly like a host that refused. The two paths
+     * therefore differ in what they undo:
+     *   • PROVEN refusal (`refusalProven`) — retract the flip/LEFT records this
+     *     attempt wrote, exactly as before. A version transition that provably
+     *     never occurred must not make the flap guard refuse the real one later.
+     *   • WATCHDOG — KEEP them, and forget that they were ever retractable. If
+     *     the navigation does land a moment later, those records are the only
+     *     proof this tab departed those generations, and the flap guard is
+     *     built on them; if it never lands, a LEFT record naming the baseline
+     *     this document is still running refuses nothing it would have allowed
+     *     (that baseline can never be its own update candidate). Conservative
+     *     in one direction, unsound in the other — so keep them. The watchdog
+     *     path also opens the in-flight-navigation window, which holds the NEXT
+     *     navigation (not detection) back until the doubt has expired.
+     *
+     * The budget slot is deliberately NOT refunded in either case: the
+     * reservation is what stops a host that refuses reloads from being asked
+     * once a second forever, and the retry ladder re-tests as soon as the
+     * rolling window rolls.
+     *
+     * @param {boolean} [refusalProven] True only for the synchronous-throw path.
      */
-    function recoverFailedReload() {
+    function recoverFailedReload(refusalProven) {
         if (!reloadCommitted) return;
+        // The document is on its way out: a navigation DID commit. Undoing any
+        // part of the attempt now would corrupt the evidence the next document
+        // is about to read, and re-arming anything only burns work during
+        // unload.
+        if (navigationCommitted) return;
+        var proven = refusalProven === true;
         reloadCommitted = false;
         reloadsSurvived++;
 
         var i;
-        for (i = 0; i < reloadRecordsWritten.length; i++) {
-            removeFromTabList(reloadRecordsWritten[i][0], reloadRecordsWritten[i][1]);
+        if (proven) {
+            for (i = 0; i < reloadRecordsWritten.length; i++) {
+                removeFromTabList(reloadRecordsWritten[i][0], reloadRecordsWritten[i][1]);
+            }
+        } else {
+            reloadNavigationSuspectUntil = Date.now() + RELOAD_NAVIGATION_SUSPECT_MS;
         }
+        // Either they have just been retracted, or they are permanent now.
+        // Emptying the list in both cases keeps a LATER proven refusal from
+        // retracting records written by an EARLIER attempt whose navigation may
+        // still be landing.
         reloadRecordsWritten = [];
 
         for (i = 0; i < reloadDisarmed.length; i++) {
@@ -5153,7 +5418,7 @@
         // sibling may have had its confirmation response frozen during commit
         // even though it was never in reloadDisarmed. Fetch failure
         // conservatively keeps any old intent.
-        beginFailedReloadRevalidation(registry.slice(), true);
+        beginFailedReloadRevalidation(registry.slice(), true, proven);
 
         // A registration or transferred instance that arrived during the
         // unload window was deliberately never started. The navigation failed,
@@ -5385,7 +5650,16 @@
          * @type {string|null}
          */
         var notifiedVersion = null;
-        /** @type {string|null} Epoch paired with notifiedVersion. */
+        /**
+         * Epoch paired with notifiedVersion. DELIBERATELY WRITE-ONLY inside
+         * this closure: no decision reads it, because announcement identity is
+         * the GENERATION (replica epoch rotation for one generation is not
+         * another update — that rule is the reason it must not be read). It is
+         * maintained and carried across handoffs so the pair stays coherent for
+         * a future manager, and removing it would silently drop a field from
+         * the transfer record that other kit copies already send and restore.
+         * @type {string|null}
+         */
         var notifiedEpoch = null;
         /**
          * The non-baseline generation whose bounded tuple evidence is being
@@ -5637,7 +5911,9 @@
          *   • the URL matches one of ITS assetPatterns OR `force` is set (entry
          *     scripts are explicitly this instance's own, so they are versioned
          *     whether or not the adopter bothered to list a matching pattern),
-         *   • the URL does not already carry a `v=` parameter.
+         *   • the URL does not already carry a version-ish query parameter
+         *     (see hasVersionParam — `v=`, the standalone plugin's `rkv=`, and
+         *     the other cache-busting spellings the server-side stamper knows).
          * @param {string} url
          * @param {boolean} [force] Skip the assetPattern check (bootstrap entries).
          * @returns {string} The versioned URL, or the input unchanged.
@@ -6407,12 +6683,32 @@
          * @param {boolean} [force] Skip the min-gap floor (used by checkNow()).
          * @param {boolean} [isConfirm] This is the one confirmation fetch of the
          *   current cycle. Any other poll OPENS a new cycle.
+         * @param {boolean} [resolveWhileOff] Allow the ONE resolution a
+         *   `mode: 'off'` instance may still want (2.4.8) — see checkNow().
          * @returns {Promise<void>}
          */
-        function poll(force, isConfirm) {
+        function poll(force, isConfirm, resolveWhileOff) {
             if (deactivated) return Promise.resolve();
             if (reloadCommitted) return Promise.resolve();
-            if (cfg.mode === 'off') return Promise.resolve();
+            // MODE 'off' STILL VERSIONS URLS, and it cannot do that before it
+            // knows a version. start() therefore gives it ONE resolution
+            // attempt (firstVersionAttempt) — but exactly one, and nothing ever
+            // retried it: an endpoint that was down for those few hundred
+            // milliseconds left the instance with no baseline, `versionedUrl`
+            // passing every URL through unchanged for the life of the tab, and
+            // checkNow() — documented as checking every registered source —
+            // silently doing nothing about it.
+            //
+            // An explicit checkNow() is therefore allowed to make that
+            // resolution, and only that: `baselineVersion === null` is the
+            // gate, so it can never reach the candidate/confirmation machinery,
+            // never arm a timer, never announce an update and never touch the
+            // reload engine. Everything 'off' promises to leave alone stays
+            // untouched.
+            if (cfg.mode === 'off' &&
+                !(resolveWhileOff === true && baselineVersion === null)) {
+                return Promise.resolve();
+            }
             // Forced checks bypass the spacing floor, not single-flight. They
             // join the active request so an older response cannot arrive last
             // and overwrite a newer candidate/latest value.
@@ -6504,7 +6800,18 @@
             }, cfg.pollSeconds * 1000);
         }
 
-        /** Visibility catch-up for this instance (shared onWake fans out to these). */
+        /**
+         * Visibility catch-up for this instance (shared onWake fans out to
+         * these).
+         *
+         * The first branch looks like resumeTransferredObservation() and is
+         * deliberately NOT it: that function is the RESUME path and declines
+         * while the document is hidden, whereas this one is only ever reached
+         * with the document visible and must also stand the carried
+         * confirmation down (the wake poll IS that confirmation). Folding one
+         * into the other would make the hidden check — which belongs to the
+         * caller here — decide for both.
+         */
         function wake() {
             if (cfg.mode === 'off') return;
             if (observationPendingFromHandoff) {
@@ -7047,7 +7354,8 @@
             },
             /**
              * Version a URL with THIS instance's version/patterns. `force` skips
-             * the pattern match (still never clobbers an existing v=).
+             * the pattern match (still never clobbers an existing version-ish
+             * parameter).
              * @param {string} url
              * @param {boolean} [force]
              * @returns {string}
@@ -7060,14 +7368,17 @@
             },
             /**
              * Force an immediate version check for this instance, bypassing the
-             * min-gap floor.
+             * min-gap floor. A `mode: 'off'` instance whose single startup
+             * resolution never landed takes it here instead (2.4.8), so URL
+             * versioning can still start; it never polls, never announces and
+             * never reloads.
              * @returns {Promise<void>}
              */
             checkNow: function () {
                 var current = forwardedHandle();
                 return current
                     ? safe(function () { return current.checkNow(); }, Promise.resolve())
-                    : safe(function () { return poll(true); }, Promise.resolve());
+                    : safe(function () { return poll(true, false, true); }, Promise.resolve());
             },
             /** @returns {Object} Snapshot of this instance's state. */
             state: function () {
@@ -7652,6 +7963,12 @@
                 reloadCommitted: reloadCommitted,
                 reloadRevalidationPending: reloadRevalidationPending,
                 reloadsSurvived: reloadsSurvived,
+                // The doubt a survived reload leaves behind travels too: the
+                // navigation this document may still be waiting on belongs to
+                // the DOCUMENT, not to the manager that started it, and a new
+                // manager that ignored it would commit exactly the second
+                // navigation the window exists to prevent.
+                reloadNavigationSuspectUntil: reloadNavigationSuspectUntil,
                 reloadRecordsWritten: reloadRecordsWritten.slice(),
                 reloadDisarmed: (function () {
                     var names = [];
@@ -7787,6 +8104,12 @@
         if (typeof s.hiddenSince === 'number' && isFinite(s.hiddenSince)) hiddenSince = s.hiddenSince;
         if (typeof s.reloadsSurvived === 'number' && isFinite(s.reloadsSurvived)) {
             reloadsSurvived = s.reloadsSurvived;
+        }
+        // Pre-2.4.8 copies do not send this; absent means "no navigation is in
+        // doubt", which is exactly what those copies believed.
+        if (typeof s.reloadNavigationSuspectUntil === 'number' &&
+            isFinite(s.reloadNavigationSuspectUntil) && s.reloadNavigationSuspectUntil > 0) {
+            reloadNavigationSuspectUntil = s.reloadNavigationSuspectUntil;
         }
         if (t.lateKeys && typeof t.lateKeys === 'object') {
             for (var k in t.lateKeys) {
@@ -8029,7 +8352,8 @@
 
         /**
          * Force an immediate version check on EVERY instance, bypassing the
-         * min-gap floor.
+         * min-gap floor. An unresolved `mode: 'off'` instance takes the same
+         * one-shot resolution the per-instance checkNow() offers it (2.4.8).
          * @returns {Promise<void>}
          */
         checkNow: function () {
@@ -8037,7 +8361,7 @@
             if (d) return safe(function () { return d.checkNow(); }, Promise.resolve());
             return safe(function () {
                 return Promise.all(registry.map(function (inst) {
-                    return safe(function () { return inst.poll(true); }, Promise.resolve());
+                    return safe(function () { return inst.poll(true, false, true); }, Promise.resolve());
                 })).then(function () { return undefined; });
             }, Promise.resolve());
         },
@@ -8107,6 +8431,11 @@
                     reloadRevalidationPending: reloadRevalidationPending,
                     reloadBudgetReservationPending: budgetReservationAttempt !== null,
                     reloadsSurvived: reloadsSurvived,
+                    // >0 means a previous location.reload() may still be
+                    // committing: detection is live, but no new navigation may
+                    // be committed for that many more ms.
+                    reloadNavigationSuspectMsLeft: reloadNavigationSuspectRemainingMs(),
+                    navigationCommitted: navigationCommitted,
                     blockedRetries: blockedRetries,
                     // MANAGER LINEAGE. 0 handoffs is the ordinary page (one kit
                     // copy, or several of the same version). Anything higher
@@ -8209,11 +8538,36 @@
         }
         addPageListener(document, 'visibilitychange', wakeListener, false);
         addPageListener(window, 'focus', wakeListener, false);
-        addPageListener(window, 'pageshow', wakeListener, false);
+        // A document that is being SHOWN was not replaced after all (bfcache
+        // restore, or a host that fires pagehide more liberally than the spec
+        // requires), so the commit signal below is withdrawn before the
+        // ordinary wake runs.
+        addPageListener(window, 'pageshow', function () {
+            navigationCommitted = false;
+            safe(onWake);
+        }, false);
         // A queued cross-tab reservation must not survive page ownership or a
         // frozen event loop. The pending update itself remains intact; pageshow
         // or resume lets the live manager take a fresh, tokenized attempt.
-        addPageListener(window, 'pagehide', cancelBudgetReservation, false);
+        //
+        // PAGEHIDE IS ALSO THE POSITIVE NAVIGATION-COMMIT SIGNAL (2.4.8): a
+        // non-persisted pagehide means this document is being replaced, so the
+        // survival watchdog must not fire behind it and start retracting or
+        // re-arming on the way out. `unload` would say the same thing but costs
+        // the host page its bfcache eligibility, which a drop-in kit has no
+        // business spending; a PERSISTED pagehide is bfcache and the document
+        // is coming back, so it proves nothing about a navigation.
+        addPageListener(window, 'pagehide', function (event) {
+            safe(cancelBudgetReservation);
+            safe(function () {
+                if (event && event.persisted === true) return;
+                navigationCommitted = true;
+                if (reloadWatchdogTimer !== null) {
+                    clearTimeout(reloadWatchdogTimer);
+                    reloadWatchdogTimer = null;
+                }
+            });
+        }, false);
         addPageListener(document, 'freeze', cancelBudgetReservation, false);
         // PAGE LIFECYCLE 'resume' (2.4.0): the browser FROZE this background
         // tab — Chrome on Android and desktop battery-saver both do — and has
