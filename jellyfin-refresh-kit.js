@@ -4852,7 +4852,12 @@
     function scheduleEngineRetry(delayMs) {
         if (document.visibilityState === 'hidden') {
             clearRetry();
-            armHiddenRetry(delayMs);
+            // With hidden-tab reloading switched off, a hidden tab holds NO
+            // timer at all — the pre-2.4.0 promise the flag restores — and the
+            // ordinary wake re-tests this refusal. (Reachable only when the tab
+            // was hidden while a reservation was already in flight; the gate
+            // chain refuses with 'hidden' long before this on any other path.)
+            if (hiddenReloadEnabled()) armHiddenRetry(delayMs);
             return;
         }
         scheduleRetry(delayMs);
