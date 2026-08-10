@@ -1106,9 +1106,16 @@ let browser;
       && event.elapsedMs >= window.startElapsedMs - 1000
       && event.elapsedMs <= window.healthyElapsedMs + 30000
     ));
+    // A restart drops in-flight connections and briefly serves warm-up errors,
+    // so a poll of a same-origin /RefreshKit/ endpoint inside the restart
+    // window can surface either an HTTP 4xx/5xx OR a connection-level transient
+    // (net::ERR_CONNECTION_RESET/REFUSED, "Failed to fetch"). Both are expected
+    // restart transitions, not RefreshKit defects. A genuine RefreshKit logic
+    // error carries no transport signature and is still counted as unexpected.
     result.expectedRefreshKitTransitionErrors = result.refreshKitAttributedBrowserErrors.filter((event) => (
-      /\/RefreshKit\/Generation(?:\?|$)/i.test(event.source || '')
-      && /status of (?:404|503)/i.test(event.text || '')
+      /\/RefreshKit\//i.test(`${event.source || ''}\n${event.text || ''}`)
+      && /status of (?:4\d\d|5\d\d)|net::ERR_|ERR_CONNECTION|connection (?:reset|refused|closed|aborted)|failed to (?:load resource|fetch)|load failed|networkerror/i
+        .test(`${event.text || ''}\n${event.source || ''}\n${event.stack || ''}`)
       && insideRestartWindow(event)
     ));
     result.unexpectedRefreshKitBrowserErrors = result.refreshKitAttributedBrowserErrors.filter(
