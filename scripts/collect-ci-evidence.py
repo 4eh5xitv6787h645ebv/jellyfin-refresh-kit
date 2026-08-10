@@ -391,7 +391,9 @@ def copy_exact_anonymous_http(
     elif contains_forbidden_secret(text) or sanitize_text(text) != text:
         raise ValueError(f"redaction would alter exact anonymous HTTP evidence: {relative}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target)
+    # Write the bytes that were inspected, rather than reopening the source: a
+    # second read could retain content this function never validated.
+    target.write_bytes(raw)
 
 
 def copy_exact_compatibility_webroot(

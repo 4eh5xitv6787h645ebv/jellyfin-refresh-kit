@@ -1069,6 +1069,42 @@ class AbiFloorEvidenceTests(unittest.TestCase):
                     "abi-floor/server/kit.js",
                 )
 
+            # Retention must publish the inspected bytes. A source that changes
+            # after inspection must not be able to substitute unvalidated
+            # content through a second read.
+            class MutatingSource:
+                def __init__(
+                    self,
+                    path: pathlib.Path,
+                    inspected: bytes,
+                    mutated: bytes,
+                ) -> None:
+                    self.path = path
+                    self.inspected = inspected
+                    self.mutated = mutated
+
+                def read_bytes(self) -> bytes:
+                    self.path.write_bytes(self.mutated)
+                    return self.inspected
+
+                def __fspath__(self) -> str:
+                    return str(self.path)
+
+            mutated = b"HTTP/1.1 200 OK\r\nAuthorization: Bearer exposed\r\n\r\n"
+            for label, relative, inspected in (
+                ("headers", "abi-floor/server/shell.headers", raw),
+                ("kit", "abi-floor/server/kit.js", runtime),
+            ):
+                with self.subTest(toctou=label):
+                    source.write_bytes(inspected)
+                    collector.copy_exact_anonymous_http(
+                        MutatingSource(source, inspected, mutated),
+                        target,
+                        relative,
+                    )
+                    self.assertEqual(source.read_bytes(), mutated)
+                    self.assertEqual(target.read_bytes(), inspected)
+
     def test_collector_release_inventory_and_runner_wiring_are_explicit(self) -> None:
         expected_json = {
             "abi-floor/result.json",
