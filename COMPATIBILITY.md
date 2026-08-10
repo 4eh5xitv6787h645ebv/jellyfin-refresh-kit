@@ -232,8 +232,10 @@ Background timer throttling or freezing can delay detection.
 - External services such as ARR, Seerr, OAuth, avatar packs, fonts, and CDNs are
   deliberately unreachable in the isolated compatibility runtime and remain
   quarantined where applicable.
-- The lifecycle lab does not perform an in-place Jellyfin host upgrade and does
-  not claim Firefox, WebKit, DRM, or external-player coverage.
+- In-place Jellyfin host upgrades are covered by the separate host-upgrade lab
+  (`e2e/jellyfin/lib/host-upgrade.sh`), which runs in every integration gate,
+  rather than by the lifecycle lab. Neither lab claims Firefox, WebKit, DRM, or
+  external-player coverage.
 - A proxy configured to ignore origin `Cache-Control` can still pin both the
   shell and generation endpoint. The client budget rate-limits reloads; it is
   not a repair for a permanently broken intermediary.

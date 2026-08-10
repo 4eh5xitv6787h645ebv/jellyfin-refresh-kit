@@ -15,7 +15,7 @@
 #   ./run.sh abi-floor-negative no-Docker floor-smoke contract regression
 #   ./run.sh host-upgrade reproducible in-place JF10 and JF12 upgrade paths
 #   ./run.sh host-upgrade-negative no-Docker fail-closed lab regression
-#   ./run.sh all         ABI floor + lifecycle + browser + compat + host upgrades
+#   ./run.sh all         lifecycle + ABI floor + third-party + compat + browser + host upgrades
 #   ./run.sh down        remove only this Compose project's resources
 #   ./run.sh clean       down + remove this lab's generated state/artifacts
 #

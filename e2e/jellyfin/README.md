@@ -52,7 +52,7 @@ Run commands from this directory, or use the repository-level `./test.sh integra
 ./run.sh host-upgrade-negative # no-Docker fail-closed/static checks
 ./run.sh restart jf10      # bounded plain server restart
 ./run.sh status
-./run.sh all               # ABI floor + lifecycle + browser + compatibility + host upgrades
+./run.sh all               # lifecycle + ABI floor + third-party + compat + browser + host upgrades
 ./run.sh down              # remove this Compose project's containers, network, and volumes
 ./run.sh clean             # down plus this lab's generated state and captures
 ```
