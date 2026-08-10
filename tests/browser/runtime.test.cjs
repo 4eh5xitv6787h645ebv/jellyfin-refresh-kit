@@ -2989,6 +2989,72 @@ test('newest-wins handoff invalidates the retired queued token before retrying o
   });
 });
 
+test('a hidden tab answers a budget refusal with its one single-shot timer', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/hidden-budget-refusal#/home`);
+  await page.evaluate(() => {
+    window.__visibility = 'hidden';
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get() { return window.__visibility; },
+    });
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get() { return window.__visibility === 'hidden'; },
+    });
+    window.__reloadAttempts = 0;
+    window.JellyfinRefreshKitConfig = {
+      name: 'HiddenBudgetRefusal',
+      mode: 'auto',
+      bootVersion: 'A',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      reloadBudget: 1,
+      hiddenReload: true,
+      hiddenSettleSeconds: 0,
+      getVersion: () => Promise.resolve('B'),
+    };
+  });
+  // One slot already spent, in a rolling window short enough to roll during
+  // the test: the first attempt must be refused, and the refusal must leave
+  // the hidden tab holding exactly one timer to re-test with.
+  const spentAt = await page.evaluate(() => Date.now());
+  await setBudgetLedger(page, [spentAt]);
+  await page.evaluate((keys) => {
+    localStorage.removeItem(keys.budget);
+    sessionStorage.removeItem(keys.budget);
+  }, storageKeys);
+  const source = fastEpochRuntime()
+    .replace('var MIN_SETTLE_MS = 1000;', 'var MIN_SETTLE_MS = 0;')
+    .replace('var RETRY_MS = 1000;', 'var RETRY_MS = 25;')
+    .replace('var BUDGET_WINDOW_MS = 60000;', 'var BUDGET_WINDOW_MS = 400;')
+    .replace('location.reload();', 'window.__reloadAttempts += 1;');
+  assert.match(source, /var BUDGET_WINDOW_MS = 400;/, 'the rolling window was shortened');
+  await injectRuntime(page, source);
+
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.lastBlockReason === 'reload_budget'
+  ));
+  assert.deepEqual(await page.evaluate(() => ({
+    visibility: document.visibilityState,
+    reloads: window.__reloadAttempts,
+    hiddenTimerArmed: window.JellyfinRefreshKit.state().shared.hiddenTimerArmed,
+    pending: window.JellyfinRefreshKit.state().shared.pendingInstances,
+  })), {
+    visibility: 'hidden',
+    reloads: 0,
+    hiddenTimerArmed: true,
+    pending: ['HiddenBudgetRefusal'],
+  }, 'the refusal re-arms the hidden single shot rather than the 1Hz ladder');
+
+  // ...and that single shot is what takes the reload once the window rolls,
+  // with no visibility wake anywhere in the sequence.
+  await page.waitForFunction(() => window.__reloadAttempts === 1, { timeout: 5000 });
+  assert.equal(await page.evaluate(() => document.visibilityState), 'hidden');
+});
+
 test('a reload stamp made future-relative by a backward clock adjustment remains spent', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
@@ -3561,6 +3627,210 @@ test('failed-reload barrier completion rearms the hidden-settle path', async (t)
     'the reload happens after hidden settle without a visibility wake');
 });
 
+test('a slow-committing navigation keeps its safety records and spends no second slot', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/slow-commit#/home`);
+  await setBudgetLedger(page, []);
+  await page.evaluate((keys) => {
+    sessionStorage.removeItem(keys.left);
+    sessionStorage.removeItem(keys.flips);
+    localStorage.removeItem(keys.budget);
+    sessionStorage.removeItem(keys.budget);
+    window.__reloadAttempts = 0;
+    window.fetch = () => Promise.resolve(new Response(JSON.stringify({
+      CacheKey: 'G3', Epoch: 'slow-commit-process',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    window.JellyfinRefreshKitConfig = {
+      name: 'SlowCommit',
+      mode: 'auto',
+      bootVersion: 'G2',
+      versionUrl: '/version',
+      versionJsonField: 'CacheKey',
+      versionEpochJsonField: 'Epoch',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      reloadBudget: 3,
+    };
+  }, storageKeys);
+  // A 3s in-flight window against a 75ms watchdog: the navigation this test
+  // models commits AFTER the watchdog fires, which is the whole point.
+  const source = fastEpochRuntime()
+    .replace('var MIN_SETTLE_MS = 1000;', 'var MIN_SETTLE_MS = 0;')
+    .replace('var RETRY_MS = 1000;', 'var RETRY_MS = 25;')
+    .replace(
+      'var RELOAD_SURVIVAL_WATCHDOG_MS = 3000;',
+      'var RELOAD_SURVIVAL_WATCHDOG_MS = 75;',
+    )
+    .replace(
+      'var RELOAD_NAVIGATION_SUSPECT_MS = RELOAD_SURVIVAL_WATCHDOG_MS * 4;',
+      'var RELOAD_NAVIGATION_SUSPECT_MS = RELOAD_SURVIVAL_WATCHDOG_MS * 40;',
+    )
+    .replace('location.reload();', 'window.__reloadAttempts += 1;');
+  assert.match(source, /RELOAD_SURVIVAL_WATCHDOG_MS \* 40/, 'the in-flight window was widened');
+  await injectRuntime(page, source);
+
+  await page.waitForFunction(() => window.__reloadAttempts === 1);
+  const committed = await page.evaluate((keys) => ({
+    left: JSON.parse(sessionStorage.getItem(keys.left)),
+    flips: JSON.parse(sessionStorage.getItem(keys.flips)),
+  }), storageKeys);
+  assert.deepEqual(committed.left, ['SlowCommit|G2']);
+  assert.deepEqual(committed.flips, ['SlowCommit|G2>G3']);
+
+  // The watchdog fires while the navigation is still on its way, and the
+  // retry ladder that comes back with it refuses to navigate again.
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.reloadsSurvived === 1
+      && window.JellyfinRefreshKit.state().shared.lastBlockReason === 'reload_in_flight'
+  ));
+  const suspected = await page.evaluate((keys) => ({
+    reloads: window.__reloadAttempts,
+    left: JSON.parse(sessionStorage.getItem(keys.left)),
+    flips: JSON.parse(sessionStorage.getItem(keys.flips)),
+    suspectLeft: window.JellyfinRefreshKit.state().shared.reloadNavigationSuspectMsLeft,
+    pending: window.JellyfinRefreshKit.get('SlowCommit').state().updatePending,
+  }), storageKeys);
+  assert.equal(suspected.reloads, 1);
+  assert.deepEqual(suspected.left, ['SlowCommit|G2'],
+    'the departure this tab may still be making is not retracted on a heuristic');
+  assert.deepEqual(suspected.flips, ['SlowCommit|G2>G3']);
+  assert.ok(suspected.suspectLeft > 0, 'a second navigation is held back');
+  assert.equal(suspected.pending, true, 'detection is re-armed immediately');
+
+  // Now the origin finally commits: pagehide is the positive proof.
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const landed = await page.evaluate((keys) => ({
+    reloads: window.__reloadAttempts,
+    left: JSON.parse(sessionStorage.getItem(keys.left)),
+    flips: JSON.parse(sessionStorage.getItem(keys.flips)),
+    lastBlockReason: window.JellyfinRefreshKit.state().shared.lastBlockReason,
+  }), storageKeys);
+  assert.equal(landed.reloads, 1, 'no second location.reload() cancels the one in flight');
+  assert.deepEqual(landed.left, ['SlowCommit|G2']);
+  assert.deepEqual(landed.flips, ['SlowCommit|G2>G3']);
+  assert.equal(landed.lastBlockReason, 'reload_in_flight');
+  assert.equal((await readBudgetLedger(page)).length, 1,
+    'exactly one budget slot was spent for the one navigation');
+});
+
+test('a genuinely refused reload still recovers, one in-flight window later', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/refused-reload#/home`);
+  await setBudgetLedger(page, []);
+  await page.evaluate((keys) => {
+    sessionStorage.removeItem(keys.left);
+    localStorage.removeItem(keys.budget);
+    sessionStorage.removeItem(keys.budget);
+    window.__reloadTimes = [];
+    window.fetch = () => Promise.resolve(new Response(JSON.stringify({
+      CacheKey: 'G3', Epoch: 'refused-process',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    window.JellyfinRefreshKitConfig = {
+      name: 'RefusedReload',
+      mode: 'auto',
+      bootVersion: 'G2',
+      versionUrl: '/version',
+      versionJsonField: 'CacheKey',
+      versionEpochJsonField: 'Epoch',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      reloadBudget: 3,
+    };
+  }, storageKeys);
+  const source = fastEpochRuntime()
+    .replace('var MIN_SETTLE_MS = 1000;', 'var MIN_SETTLE_MS = 0;')
+    .replace('var RETRY_MS = 1000;', 'var RETRY_MS = 25;')
+    .replace(
+      'var RELOAD_SURVIVAL_WATCHDOG_MS = 3000;',
+      'var RELOAD_SURVIVAL_WATCHDOG_MS = 75;',
+    )
+    .replace('location.reload();', 'window.__reloadTimes.push(performance.now());');
+  assert.match(source, /__reloadTimes\.push/, 'test runtime intercepted reload');
+  await injectRuntime(page, source);
+
+  await page.waitForFunction(() => window.__reloadTimes.length === 1);
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.reloadsSurvived === 1
+  ));
+  assert.equal(await page.evaluate(() => window.__reloadTimes.length), 1,
+    'the in-flight window holds the retry back rather than reloading at once');
+
+  // The host really is refusing: the window expires and the engine tries again.
+  await page.waitForFunction(() => window.__reloadTimes.length === 2, { timeout: 5000 });
+  const recovered = await page.evaluate((keys) => ({
+    gap: window.__reloadTimes[1] - window.__reloadTimes[0],
+    left: JSON.parse(sessionStorage.getItem(keys.left)),
+    pending: window.JellyfinRefreshKit.get('RefusedReload').state().updatePending,
+  }), storageKeys);
+  assert.ok(recovered.gap >= 75 + 300, `second attempt waited out the window (${recovered.gap}ms)`);
+  assert.deepEqual(recovered.left, ['RefusedReload|G2']);
+  assert.equal(recovered.pending, false, 'the second attempt is committed, not still queued');
+  assert.equal((await readBudgetLedger(page)).length, 2,
+    'each genuine attempt spends exactly one slot');
+});
+
+test('a reload that throws is proven refused and retracts what it wrote', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/thrown-reload#/home`);
+  await setBudgetLedger(page, []);
+  await page.evaluate((keys) => {
+    sessionStorage.removeItem(keys.left);
+    sessionStorage.removeItem(keys.flips);
+    localStorage.removeItem(keys.budget);
+    sessionStorage.removeItem(keys.budget);
+    window.__reloadAttempts = 0;
+    window.fetch = () => Promise.resolve(new Response(JSON.stringify({
+      CacheKey: 'G3', Epoch: 'thrown-process',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    window.JellyfinRefreshKitConfig = {
+      name: 'ThrownReload',
+      mode: 'auto',
+      bootVersion: 'G2',
+      versionUrl: '/version',
+      versionJsonField: 'CacheKey',
+      versionEpochJsonField: 'Epoch',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      reloadBudget: 1,
+    };
+  }, storageKeys);
+  const source = fastEpochRuntime()
+    .replace('var MIN_SETTLE_MS = 1000;', 'var MIN_SETTLE_MS = 0;')
+    .replace('var RETRY_MS = 1000;', 'var RETRY_MS = 25;')
+    .replace(
+      'location.reload();',
+      'window.__reloadAttempts += 1; throw new Error("sandboxed");',
+    );
+  await injectRuntime(page, source);
+
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.reloadsSurvived === 1
+  ));
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  const retracted = await page.evaluate((keys) => ({
+    reloads: window.__reloadAttempts,
+    left: sessionStorage.getItem(keys.left),
+    flips: sessionStorage.getItem(keys.flips),
+    suspectLeft: window.JellyfinRefreshKit.state().shared.reloadNavigationSuspectMsLeft,
+    pending: window.JellyfinRefreshKit.get('ThrownReload').state().updatePending,
+  }), storageKeys);
+  assert.equal(retracted.reloads, 1);
+  assert.deepEqual(JSON.parse(retracted.left), [],
+    'a synchronous throw proves no departure happened, so its record is retracted');
+  assert.deepEqual(JSON.parse(retracted.flips), []);
+  assert.equal(retracted.suspectLeft, 0, 'proof needs no in-flight doubt window');
+  assert.equal(retracted.pending, true, 'the update is kept and the ladder is back in line');
+  assert.equal((await readBudgetLedger(page)).length, 1,
+    'the slot spent on the refused attempt is still not refunded');
+});
+
 test('baseline reconvergence resets notification watermarks and releases same-document recovery', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
@@ -4000,6 +4270,146 @@ test('forced checks join the in-flight version request', async (t) => {
   assert.equal(state.latestVersion, 'B');
   assert.equal(state.candidateVersion, 'B');
   assert.equal(await page.evaluate(() => window.__versionCalls), 2);
+});
+
+test('URLs already carrying any server-side cache-busting key are left alone', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/version-param#/home`);
+  await injectConfiguredRuntime(page, runtime, {
+    'data-name': 'StampCompose',
+    'data-mode': 'off',
+    'data-boot-version': 'G7',
+    'data-asset-patterns': '/plugin-assets/',
+  });
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit?.get('StampCompose')?.version === 'G7'
+  ));
+
+  const versioned = await page.evaluate(() => {
+    const handle = window.JellyfinRefreshKit.get('StampCompose');
+    const urls = [
+      '/plugin-assets/app.js',
+      '/plugin-assets/app.js?rkv=G6',
+      '/plugin-assets/app.js?RKV=G6',
+      '/plugin-assets/app.js?ver=3',
+      '/plugin-assets/app.js?hash=abc&x=1',
+      '/plugin-assets/app.js?x=1&cb=99',
+      '/plugin-assets/app.js?_=1700000000000',
+      '/plugin-assets/app.js?x=1',
+      '/plugin-assets/app.js?srkv=1',
+      '/plugin-assets/app.js?rkvv=1',
+      '/plugin-assets/app.js#rkv=G6',
+      '/plugin-assets/app.js?rkv=G6#/home',
+    ];
+    const out = {};
+    for (const url of urls) out[url] = handle.versionedUrl(url);
+    const stamped = document.createElement('script');
+    stamped.src = '/plugin-assets/from-plugin.js?rkv=G6';
+    const plain = document.createElement('script');
+    plain.src = '/plugin-assets/from-plugin.js';
+    out.createdStamped = stamped.getAttribute('src');
+    out.createdPlain = plain.getAttribute('src');
+    out.forcedStamped = handle.versionedUrl('/elsewhere/thing.js?rkv=G6', true);
+    return out;
+  });
+  assert.deepEqual(versioned, {
+    '/plugin-assets/app.js': '/plugin-assets/app.js?v=G7',
+    '/plugin-assets/app.js?rkv=G6': '/plugin-assets/app.js?rkv=G6',
+    '/plugin-assets/app.js?RKV=G6': '/plugin-assets/app.js?RKV=G6',
+    '/plugin-assets/app.js?ver=3': '/plugin-assets/app.js?ver=3',
+    '/plugin-assets/app.js?hash=abc&x=1': '/plugin-assets/app.js?hash=abc&x=1',
+    '/plugin-assets/app.js?x=1&cb=99': '/plugin-assets/app.js?x=1&cb=99',
+    '/plugin-assets/app.js?_=1700000000000': '/plugin-assets/app.js?_=1700000000000',
+    '/plugin-assets/app.js?x=1': '/plugin-assets/app.js?x=1&v=G7',
+    // A key must own the whole parameter name: these only CONTAIN one.
+    '/plugin-assets/app.js?srkv=1': '/plugin-assets/app.js?srkv=1&v=G7',
+    '/plugin-assets/app.js?rkvv=1': '/plugin-assets/app.js?rkvv=1&v=G7',
+    // A fragment never reaches the server, so it stamps nothing.
+    '/plugin-assets/app.js#rkv=G6': '/plugin-assets/app.js?v=G7#rkv=G6',
+    '/plugin-assets/app.js?rkv=G6#/home': '/plugin-assets/app.js?rkv=G6#/home',
+    createdStamped: '/plugin-assets/from-plugin.js?rkv=G6',
+    createdPlain: '/plugin-assets/from-plugin.js?v=G7',
+    forcedStamped: '/elsewhere/thing.js?rkv=G6',
+  });
+});
+
+test("checkNow() can still resolve a mode 'off' version after a failed boot fetch", async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/off-checknow#/home`);
+  await page.evaluate(() => {
+    window.__versionCalls = 0;
+    window.__reloadAttempts = 0;
+    window.__announcements = 0;
+    window.__endpointUp = false;
+    window.fetch = () => {
+      window.__versionCalls += 1;
+      if (!window.__endpointUp) return Promise.reject(new Error('endpoint down'));
+      return Promise.resolve(new Response(JSON.stringify({ CacheKey: 'OFF1' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }));
+    };
+    window.JellyfinRefreshKitConfig = {
+      name: 'OffCheckNow',
+      mode: 'off',
+      versionUrl: '/version',
+      versionJsonField: 'CacheKey',
+      pollSeconds: 15,
+      idleSeconds: 0,
+      assetPatterns: ['/off-assets/'],
+      onUpdateAvailable() { window.__announcements += 1; },
+    };
+  });
+  await injectRuntime(page, runtime.replace('location.reload();', 'window.__reloadAttempts += 1;'));
+
+  // 'off' gets ONE resolution attempt at start and never retries it, so a
+  // momentarily dead endpoint used to leave this instance versioning nothing
+  // for the life of the tab.
+  await page.waitForFunction(() => window.__versionCalls === 1);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.deepEqual(await page.evaluate(() => ({
+    calls: window.__versionCalls,
+    version: window.JellyfinRefreshKit.get('OffCheckNow').version,
+    url: window.JellyfinRefreshKit.get('OffCheckNow').versionedUrl('/off-assets/a.js'),
+  })), { calls: 1, version: null, url: '/off-assets/a.js' },
+  'nothing retries the failed boot resolution on its own');
+
+  await page.evaluate(() => { window.__endpointUp = true; });
+  await page.evaluate(() => window.JellyfinRefreshKit.get('OffCheckNow').checkNow());
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.get('OffCheckNow').version === 'OFF1'
+  ));
+  assert.deepEqual(await page.evaluate(() => ({
+    calls: window.__versionCalls,
+    url: window.JellyfinRefreshKit.get('OffCheckNow').versionedUrl('/off-assets/a.js'),
+    pageUrl: window.JellyfinRefreshKit.versionedUrl('/off-assets/a.js'),
+  })), {
+    calls: 2,
+    url: '/off-assets/a.js?v=OFF1',
+    pageUrl: '/off-assets/a.js?v=OFF1',
+  });
+
+  // ONE resolution only: further checks (per instance or page-wide) must not
+  // turn 'off' into polling, and nothing may reach the reload engine.
+  await page.evaluate(() => window.JellyfinRefreshKit.get('OffCheckNow').checkNow());
+  await page.evaluate(() => window.JellyfinRefreshKit.checkNow());
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.deepEqual(await page.evaluate(() => ({
+    calls: window.__versionCalls,
+    announcements: window.__announcements,
+    reloads: window.__reloadAttempts,
+    pending: window.JellyfinRefreshKit.get('OffCheckNow').state().updatePending,
+    pendingInstances: window.JellyfinRefreshKit.state().shared.pendingInstances,
+  })), {
+    calls: 2,
+    announcements: 0,
+    reloads: 0,
+    pending: false,
+    pendingInstances: [],
+  });
 });
 
 test('retained instance handles follow chained newest-wins handoffs', async (t) => {
