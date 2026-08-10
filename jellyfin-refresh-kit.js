@@ -841,8 +841,28 @@
      *           Equal-millisecond reservations retain their multiplicity, and
      *           lifecycle/handoff cancellation fails closed without leaving a
      *           queued lock attempt behind.
+     *   2.4.8 — THE SURVIVAL WATCHDOG STOPS TREATING A SLOW ORIGIN AS A REFUSAL.
+     *           A scripted reload keeps this document alive until the new
+     *           response commits, so "still here 3s later" also describes a
+     *           navigation that is merely in flight. That path no longer
+     *           retracts the LEFT/transition records the attempt wrote (only a
+     *           synchronous throw from reload(), which proves nothing started,
+     *           still does), and it holds the NEXT navigation back for 12s
+     *           instead of cancelling the one on its way and spending a second
+     *           budget slot on it; a non-persisted `pagehide` is taken as
+     *           positive proof the navigation committed. Engine-level refusals
+     *           (budget, strict history, in-flight navigation) now re-arm the
+     *           hidden tab's ONE single shot instead of the 1Hz ladder's timer,
+     *           which also ends the stranded-update trap where the ladder's
+     *           timer cancelled the hidden settle shot the next evaluation
+     *           assumed still existed. `hasVersionParam` recognizes every
+     *           cache-busting key the standalone plugin's server-side stamper
+     *           does — `rkv` first among them — so the two never double-stamp
+     *           one URL. `checkNow()` resolves the version of a `mode: 'off'`
+     *           instance once, so URL versioning can start without a
+     *           bootVersion.
      */
-    var KIT_VERSION = '2.4.7';
+    var KIT_VERSION = '2.4.8';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the

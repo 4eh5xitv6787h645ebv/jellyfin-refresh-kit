@@ -417,7 +417,7 @@ async function waitForEpochFetches(page, count) {
 }
 
 function runtimeAtVersion(version) {
-  const marker = "var KIT_VERSION = '2.4.7';";
+  const marker = "var KIT_VERSION = '2.4.8';";
   assert.equal(runtime.split(marker).length, 2, 'runtime must contain one current KIT_VERSION marker');
   return runtime.replace(marker, `var KIT_VERSION = '${version}';`);
 }
@@ -1517,8 +1517,8 @@ test('newest-wins handoffs preserve candidate evidence and claimed epoch authori
     window.__retainedEpochHandle = window.JellyfinRefreshKit.get('EpochHandoff');
   });
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.8'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.8');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.9'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.9');
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.get('EpochHandoff').state().updatePending === true
   ));
@@ -1529,10 +1529,10 @@ test('newest-wins handoffs preserve candidate evidence and claimed epoch authori
   assert.equal(state.authorizedEpoch, 'handoff-epoch');
   assert.deepEqual(state.candidateEpochEvidence, [{ epoch: 'handoff-epoch', count: 2 }]);
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.9'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.9');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.5.0'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.0');
   state = await page.evaluate(() => window.__retainedEpochHandle.state());
-  assert.equal(state.kitVersion, '2.4.9');
+  assert.equal(state.kitVersion, '2.5.0');
   assert.equal(state.restoredByHandoff, true);
   assert.equal(state.updatePending, true);
   assert.equal(state.authorizedEpoch, 'handoff-epoch');
@@ -1582,8 +1582,8 @@ test('handoff replaces one held in-flight confirmation without waiting for pollS
     window.JellyfinRefreshKit.get('EpochHeldHandoff').state().candidateEpochEvidence
   )), [{ epoch: 'held-handoff-epoch', count: 1 }]);
 
-  await injectConfiguredRuntime(page, fastEpochRuntime(runtimeAtVersion('2.4.8')), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.8');
+  await injectConfiguredRuntime(page, fastEpochRuntime(runtimeAtVersion('2.4.9')), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.9');
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.get('EpochHeldHandoff').state().updatePending === true
   ));
@@ -2968,9 +2968,9 @@ test('newest-wins handoff invalidates the retired queued token before retrying o
       getVersion: () => Promise.resolve('B'),
     };
   });
-  await injectRuntime(page, fastBudgetRuntime(runtimeAtVersion('2.4.8'), 15_000));
+  await injectRuntime(page, fastBudgetRuntime(runtimeAtVersion('2.4.9'), 15_000));
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit.kitVersion === '2.4.8'
+    window.JellyfinRefreshKit.kitVersion === '2.4.9'
       && window.JellyfinRefreshKit.state().instanceCount === 1
       && window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === true
   ));
@@ -2982,7 +2982,7 @@ test('newest-wins handoff invalidates the retired queued token before retrying o
     reloads: window.__reloadAttempts,
     budget: JSON.parse(localStorage.getItem(keys.budget)),
   }), storageKeys), {
-    version: '2.4.8',
+    version: '2.4.9',
     instances: 1,
     reloads: 1,
     budget: [1_800_000_600_000],
@@ -4082,8 +4082,8 @@ test('retained instance handles follow chained newest-wins handoffs', async (t) 
 
   await injectConfiguredRuntime(page, runtime, attributes);
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit?.kitVersion === '2.4.7'
-      && window.JellyfinRefreshKit.get('RetainedHandoffTest')?.state().kitVersion === '2.4.7'
+    window.JellyfinRefreshKit?.kitVersion === '2.4.8'
+      && window.JellyfinRefreshKit.get('RetainedHandoffTest')?.state().kitVersion === '2.4.8'
   ));
 
   const afterHandoffs = await page.evaluate(() => {
@@ -4115,23 +4115,23 @@ test('retained instance handles follow chained newest-wins handoffs', async (t) 
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.7',
+      stateKitVersion: '2.4.8',
     },
     middle: {
       name: 'RetainedHandoffTest',
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.7',
+      stateKitVersion: '2.4.8',
     },
     current: {
       name: 'RetainedHandoffTest',
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.7',
+      stateKitVersion: '2.4.8',
     },
-    lineage: ['2.4.3', '2.4.4', '2.4.7'],
+    lineage: ['2.4.3', '2.4.4', '2.4.8'],
     handoffs: 2,
   });
   assert.equal(requestCount, 2, 'only the replacement may retry the interrupted baseline fetch');
@@ -4215,15 +4215,15 @@ test('a 2.4.6+ createElement wrapper retained before handoff delegates to the ne
 
   await injectConfiguredRuntime(page, runtime, attributes);
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit?.kitVersion === '2.4.7'
+    window.JellyfinRefreshKit?.kitVersion === '2.4.8'
       && window.JellyfinRefreshKit.state().interceptorInstalled === true
   ));
   await page.evaluate(() => { window.__retainedCreateElement = document.createElement; });
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.8'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.8');
   await injectConfiguredRuntime(page, runtimeAtVersion('2.4.9'), attributes);
   await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.9');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.5.0'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.5.0');
 
   const urls = await page.evaluate(() => {
     const retainedScript = window.__retainedCreateElement.call(document, 'script');
@@ -4268,7 +4268,7 @@ test('the exact released 2.4.2 retained wrapper stays inert after a 2.4.6 handof
   });
 
   await injectConfiguredRuntime(page, runtime, attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.7');
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.8');
 
   const observed = await page.evaluate(() => {
     const retained = window.__historicalCreateElement.call(document, 'script');
@@ -4287,7 +4287,7 @@ test('the exact released 2.4.2 retained wrapper stays inert after a 2.4.6 handof
     retained: '/captured-assets/from-retained-2.4.2.js',
     preHandoff: '/captured-assets/from-pre-handoff.js?v=CAPTURED',
     current: '/captured-assets/from-current.js?v=CAPTURED',
-    lineage: ['2.4.2', '2.4.7'],
+    lineage: ['2.4.2', '2.4.8'],
   });
 });
 
