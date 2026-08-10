@@ -28,6 +28,34 @@ const BUMP = process.env.RK_BUMP_FILE || `/config/plugins/Jellyfin Enhanced_${JE
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(...a);
 
+// Bounded polled wait, mirroring e2e/jellyfin/lib/browser.cjs: a slow login must
+// not be reported as a failure, and an authenticated session must still be
+// asserted by the caller once the wait ends.
+async function waitUntil(probe, timeoutMs, intervalMs = 400) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const value = await probe();
+      if (value) return value;
+    } catch (error) {
+      // A navigation can tear down the evaluation context mid-poll; retry.
+    }
+    await sleep(intervalMs);
+  }
+  return false;
+}
+
+async function authenticated(page) {
+  return page.evaluate(() => {
+    try {
+      return Boolean(window.ApiClient && typeof window.ApiClient.accessToken === 'function'
+        && window.ApiClient.accessToken());
+    } catch (e) {
+      return false;
+    }
+  });
+}
+
 function bumpGeneration() {
   const marker = `// refresh-kit E2E generation ${Date.now()}-${process.pid}\n`;
   execFileSync('docker', ['exec', '-i', CONTAINER, 'tee', BUMP], {
@@ -77,12 +105,13 @@ function originGeneration() {
       page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 }).catch(() => {}),
       page.keyboard.press('Enter'),
     ]);
-    await sleep(4000);
+    await waitUntil(() => authenticated(page), 60000, 400);
+    await sleep(2500);
   } catch (e) {
     failures.push(`login flow: ${e.message}`);
   }
 
-  const loggedIn = await page.evaluate(() => !!(window.ApiClient && window.ApiClient.accessToken && window.ApiClient.accessToken()));
+  const loggedIn = await authenticated(page);
   log(loggedIn ? 'PASS login through proxy' : 'FAIL login through proxy');
   if (!loggedIn) failures.push('login');
 
