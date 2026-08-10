@@ -149,6 +149,7 @@ It is deliberately conservative. A tag is **skipped** when:
 | standalone middleware: any real `<base href>` outside template content | it can redirect Refresh Kit's own PathBase-relative runtime URL, so the complete shell transform is left byte-for-byte unchanged |
 | direct `ThirdPartyTagStamper` use: any unsafe or entity-ambiguous base candidate | DOM recovery can reorder candidates, so source order is not trusted; safe same-origin relative bases remain eligible in this direct API |
 | any document containing a real `<noscript>` element | server-side code cannot know the user agent's scripting flag; with scripting disabled, an effective `<base>` inside `<noscript>` can change asset origin, so `ThirdPartyTagStamper` skips the whole transform byte-for-byte |
+| any document that keeps more than 512 elements open at once | the walker's open-element list is scanned per end tag, so an unbounded list makes pathological nesting quadratic inside the shell transform; past the ceiling the whole pass is abandoned byte-for-byte. A real shell nests a couple of dozen deep |
 | already carries `?v=`, `?ver=`, `?version=`, `?hash=`, `?rev=`, `?build=`, `?cb=`, `?_=` … | somebody's deliberate versioning; leave it alone (`rkv` is the exception: old values are scrubbed and restamped) |
 | an opaque valueless query (`?3cf5acc8506265662d4f`) | jellyfin-web's own bundle convention — already an identity |
 | a content-hashed filename (`main.jellyfin.f725276386e5b19afe0c.css`) | already immutable per URL; restamping would throw away a warm cache for nothing |
@@ -157,6 +158,12 @@ Stamping is **idempotent**: any existing `rkv` is scrubbed and the current
 generation restamped, so repeated passes and generation changes converge instead
 of accumulating. Attribute order, quoting and whitespace are untouched — only the
 characters inside the `src`/`href` value change.
+
+The two whole-document aborts above — `<noscript>` and the open-element ceiling
+— leave a shell that is indistinguishable from one where nothing was eligible.
+`GET /RefreshKit/Diagnostics` therefore reports both as process-lifetime
+counters under `Stamping`, so "mechanism 2 does nothing on my server" has an
+answer.
 
 #### Ordering caveat
 
@@ -268,8 +275,10 @@ plugin that crosses an entry ceiling, solely to detect the overflow. If an
 asset or configuration read races a writer or becomes
 unavailable, its reserved global budget remains consumed and the last-good
 snapshot is retained when one exists. `GET /RefreshKit/Diagnostics` exposes
-file/directory/byte counts, truncation and unavailability flags, last-good use,
-and retained plugin records.
+file/directory/byte counts, truncation and unavailability flags, skipped
+reparse-point configuration files, last-good use, and retained plugin records.
+The whole payload is projected from one snapshot of the provider, so a
+generation is never reported beside rows from a different scan.
 
 #### One response uses one exact tag identity
 
@@ -299,6 +308,17 @@ pointless server-wide reloads:
   its plugin-configuration store (normally
   `plugins/configurations/<AssemblyName>.xml`). The primary assembly-name XML is
   used only as a fallback when the plugin does not report a configured filename.
+* **NOT watched: a configuration file that is a symbolic link or other reparse
+  point.** Refresh Kit refuses to follow one, because a plugin chooses its own
+  configuration filename and following a link would let that choice turn
+  generation polling into a content oracle for a file outside the configuration
+  store. The consequence is worth stating plainly: on a deployment that
+  symlinks its plugin-configuration store — NixOS, some ansible layouts — the
+  watched file contributes exactly what a missing file does, and mechanism 3
+  quietly does nothing for that plugin. Loaded-module and loose-asset detection
+  are unaffected. `GET /RefreshKit/Diagnostics` reports
+  `ConfigurationReparsePointsSkipped` per plugin, which is the only way to tell
+  the case apart from a plugin that has no configuration at all.
 * **NOT watched:** the plugin's private `plugins/configurations/<AssemblyName>/`
   directory. Measured on 10.11.11 with Jellyfin Enhanced 12.1.0.0, that
   directory holds `<userId>/settings.json` (**per-user preferences**),
@@ -408,6 +428,11 @@ Dashboard → Plugins → **Jellyfin Refresh Kit**.
 | Max reloads per minute | 3 | Clamped 1–100 and applied to verified same-origin reservation history. Unavailable coordination defers automatic reload. |
 | Developer mode | off | Serves the client runtime `no-store` and uses a distinct `dev=1` script URL. The marker itself remains `no-store` across setting races, so an immutable production response cannot poison the dev URL. |
 
+A numeric field left blank (or filled with something that is not a number)
+saves the default in the table above, not zero. A typed `0` is kept wherever
+the range allows it, because zero means something specific there: no cooldown,
+and no idle wait.
+
 ## Endpoints
 
 | Route | Auth | Purpose |
@@ -415,7 +440,7 @@ Dashboard → Plugins → **Jellyfin Refresh Kit**.
 | `GET /RefreshKit/Generation` | anonymous | `{ Version, BuildId, CacheKey, Epoch }`; `CacheKey` = generation and `Epoch` = this process incarnation. `no-store`. |
 | `GET /RefreshKit/Generation.txt` | anonymous | The bare generation, `text/plain`. |
 | `GET /RefreshKit/kit.js` | anonymous | The embedded `jellyfin-refresh-kit.js`: immutable for a production generation URL, or `no-store` for developer mode / a `dev=1` URL. |
-| `GET /RefreshKit/Diagnostics` | admin | Loaded host modules plus per-plugin loaded/content identities, diagnostic timestamps, scan counts/budgets, truncation/unavailability, and last-good/retained-record state. |
+| `GET /RefreshKit/Diagnostics` | admin | Loaded host modules plus per-plugin loaded/content identities, diagnostic timestamps, scan counts/budgets, truncation/unavailability, skipped reparse-point configuration files, last-good/retained-record state, and stamping abort counters. All from one provider snapshot. |
 
 The first three are anonymous **on purpose**: the login screen is a real page of
 the web client, it is where a stale cache most often bites, and a tab can sit on
@@ -423,6 +448,35 @@ it for days. An authenticated version endpoint would leave exactly that page
 unable to notice an update. The routes expose opaque generation/process tokens
 and a public MIT-licensed script, not the authenticated diagnostics or plugin
 inventory.
+
+#### What an anonymous observer can and cannot learn
+
+Stated plainly, because "opaque" is easy to over-read:
+
+* **Cannot enumerate or reverse it.** The generation is a truncated SHA-256
+  fold. No plugin name, version, path, count or file listing can be recovered
+  from the token, and the endpoint answers nothing else.
+* **Can confirm a guess.** The fold mixes in no per-install secret. Every input
+  can be public: plugin GUIDs, the MVIDs of published release artifacts, the
+  bytes of shipped client assets, and a plugin's default configuration XML.
+  Someone who can already guess an exact host version plus plugin inventory can
+  therefore compute candidate folds offline and check which one the endpoint
+  returns — confirmation of an already-formed guess, not discovery. A
+  per-install random salt would remove even that, but it would also break the
+  invariant that two nodes running identical active bytes publish identical
+  generations, which is what makes the kit work behind a load balancer or in a
+  replica set. The invariant wins; the property is documented instead.
+* **Can watch the timing.** The token changes shortly after an admin saves a
+  plugin's settings, and it changes after a server or plugin update takes
+  effect on restart. Polling it therefore reveals *when* those events happened,
+  to within a poll interval and the debounce/cooldown delay. This is inherent
+  to any change signal an unauthenticated login page can read, which is exactly
+  what these routes are for.
+
+None of this is affected by the settings switches: turning injection or
+stamping off does not remove the endpoints, which the configuration page and
+external health checks also use. An installation that cannot accept an
+anonymous change signal should not deploy this plugin.
 
 ---
 
