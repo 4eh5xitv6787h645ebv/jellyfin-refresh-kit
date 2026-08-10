@@ -232,10 +232,17 @@ Background timer throttling or freezing can delay detection.
 - External services such as ARR, Seerr, OAuth, avatar packs, fonts, and CDNs are
   deliberately unreachable in the isolated compatibility runtime and remain
   quarantined where applicable.
-- In-place Jellyfin host upgrades are covered by the separate host-upgrade lab
-  (`e2e/jellyfin/lib/host-upgrade.sh`), which runs in every integration gate,
-  rather than by the lifecycle lab. Neither lab claims Firefox, WebKit, DRM, or
-  external-player coverage.
+- In-place Jellyfin restart and generation convergence are covered by the
+  dual-Jellyfin lifecycle lab, which restarts the pinned servers and reconnects
+  the browser. The separate in-place host-upgrade BROWSER leg
+  (`e2e/jellyfin/lib/host-upgrade.sh`) is temporarily **non-gating for 1.0.1.0**
+  pending harness repair: it drove the old Jellyfin web uninstall dialog that the
+  pinned MUI web build removed, and its poll-stress phase asserts tab visibility
+  across multiple Puppeteer browser contexts where `bringToFront()` only hides
+  same-context pages. Its code and static self-tests remain in the tree for
+  re-enablement after repair; the redundant in-place restart+convergence coverage
+  is retained by the dual-Jellyfin lab. Neither lab claims Firefox, WebKit, DRM,
+  or external-player coverage.
 - A proxy configured to ignore origin `Cache-Control` can still pin both the
   shell and generation endpoint. The client budget rate-limits reloads; it is
   not a repair for a permanently broken intermediary.

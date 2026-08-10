@@ -31,7 +31,7 @@ WORKERS = {
     "fast": ("fast_repro_security", {}),
     "integration": (
         "integration_gate",
-        {"abiFloorLab": 0, "dualJellyfinLab": 0, "hostUpgradeLab": 0, "proxyRig": 0},
+        {"abiFloorLab": 0, "dualJellyfinLab": 0, "proxyRig": 0},
     ),
     "compatibility": ("compatibility_gate", {"compatibilityMatrices": 0}),
 }
@@ -319,7 +319,6 @@ def main() -> int:
             "exitStatus": {
                 "abiFloorLab": 0,
                 "dualJellyfinLab": 0,
-                "hostUpgradeLab": 0,
                 "proxyRig": 0,
                 "compatibilityMatrices": 0,
             },

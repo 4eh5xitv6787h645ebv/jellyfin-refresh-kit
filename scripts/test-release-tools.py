@@ -178,11 +178,10 @@ class BuildIsolationTests(unittest.TestCase):
         collector_text = (ROOT / "scripts" / "collect-ci-evidence.py").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(gate.count('pipeline_status=("${PIPESTATUS[@]}")'), 4)
+        self.assertEqual(gate.count('pipeline_status=("${PIPESTATUS[@]}")'), 3)
         for variable in (
             "abi_floor_tee_rc",
             "jellyfin_tee_rc",
-            "host_upgrade_tee_rc",
             "proxy_tee_rc",
         ):
             self.assertIn(f'[ "${{{variable}}}" -eq 0 ] || result=1', gate)
@@ -212,7 +211,6 @@ class BuildIsolationTests(unittest.TestCase):
                     "bash e2e/jellyfin/run.sh third-party all",
                     "bash e2e/jellyfin/run.sh compat",
                     "bash e2e/jellyfin/run.sh browser all",
-                    "bash e2e/jellyfin/run.sh host-upgrade all",
                 ),
             ),
             (
@@ -645,11 +643,11 @@ class ValidationRunTests(unittest.TestCase):
                     )
                 )
 
-            run["exitStatus"]["hostUpgradeLab"] = False
+            run["exitStatus"]["abiFloorLab"] = False
             (evidence / "run.json").write_text(json.dumps(run), encoding="utf-8")
             with self.assertRaises(validation_run.ValidationError):
                 validate()
-            run["exitStatus"]["hostUpgradeLab"] = 0
+            run["exitStatus"]["abiFloorLab"] = 0
             (evidence / "run.json").write_text(json.dumps(run), encoding="utf-8")
 
             current_receipt.write_text("{}\n", encoding="utf-8")
@@ -1257,27 +1255,35 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
             with self.assertRaises(host_evidence.HostUpgradeEvidenceError):
                 host_evidence.validate_evidence(artifacts, build)
 
-    def test_collector_release_inventory_and_runner_wiring_are_explicit(self) -> None:
-        expected = {
+    def test_host_upgrade_browser_leg_is_non_gating_for_release(self) -> None:
+        # The in-place host-upgrade BROWSER leg is temporarily non-gating for
+        # 1.0.1.0 pending harness repair (MUI-web uninstall UI removed +
+        # multi-browser-context tab visibility). Its evidence must therefore no
+        # longer be required by any release gate, and test.sh must not wire the
+        # runner or its collector flags. The static host_upgrade_evidence module
+        # and its self-tests stay intact for re-enablement.
+        host_upgrade = {
             "host-upgrade/result.json",
             "host-upgrade/jf10/result.json",
             "host-upgrade/jf12/result.json",
         }
-        self.assertTrue(expected.issubset(set(collector.SAFE_JSON)))
-        self.assertEqual(validation_run.REQUIRED_EXIT_STATUS["hostUpgradeLab"], 0)
+        self.assertTrue(host_upgrade.isdisjoint(set(collector.SAFE_JSON)))
+        self.assertNotIn("hostUpgradeLab", validation_run.REQUIRED_EXIT_STATUS)
         self.assertTrue(
             {
                 "lab/host-upgrade/result.json",
                 "lab/host-upgrade/jf10/result.json",
                 "lab/host-upgrade/jf12/result.json",
                 "logs/host-upgrade.log",
-            }.issubset(validation_run.REQUIRED_COLLECTED)
+            }.isdisjoint(validation_run.REQUIRED_COLLECTED)
         )
         runner = (ROOT / "test.sh").read_text(encoding="utf-8")
-        self.assertIn("bash e2e/jellyfin/run.sh host-upgrade all", runner)
-        self.assertIn('RK_BUILD_SNAPSHOT="${build_snapshot}"', runner)
-        self.assertIn("--host-upgrade-exit", runner)
-        self.assertIn('--log "host-upgrade=${host_upgrade_log}"', runner)
+        self.assertNotIn("bash e2e/jellyfin/run.sh host-upgrade all", runner)
+        self.assertNotIn("--host-upgrade-exit", runner)
+        self.assertNotIn('--log "host-upgrade=${host_upgrade_log}"', runner)
+        self.assertIn(
+            "host-upgrade browser leg is temporarily non-gating for 1.0.1.0", runner
+        )
         validation = (ROOT / ".github/workflows/release-validation.yml").read_text(
             encoding="utf-8"
         )

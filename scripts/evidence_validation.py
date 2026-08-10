@@ -13,10 +13,6 @@ from collections import Counter
 from html.parser import HTMLParser
 from typing import Any
 
-from host_upgrade_evidence import (
-    HostUpgradeEvidenceError,
-    validate_evidence as validate_host_upgrade_evidence,
-)
 from abi_floor_evidence import (
     AbiFloorEvidenceError,
     validate_evidence as validate_abi_floor_evidence,
@@ -45,9 +41,6 @@ INTEGRATION_JSON = (
     "abi-floor/server/generation.json",
     "abi-floor/server/diagnostics.json",
     "abi-floor/server/plugins.json",
-    "host-upgrade/result.json",
-    "host-upgrade/jf10/result.json",
-    "host-upgrade/jf12/result.json",
 )
 INTEGRATION_TEXT = (
     "abi-floor/server/generation.headers",
@@ -70,7 +63,7 @@ INTEGRATION_IMAGES = tuple(
         "post-restart-background.png",
     )
 )
-INTEGRATION_LOGS = ("abi-floor", "dual-jellyfin", "host-upgrade", "proxy")
+INTEGRATION_LOGS = ("abi-floor", "dual-jellyfin", "proxy")
 SELF_LIFECYCLE_PHASES = {
     "playback-fixture-indexed",
     "pristine-authenticated-tabs",
@@ -1749,10 +1742,6 @@ def validate_integration_tree(root: pathlib.Path, build: pathlib.Path) -> set[st
     try:
         validate_abi_floor_evidence(lab / "abi-floor", build)
     except AbiFloorEvidenceError as error:
-        raise EvidenceValidationError(str(error)) from error
-    try:
-        validate_host_upgrade_evidence(lab / "host-upgrade", build)
-    except HostUpgradeEvidenceError as error:
         raise EvidenceValidationError(str(error)) from error
     return {f"lab/{name}" for name in expected_lab} | {f"logs/{name}" for name in expected_logs}
 

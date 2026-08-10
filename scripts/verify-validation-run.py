@@ -37,7 +37,6 @@ MAX_ARCHIVE_FILES = 20_000
 REQUIRED_EXIT_STATUS = {
     "abiFloorLab": 0,
     "dualJellyfinLab": 0,
-    "hostUpgradeLab": 0,
     "proxyRig": 0,
     "compatibilityMatrices": 0,
 }
@@ -68,10 +67,6 @@ REQUIRED_COLLECTED = {
     "lab/jf12/lifecycle/result.json",
     "lab/jf12/third-party-lifecycle/result.json",
     "lab/compat-jf10-on-jf12/result.json",
-    "lab/host-upgrade/result.json",
-    "lab/host-upgrade/jf10/result.json",
-    "lab/host-upgrade/jf12/result.json",
-    "logs/host-upgrade.log",
     "logs/abi-floor.log",
     "logs/dual-jellyfin.log",
     "logs/proxy.log",
@@ -86,7 +81,7 @@ WORKER_CONTRACTS = {
     "fast": ("fast_repro_security", {}),
     "integration": (
         "integration_gate",
-        {"abiFloorLab": 0, "dualJellyfinLab": 0, "hostUpgradeLab": 0, "proxyRig": 0},
+        {"abiFloorLab": 0, "dualJellyfinLab": 0, "proxyRig": 0},
     ),
     "compatibility": ("compatibility_gate", {"compatibilityMatrices": 0}),
 }

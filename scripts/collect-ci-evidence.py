@@ -14,10 +14,6 @@ import subprocess
 import sys
 from typing import Any
 
-from host_upgrade_evidence import (
-    HostUpgradeEvidenceError,
-    validate_evidence as validate_host_upgrade_evidence,
-)
 from evidence_validation import (
     COMPAT_CONTENT_PROBE_MAX_BODY_BYTES,
     COMPAT_CONTENT_PROBE_MAX_HEADER_BYTES,
@@ -64,9 +60,6 @@ SAFE_JSON = (
     "abi-floor/server/result.json",
     "abi-floor/server/diagnostics.json",
     "abi-floor/server/plugins.json",
-    "host-upgrade/result.json",
-    "host-upgrade/jf10/result.json",
-    "host-upgrade/jf12/result.json",
 )
 EXACT_ANONYMOUS_HTTP = (
     "abi-floor/server/public.json",
@@ -1662,10 +1655,6 @@ def main() -> int:
             strict_errors.append(
                 f"ABI-floor runner exit status is {args.abi_floor_exit!r}, expected 0"
             )
-        if args.host_upgrade_exit != 0:
-            strict_errors.append(
-                f"host-upgrade runner exit status is {args.host_upgrade_exit!r}, expected 0"
-            )
         if args.proxy_exit != 0:
             strict_errors.append(f"proxy runner exit status is {args.proxy_exit!r}, expected 0")
     collect_integration = (
@@ -1751,14 +1740,6 @@ def main() -> int:
         relative_target = target.relative_to(output).as_posix()
         if relative_target not in evidence["collected"]:
             evidence["collected"].append(relative_target)
-
-    if args.require_integration_evidence and integration_build is not None:
-        try:
-            validate_host_upgrade_evidence(
-                output / "lab" / "host-upgrade", integration_build
-            )
-        except HostUpgradeEvidenceError as error:
-            strict_errors.append(str(error))
 
     for relative_value in (SAFE_IMAGES if collect_integration else ()):
         relative = pathlib.Path(relative_value)
