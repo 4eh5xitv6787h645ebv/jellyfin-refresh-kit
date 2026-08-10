@@ -191,9 +191,11 @@ namespace Jellyfin.Plugin.RefreshKit
 
         /// <summary>
         /// Stamps every eligible third-party tag in <paramref name="html"/>.
-        /// Pure, idempotent and total: any failure returns the input unchanged,
+        /// Idempotent and total: any failure returns the input unchanged,
         /// because a shell served without stamps still works and a shell we broke
-        /// does not.
+        /// does not. The returned bytes are a pure function of the arguments —
+        /// the only side effect is the <see cref="Diagnostics"/> abort counters,
+        /// which nothing here reads back.
         /// </summary>
         /// <param name="html">The full index.html document.</param>
         /// <param name="generation">The current generation token.</param>
