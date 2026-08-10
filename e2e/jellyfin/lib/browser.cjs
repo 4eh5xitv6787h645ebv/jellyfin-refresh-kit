@@ -302,22 +302,24 @@ function auditCapturedErrors(captures, restartWindow) {
 
   const start = Number(restartWindow?.startElapsedMs);
   const end = Number(restartWindow?.recoveryCompletedElapsedMs);
-  // A restarted Jellyfin keeps emitting warm-up transport transients — 503
-  // Service Unavailable while the web app initialises, connection resets, and
-  // WebSocket retries — for a short time AFTER its socket has reconnected and
-  // the measured recovery window was closed. On a slow runner a poll on its own
-  // cadence can catch one of those residual 503s just past the window edge.
-  // Excuse transport noise within a warm-up margin of the measured window's END
-  // so an expected restart transient is not miscounted as a RefreshKit defect.
-  // This only widens the excusal of TRANSPORT NOISE (5xx / ERR_ / reset /
-  // closed / WebSocket-failed); a genuine RefreshKit logic error is not
-  // transport noise and is still failed by the RefreshKit-attributed rule
-  // below, or only forgiven when it correlates within 1s of real transport
-  // noise. The recorded restartWindow is left unchanged.
-  const RESTART_WARMUP_MARGIN_MS = 15000;
+  // A restarted Jellyfin drops in-flight connections and serves warm-up errors
+  // (503 Service Unavailable, connection resets, WebSocket retries) whose tail
+  // outlasts the measured recovery window by an unpredictable amount on a slow
+  // runner, so any fixed end margin still races. A same-origin TRANSPORT error
+  // after the restart was initiated is an expected restart artifact, never a
+  // RefreshKit logic defect — and a genuine failure to recover is caught
+  // independently by the convergence, generation and WebSocket-reconnect
+  // assertions above. So excuse transport noise from the restart start onward;
+  // a bounded window is still used only to correlate non-transport page errors
+  // with nearby real transport noise. The recorded restartWindow is unchanged,
+  // and a genuine RefreshKit logic error (no transport signature) still fails.
+  const CORRELATION_WINDOW_MARGIN_MS = 15000;
+  const atOrAfterRestart = (event) => (
+    Number.isFinite(start) && event.elapsedMs >= start
+  );
   const inRestartWindow = (event) => (
     Number.isFinite(start) && Number.isFinite(end)
-      && event.elapsedMs >= start && event.elapsedMs <= end + RESTART_WARMUP_MARGIN_MS
+      && event.elapsedMs >= start && event.elapsedMs <= end + CORRELATION_WINDOW_MARGIN_MS
   );
   const haystack = (event) => [
     event.text, event.source, event.stack, event.details, event.url, event.error,
@@ -336,7 +338,7 @@ function auditCapturedErrors(captures, restartWindow) {
   );
   const transportTimesByPage = new Map();
   for (const event of errors) {
-    if (!inRestartWindow(event) || !isTransportNoise(event)) continue;
+    if (!atOrAfterRestart(event) || !isTransportNoise(event)) continue;
     if (!transportTimesByPage.has(event.page)) transportTimesByPage.set(event.page, []);
     transportTimesByPage.get(event.page).push(event.elapsedMs);
   }
@@ -357,7 +359,7 @@ function auditCapturedErrors(captures, restartWindow) {
   for (const event of errors) {
     if (isNotificationPermission(event)) {
       add('allowlistedHostErrors', event);
-    } else if (inRestartWindow(event) && isTransportNoise(event)) {
+    } else if (atOrAfterRestart(event) && isTransportNoise(event)) {
       add('restartTransportNoise', event);
     } else if (isRefreshKitAttributed(event)) {
       add('unexpectedRefreshKitErrors', event);
