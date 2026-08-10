@@ -257,7 +257,7 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             // pageshow/config initialization on both real supported hosts.
             Assert.DoesNotContain("data-controller=", html, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(
-                "data-require=\"emby-input,emby-checkbox\"",
+                "data-require=\"emby-input,emby-checkbox,emby-textarea\"",
                 html,
                 StringComparison.Ordinal);
             Assert.Contains("addEventListener('pageshow'", html, StringComparison.Ordinal);

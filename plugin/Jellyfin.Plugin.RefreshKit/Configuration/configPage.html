@@ -5,7 +5,7 @@
 </head>
 <body>
 <div id="RefreshKitConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
-     data-require="emby-input,emby-checkbox">
+     data-require="emby-input,emby-checkbox,emby-textarea">
     <div data-role="content">
         <div class="content-primary">
             <form id="RefreshKitConfigForm">
@@ -126,6 +126,31 @@
         (function () {
             var pluginId = '515255fe-3332-49b0-b471-0be58c8221d8';
 
+            // parseInt('') and parseInt('nonsense') are both NaN, and the usual
+            // `parseInt(...) || fallback` idiom also swallows an explicit 0.
+            // Zero is a legal, documented value for the cooldown (no cooldown)
+            // and for the idle wait (reload without waiting for idle), so a
+            // blanked field must fall back to the real default while a typed 0
+            // is kept. The poll interval (min 15) and the reload budget (min 1)
+            // have no legal zero, so anything below their minimum is a default.
+            function readNumber(page, selector, fallback, minimum) {
+                var parsed = parseInt(page.querySelector(selector).value, 10);
+                return isNaN(parsed) || parsed < minimum ? fallback : parsed;
+            }
+
+            function reportFailure(error) {
+                Dashboard.hideLoadingMsg();
+                if (Dashboard.alert) {
+                    Dashboard.alert({
+                        title: 'Jellyfin Refresh Kit',
+                        message: 'Could not reach the plugin configuration API. '
+                            + 'Reload this page to try again.'
+                    });
+                }
+
+                console.error('[RefreshKit] configuration page request failed', error);
+            }
+
             function load(page, config) {
                 page.querySelector('#rkEnableInjection').checked = config.EnableInjection !== false;
                 page.querySelector('#rkEnableStamping').checked = config.EnableThirdPartyStamping !== false;
@@ -145,7 +170,7 @@
                 ApiClient.getPluginConfiguration(pluginId).then(function (config) {
                     load(page, config);
                     Dashboard.hideLoadingMsg();
-                });
+                }).catch(reportFailure);
                 ApiClient.ajax({
                     type: 'GET',
                     url: ApiClient.getUrl('RefreshKit/Generation'),
@@ -165,18 +190,18 @@
                     config.EnableInjection = page.querySelector('#rkEnableInjection').checked;
                     config.EnableThirdPartyStamping = page.querySelector('#rkEnableStamping').checked;
                     config.EnableAutoReload = page.querySelector('#rkEnableAutoReload').checked;
-                    config.PollSeconds = parseInt(page.querySelector('#rkPollSeconds').value, 10) || 60;
-                    config.IdleSeconds = parseInt(page.querySelector('#rkIdleSeconds').value, 10) || 0;
-                    config.ReloadBudget = parseInt(page.querySelector('#rkReloadBudget').value, 10) || 3;
+                    config.PollSeconds = readNumber(page, '#rkPollSeconds', 60, 1);
+                    config.IdleSeconds = readNumber(page, '#rkIdleSeconds', 5, 0);
+                    config.ReloadBudget = readNumber(page, '#rkReloadBudget', 3, 1);
                     config.DevMode = page.querySelector('#rkDevMode').checked;
                     config.EnableConfigWatching = page.querySelector('#rkEnableConfigWatching').checked;
-                    config.ConfigCooldownMinutes = parseInt(page.querySelector('#rkConfigCooldown').value, 10) || 0;
+                    config.ConfigCooldownMinutes = readNumber(page, '#rkConfigCooldown', 5, 0);
                     config.ConfigWatchExclusions = page.querySelector('#rkConfigExclusions').value
                         .split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
-                    ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                    return ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);
                     });
-                });
+                }).catch(reportFailure);
                 return false;
             });
         })();
