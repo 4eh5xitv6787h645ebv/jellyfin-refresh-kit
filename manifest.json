@@ -13,16 +13,16 @@
                 "changelog": "Lifecycle-correct loaded-state generation, process-epoch rollback convergence, nested-buffer safe degradation, hardened cache/HTML handling, deterministic packages, and expanded Jellyfin 12/third-party harness coverage.",
                 "targetAbi": "12.0.0.0",
                 "sourceUrl": "https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.0.1.0/jellyfin-refresh-kit_1.0.1.0_jf12.zip",
-                "checksum": "46ea895b2f86c0fe0f264010dd23126f",
-                "timestamp": "2026-08-10T12:31:59Z"
+                "checksum": "0d445b31d12bc126ef4fb61ac3376c92",
+                "timestamp": "2026-08-10T13:12:04Z"
             },
             {
                 "version": "1.0.1.0",
                 "changelog": "Lifecycle-correct loaded-state generation, process-epoch rollback convergence, nested-buffer safe degradation, hardened cache/HTML handling, deterministic packages, and expanded compatibility harness coverage.",
                 "targetAbi": "10.11.0.0",
                 "sourceUrl": "https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.0.1.0/jellyfin-refresh-kit_1.0.1.0.zip",
-                "checksum": "da27a55020cbe71c5f272467c9101b18",
-                "timestamp": "2026-08-10T12:31:59Z"
+                "checksum": "2a39b7170c832613ba9616c14d9ae3d9",
+                "timestamp": "2026-08-10T13:12:04Z"
             },
             {
                 "version": "1.0.0.0",
