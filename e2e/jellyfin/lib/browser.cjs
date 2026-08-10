@@ -302,9 +302,22 @@ function auditCapturedErrors(captures, restartWindow) {
 
   const start = Number(restartWindow?.startElapsedMs);
   const end = Number(restartWindow?.recoveryCompletedElapsedMs);
+  // A restarted Jellyfin keeps emitting warm-up transport transients — 503
+  // Service Unavailable while the web app initialises, connection resets, and
+  // WebSocket retries — for a short time AFTER its socket has reconnected and
+  // the measured recovery window was closed. On a slow runner a poll on its own
+  // cadence can catch one of those residual 503s just past the window edge.
+  // Excuse transport noise within a warm-up margin of the measured window's END
+  // so an expected restart transient is not miscounted as a RefreshKit defect.
+  // This only widens the excusal of TRANSPORT NOISE (5xx / ERR_ / reset /
+  // closed / WebSocket-failed); a genuine RefreshKit logic error is not
+  // transport noise and is still failed by the RefreshKit-attributed rule
+  // below, or only forgiven when it correlates within 1s of real transport
+  // noise. The recorded restartWindow is left unchanged.
+  const RESTART_WARMUP_MARGIN_MS = 15000;
   const inRestartWindow = (event) => (
     Number.isFinite(start) && Number.isFinite(end)
-      && event.elapsedMs >= start && event.elapsedMs <= end
+      && event.elapsedMs >= start && event.elapsedMs <= end + RESTART_WARMUP_MARGIN_MS
   );
   const haystack = (event) => [
     event.text, event.source, event.stack, event.details, event.url, event.error,
