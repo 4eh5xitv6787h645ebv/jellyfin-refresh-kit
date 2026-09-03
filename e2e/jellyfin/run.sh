@@ -80,11 +80,20 @@ invalidate_lifecycle_completion() {
 }
 
 provision_both() {
-    local p10 p12 rc10 rc12
+    local p10 p12 rc10 rc12 previous_traps
     bash "${HERE}/lib/provision.sh" jf10 jf10 & p10=$!
     bash "${HERE}/lib/provision.sh" jf12 jf12 & p12=$!
+    # Background children inherit SIGINT-ignore, so Ctrl-C would otherwise be
+    # swallowed while this shell waits; forward it and stop both provisioners.
+    previous_traps="$(trap -p INT TERM)"
+    # shellcheck disable=SC2064  # the PIDs are expanded now, on purpose
+    trap "kill ${p10} ${p12} 2>/dev/null; wait ${p10} ${p12} 2>/dev/null; exit 130" INT TERM
     if wait "${p10}"; then rc10=0; else rc10=$?; fi
     if wait "${p12}"; then rc12=0; else rc12=$?; fi
+    trap - INT TERM
+    if [ -n "${previous_traps}" ]; then
+        eval "${previous_traps}"
+    fi
     if [ "${rc10}" -ne 0 ] || [ "${rc12}" -ne 0 ]; then
         rk_compose ps >&2 || true
         rk_die "provisioning failed (jf10=${rc10}, jf12=${rc12})"
@@ -389,7 +398,7 @@ cmd_restart() {
 }
 
 cmd_status() {
-    rk_compose --profile abi-floor --profile host-upgrade ps
+    rk_compose --profile lifecycle --profile abi-floor --profile host-upgrade ps
     printf 'jf10: %s/System/Info/Public -> %s\n' "${RK_JF10_ORIGIN}" \
         "$(rk_http_code "${RK_JF10_ORIGIN}/System/Info/Public")"
     printf 'jf12: %s/System/Info/Public -> %s\n' "${RK_JF12_ORIGIN}" \

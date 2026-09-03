@@ -39,7 +39,8 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           # This SDK carries the actual 9.0.18 runtime. global.json still
-          # selects 10.0.302 for compilation.
+          # selects 10.0.302 for compilation. Must equal the
+          # release-validation.yml pin; scripts/check-workflows.sh enforces it.
           dotnet-version: 9.0.316
 
       - name: Install pinned Node.js

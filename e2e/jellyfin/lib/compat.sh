@@ -179,10 +179,16 @@ if [ "${RK_COMPAT_KEEP_CROSS:-0}" != "1" ]; then
     rk_log "compat: restoring pristine jf12 service with the matching net10 stage"
     set +e
     rk_reset_service_storage jf12
-    rm -f -- "${TOKEN_FILE}"
-    rk_compose up -d --wait jf12
-    bash "${HERE}/provision.sh" jf12 jf12
     RESTORE_RC=$?
+    rm -f -- "${TOKEN_FILE}"
+    if [ "${RESTORE_RC}" -eq 0 ]; then
+        rk_compose up -d --wait jf12
+        RESTORE_RC=$?
+    fi
+    if [ "${RESTORE_RC}" -eq 0 ]; then
+        bash "${HERE}/provision.sh" jf12 jf12
+        RESTORE_RC=$?
+    fi
     if [ "${RESTORE_RC}" -eq 0 ]; then
         bash "${HERE}/check.sh" jf12
         RESTORE_RC=$?

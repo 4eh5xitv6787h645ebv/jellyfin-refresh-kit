@@ -1001,7 +1001,7 @@ def collect_compatibility(
         try:
             token_size = token_path.stat().st_size
             token = token_path.read_bytes()
-        except OSError as error:
+        except OSError:
             if required:
                 strict_errors.append(
                     f"{matrix_id}: compatibility probe token state is unavailable"
@@ -1604,6 +1604,16 @@ def main() -> int:
     run_path = output / "run.json"
 
     source_status = run("git", "status", "--porcelain", "--untracked-files=all")
+    if source_status is None:
+        raise SystemExit(
+            "FATAL: git status is unavailable (missing git, non-zero exit, or timeout); "
+            "refusing to record an unverified clean source tree"
+        )
+    source_revision = run("git", "rev-parse", "HEAD")
+    if source_revision is None:
+        raise SystemExit(
+            "FATAL: git rev-parse HEAD is unavailable; refusing to record an unknown source revision"
+        )
     statuses: dict[str, int] = {}
     if args.jellyfin_exit is not None:
         statuses["dualJellyfinLab"] = args.jellyfin_exit
@@ -1617,9 +1627,9 @@ def main() -> int:
         statuses["compatibilityMatrices"] = args.compatibility_exit
     evidence = {
         "schemaVersion": 1,
-        "sourceRevision": run("git", "rev-parse", "HEAD"),
+        "sourceRevision": source_revision,
         "sourceDirty": bool(source_status),
-        "sourceStatus": source_status.splitlines() if source_status else [],
+        "sourceStatus": source_status.splitlines(),
         "github": {
             key: os.environ[key]
             for key in (

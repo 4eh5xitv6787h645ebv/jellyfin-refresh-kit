@@ -2891,9 +2891,10 @@ namespace JellyfinRefreshKit
             // feature. It owns the entity; stay out of the request so its
             // validators and the client's conditional headers keep reaching
             // each other untouched, but keep watching: the latch clears again
-            // as soon as a shell response arrives without that signature (the
-            // owner was disabled or unloaded). See the stand-down note in the
-            // file header.
+            // once two consecutive shell responses arrive without that
+            // signature (the owner was disabled or unloaded; a single one is a
+            // live owner failing open). See the stand-down note in the file
+            // header.
             if (Volatile.Read(ref _downstreamOwnsShellResponse) != 0)
             {
                 try

@@ -6546,6 +6546,15 @@ test('a browser-autofilled login field counts as empty on the login route only w
   await page.evaluate(() => { location.hash = '#/login'; });
   assert.equal(await blockReason(page), null, 'the untouched autofill relaxes again on the login route');
   assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.trustedInteractionSeen), false);
+  // A handoff BEFORE any interaction must carry `false` explicitly: a record
+  // without the field is read as "seen" (the conservative direction), so an
+  // untouched page would otherwise lose its relaxation at every handoff.
+  await injectRuntime(page, runtimeAtVersion('2.4.10'));
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.managerHandoffs), 1);
+  assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.trustedInteractionSeen), false,
+    'the shared record carries an explicit false across the handoff');
+  assert.equal(await blockReason(page), null, 'the successor keeps the untouched-page relaxation');
   // A real click (CDP input, so isTrusted is true) — what picking a saved
   // account from the browser's chooser needs. The pick would be lost by a
   // reload, so from here on the 2.4.8 gates apply for the life of the tab.
@@ -6560,11 +6569,78 @@ test('a browser-autofilled login field counts as empty on the login route only w
 
   // The flag is carried across a newest-wins handoff like the other gates'
   // state: the successor does not start believing the page was never touched.
-  await injectRuntime(page, runtimeAtVersion('2.4.10'));
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
-  assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.managerHandoffs), 1);
+  await injectRuntime(page, runtimeAtVersion('2.4.11'));
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.11');
+  assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.managerHandoffs), 2);
   assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.trustedInteractionSeen), true);
   assert.equal(await blockReason(page), 'password_entry', 'the successor keeps the gates closed');
+});
+
+test('a newest-wins handoff while hidden re-issues a confirmation fetch orphaned in flight', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/hidden-handoff-inflight#/home`);
+  await fakeVisibility(page);
+  await page.evaluate(() => {
+    window.__fetchCalls = 0;
+    window.__releaseFirst = null;
+    window.__releaseSecond = null;
+    window.__reloadAttempts = 0;
+    const body = () => new Response(JSON.stringify({ version: 'B' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+    window.fetch = () => {
+      window.__fetchCalls += 1;
+      if (window.__fetchCalls === 1) {
+        return new Promise((resolve) => { window.__releaseFirst = () => resolve(body()); });
+      }
+      if (window.__fetchCalls === 2) {
+        // The confirmation request: held open so the handoff orphans it.
+        return new Promise((resolve) => { window.__releaseSecond = () => resolve(body()); });
+      }
+      return Promise.resolve(body());
+    };
+  });
+  const attributes = {
+    'data-name': 'HiddenHandoffInflight',
+    'data-mode': 'auto',
+    'data-boot-version': 'A',
+    'data-version-url': '/version',
+    'data-version-json-field': 'version',
+    'data-poll-seconds': '3600',
+    'data-idle-seconds': '0',
+    'data-hidden-reload': 'true',
+    'data-hidden-settle-seconds': '0',
+  };
+  await injectConfiguredRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.4.9'))), attributes);
+  await page.waitForFunction(() => window.__fetchCalls === 1 && typeof window.__releaseFirst === 'function');
+  await setVisibility(page, 'hidden');
+  await page.evaluate(() => window.__releaseFirst());
+  // The (shortened) confirmation timer fires while hidden and its fetch is
+  // now in flight.
+  await page.waitForFunction(() => window.__fetchCalls === 2 && typeof window.__releaseSecond === 'function');
+
+  await injectConfiguredRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.4.10'))), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.managerHandoffs), 1);
+
+  // The successor replaces the orphaned confirmation at once, still hidden,
+  // and takes the hidden reload path. Before, it waited for wake().
+  await page.waitForFunction(() => window.__reloadAttempts === 1, { timeout: 10000 });
+  const final = await page.evaluate(() => ({
+    visibility: document.visibilityState,
+    fetches: window.__fetchCalls,
+    reloadCommitted: window.JellyfinRefreshKit.state().shared.reloadCommitted,
+  }));
+  assert.equal(final.visibility, 'hidden');
+  assert.equal(final.fetches, 3, 'the successor issued one replacement confirmation while hidden');
+  assert.equal(final.reloadCommitted, true);
+
+  // The orphan resolving later authorizes nothing further.
+  await page.evaluate(() => window.__releaseSecond());
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await page.evaluate(() => window.__reloadAttempts), 1);
 });
 
 test('assetPatterns match same-origin URLs on path and query and cross-origin URLs on the full URL', async (t) => {

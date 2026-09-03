@@ -18,6 +18,12 @@ umask 077
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
+
+usage() {
+    # $0 may be relative to the caller's directory; the script has already
+    # changed into its own directory above.
+    sed -n '3,20p' "$HERE/run.sh"
+}
 REPO="$(cd "$HERE/../.." && pwd -P)"
 # shellcheck source=lib/build-snapshot.sh
 # Resolved from this script's directory at runtime.
@@ -461,7 +467,7 @@ cmd_down() {
     echo "==> project $PROJECT destroyed"
 }
 
-case "${1:-all}" in
+case "${1:-}" in
     up)      cmd_up ;;
     matrix)  cmd_matrix ;;
     ws)      cmd_ws ;;
@@ -470,5 +476,6 @@ case "${1:-all}" in
     subpath) shift; cmd_subpath "$@" ;;
     down)    cmd_down ;;
     all)     cmd_all ;;
-    *)       sed -n '3,20p' "$0"; exit 2 ;;
+    -h|--help|help|'') usage ;;
+    *)       usage >&2; exit 2 ;;
 esac

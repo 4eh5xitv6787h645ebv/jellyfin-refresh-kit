@@ -759,9 +759,12 @@ def materialize(path: Path, artifact: dict[str, Any], destination: Path) -> dict
 
     installed_meta = load_json(meta_path)
     meta_checks = validate_meta(installed_meta, artifact)
+    # Match inspect_archive's case-insensitive suffix test so an upper-case
+    # `.DLL` member cannot pass inspection and then fail here.
     dll_inventory = {
         dll.relative_to(destination).as_posix(): sha256_path(dll)
-        for dll in sorted(destination.rglob("*.dll"))
+        for dll in sorted(destination.rglob("*"))
+        if dll.is_file() and dll.suffix.casefold() == ".dll"
     }
     if dll_inventory != verification["plugin"]["managedDlls"]:
         raise HarnessError(

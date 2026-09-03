@@ -26,7 +26,8 @@ cd e2e/proxy
 ./lib/static-regressions.sh  # no-Docker contract/configuration checks
 ```
 
-`./run.sh all` does the lot in order. A full pass takes roughly 25 minutes,
+`./run.sh all` does the lot in order (a bare `./run.sh` prints this usage
+instead of starting the full pass). A full pass takes roughly 25 minutes,
 almost all of it the browser leg (a bump has to be detected by a 15 s poll, and
 the runs are strictly sequential because a generation bump is server-wide — two
 concurrent browsers would each see the other's reload).
@@ -197,6 +198,8 @@ cannot accidentally load 12.1 beside 12.2.
 * Docker with the compose plugin. Images are pulled on first run.
 * Node.js matching `.node-version`, with the repository's locked packages
   installed by `npm ci`.
+* `curl` and `unzip` (provisioning downloads and extracts the pinned
+  Jellyfin Enhanced fixture; provisioning checks for both up front).
 * `python3` (lock validation, fixture metadata and two JSON config blobs), plus
   either the `brotli` command or Python's `brotli` module when a proxy offers a
   Brotli representation. `gzip` is required for the equivalent gzip check.

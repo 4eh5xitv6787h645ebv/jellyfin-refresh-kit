@@ -857,9 +857,15 @@ def parse_install_tsv(path: Path) -> list[dict[str, Any]]:
         if len(parts) != 4:
             raise artifact_lib.HarnessError(f"{path}:{line_number}: expected four TSV fields")
         ordinal, artifact_id, remote_folder, report_path = parts
+        try:
+            ordinal_value = int(ordinal)
+        except ValueError:
+            raise artifact_lib.HarnessError(
+                f"{path}:{line_number}: ordinal {ordinal!r} is not an integer"
+            ) from None
         result.append(
             {
-                "ordinal": int(ordinal),
+                "ordinal": ordinal_value,
                 "artifactId": artifact_id,
                 "remoteFolder": remote_folder,
                 "reportPath": report_path,
@@ -1643,7 +1649,20 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         if not isinstance(verification, dict) or verification.get("verified") is not True:
             plugin_errors.append("artifact preflight verification is missing")
         install = next((row for row in installs if row["artifactId"] == artifact_id), None)
-        materialization = read_json(Path(install["reportPath"])) if install else {}
+        materialization: Any = {}
+        if install:
+            # install.tsv is runner-written state; only trust a report that
+            # lives inside this evidence directory.
+            report_path = Path(install["reportPath"])
+            if not report_path.is_absolute():
+                report_path = evidence / report_path
+            report_path = report_path.resolve()
+            if report_path.is_relative_to(evidence) and report_path.is_file():
+                materialization = read_json(report_path)
+            else:
+                plugin_errors.append(
+                    f"materialization report {install['reportPath']!r} is outside {evidence}"
+                )
         if materialization.get("materialized") is not True:
             plugin_errors.append("materialization/meta verification is missing")
         dll_inventory = materialization.get("dllInventory")

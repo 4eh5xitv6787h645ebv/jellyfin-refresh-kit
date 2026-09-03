@@ -327,7 +327,8 @@ curl --fail --silent --show-error -D "${OUT}/shell-after.headers" \
     -H 'Accept: text/html' \
     -o "${OUT}/shell-after.html" "${ORIGIN}/web/index.html"
 
-ETAG="$(awk 'BEGIN { IGNORECASE=1 } /^etag:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); value=$0 } END { print value }' "${OUT}/shell-after.headers")"
+# tolower() keeps the header match portable across gawk, mawk and busybox awk.
+ETAG="$(awk 'tolower($0) ~ /^etag:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); value=$0 } END { print value }' "${OUT}/shell-after.headers")"
 CACHE_EXPECTATION="$(python3 "${MANIFEST_TOOL}" field "${MATRIX_ID}" cacheExpectation)"
 CONDITIONAL_ETAG="${ETAG}"
 if [ "${CACHE_EXPECTATION}" = "safe-degrade" ]; then

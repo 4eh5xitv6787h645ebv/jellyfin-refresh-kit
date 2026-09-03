@@ -807,7 +807,9 @@ unvalidated finalized manifest is never placed on `main`:
    final rebuild/retention job. The final artifact contains the three original
    worker receipts, semantic lab evidence, one checksum root, and the exact
    candidate bytes. The ref and absent tag are checked again immediately before
-   retention.
+   retention. The artifact is retained for 90 days; steps 4-6 must complete
+   inside that window, because `post-release-assets.yml` refuses an expired
+   validation artifact and a re-run cannot predate publication.
 4. After that run succeeds, recheck that the candidate still names `M` and the
    tag is still absent. Create `v<version>` at `S` and publish a release with
    exactly the two ZIPs from the retained artifact's `release-candidate/`

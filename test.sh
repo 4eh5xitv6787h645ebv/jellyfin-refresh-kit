@@ -89,6 +89,10 @@ validate_static_inputs() {
         -path './e2e/jellyfin/.state' -prune -o \
         -path './e2e/jellyfin/artifacts' -prune -o \
         -path './e2e/compat/.cache' -prune -o \
+        -path './e2e/compat/.state' -prune -o \
+        -path './e2e/compat/artifacts' -prune -o \
+        -path './e2e/proxy/.state' -prune -o \
+        -path './e2e/proxy/.je' -prune -o \
         -path '*/bin' -prune -o \
         -path '*/obj' -prune -o \
         -type f -name '*.sh' -print0)
@@ -105,7 +109,10 @@ validate_static_inputs() {
         -path './e2e/jellyfin/.state' -prune -o \
         -path './e2e/jellyfin/artifacts' -prune -o \
         -path './e2e/proxy/.je' -prune -o \
+        -path './e2e/proxy/.state' -prune -o \
         -path './e2e/compat/.cache' -prune -o \
+        -path './e2e/compat/.state' -prune -o \
+        -path './e2e/compat/artifacts' -prune -o \
         -type f \( -name '*.js' -o -name '*.cjs' \) -print0)
 
     python3 - <<'PY'
@@ -151,7 +158,9 @@ ET.parse(root / "NuGet.Config")
 workflow_root = root / ".github" / "workflows"
 for path in sorted({*workflow_root.glob("*.yml"), *workflow_root.glob("*.yaml")}):
     text = path.read_text(encoding="utf-8")
-    for action in re.findall(r"^\s*uses:\s*([^\s#]+)", text, flags=re.MULTILINE):
+    for action in re.findall(
+        r"^\s*(?:-\s+)?uses:\s*['\"]?([^\s#'\"]+)", text, flags=re.MULTILINE
+    ):
         if re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) is None:
             raise SystemExit(f"{path}: action is not pinned to a full commit: {action}")
 PY
