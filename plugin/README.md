@@ -198,10 +198,11 @@ order, which no plugin can control:
   `If-None-Match`. The owner is recognised by its `rk-` signature — a plain
   downstream that merely starts the response early is finalized like any other
   late-started source response and never triggers this. The stand-down is
-  recoverable: the first shell response that arrives without the signature
-  (the inner kit was disabled or its plugin unloaded) clears it, and this
-  plugin injects again from the next request, no restart needed; both
-  transitions are logged once. The visible cost is that this plugin's stamping
+  recoverable: two consecutive shell responses that arrive without the
+  signature (the inner kit was disabled or its plugin unloaded; a single one
+  is just a live owner failing open once) clear it, and this plugin injects
+  again from the request after that, no restart needed; both transitions are
+  logged once. The visible cost is that this plugin's stamping
   and its own tag are absent from that page — the adopting plugin's kit is
   serving it, correctly revalidating, with its own versioned URLs. Standing
   down is the only safe answer: rewriting an owner's committed framing would
@@ -306,13 +307,17 @@ the failed attempt already consumed); the conservative per-plugin ceiling is
 reserved only when no coherent snapshot exists yet. Reserving no more than the
 snapshot cost is what keeps the plugins scanned after it from flipping to the
 truncation sentinel and back while nothing on disk changed. An individual
-entry the process cannot stat, list or open — a mode-000 subdirectory, an
-asset file with a restrictive ACL — is skipped on its own: it is counted as
+entry the process is not permitted to stat, list or open — a mode-000
+subdirectory, an asset file with a restrictive ACL — is skipped on its own: it
+is counted as
 `AssetEntriesUnreadable` and folded as a deterministic per-path sentinel, so
 the identity is stable and moves only when the set of unreadable entries
-changes, and the rest of the tree is folded normally. Only a plugin folder
-whose root cannot be listed is unavailable as a whole; a missing folder still
-charges nothing. `GET /RefreshKit/Diagnostics` exposes file/directory/byte
+changes, and the rest of the tree is folded normally. Any other I/O error while
+listing a subdirectory (a share hiccup, a one-off EIO) is treated as transient
+like a failed content read: the last-good snapshot is retained, so a single bad
+scan does not move the identity and move it back. Only a plugin folder whose
+root cannot be listed is unavailable as a whole; a missing folder still charges
+nothing. `GET /RefreshKit/Diagnostics` exposes file/directory/byte
 counts, truncation and unavailability flags, skipped reparse-point
 configuration files and asset entries, unreadable asset entries, last-good
 use, and retained plugin records.
@@ -382,8 +387,11 @@ pointless server-wide reloads:
   debounce) and opens a window of *Settings-change cooldown* length
   (default **5 minutes**). The window's end is recomputed from the *current*
   setting on every scan, so lowering the cooldown (to 0, say) releases a change
-  already held in an open window on the next scan, and raising it extends the
-  hold. Only changes arriving **inside** that window are
+  already held in an open window on the next scan, and raising it extends a
+  window that is still open. A window is closed on the first scan past its end,
+  so raising the setting later cannot revive an expired one: the next save is a
+  fresh leading edge, not a hold measured from a start long past. Only changes
+  arriving **inside** that window are
   held, and they coalesce into a single publish when it expires, carrying the
   latest content identity — nothing is dropped. A held publish **closes** the window
   rather than opening a new one, so the save after it is snappy again; without
@@ -470,7 +478,7 @@ Dashboard → Plugins → **Jellyfin Refresh Kit**.
 | Cache-bust other plugins' script tags | on | Mechanism 2. |
 | Reload open tabs after a plugin update | on | Off switches the client to `notify` mode: it logs the update instead of reloading. |
 | Treat plugin settings changes as updates | on | Mechanism 3's config input (above). |
-| Settings-change cooldown (minutes, per plugin) | 5 | Length of the leading-edge burst window: after debounce and a provider scan, the change that opens it publishes; later changes inside it coalesce to one publish at its end. 0 disables the cooldown; the debounce still applies. |
+| Settings-change cooldown (minutes, per plugin) | 5 | Length of the leading-edge burst window: after debounce and a provider scan, the change that opens it publishes; later changes inside it coalesce to one publish at its end. 0 disables the cooldown; the debounce still applies. The settings page clamps the value to 0–1440. |
 | Ignore settings changes from these plugins | empty | One per line: plugin name, install folder, GUID or assembly name. An assembly-name entry matches every assembly the plugin loads, bundled dependencies included, so `Newtonsoft.Json` excludes each plugin that ships that DLL; prefer the plugin's own name, folder or GUID. |
 | Poll interval (seconds) | 60 | Clamped 15–3600 by the client runtime. |
 | Required idle time (seconds) | 5 | Clamped 0–300. |

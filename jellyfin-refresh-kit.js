@@ -454,7 +454,10 @@
  *                        without this the refusal was permanent there and
  *                        relaxation 8 could never be reached. Any typed value
  *                        still refuses. (2.4.9) Nor for a field the BROWSER
- *                        autofilled and the user never edited, there.
+ *                        autofilled and the user never edited, there — but
+ *                        only while the page has seen no trusted click or
+ *                        keypress since this kit booted (a credential the
+ *                        user had to PICK is not refilled unprompted).
  *   7. password_entry  — (2.4.0) Any rendered, interactive
  *                        input[type=password] holding a value, focused or not.
  *                        (2.4.2) Retained hidden/disabled/inert forms do not
@@ -462,8 +465,10 @@
  *                        only stops a reload the gates above would allow.
  *                        (2.4.9) On the empty routes only, a browser-autofilled
  *                        password is ignored while no text field on the page
- *                        holds typed text — it comes back after the reload by
- *                        the same mechanism that put it there.
+ *                        holds typed text AND no trusted interaction has
+ *                        happened since this kit booted — only then is it
+ *                        certain to come back after the reload by the same
+ *                        mechanism that put it there.
  *   8. not_idle        — idleSeconds (max across pending instances), floored at
  *                        MIN_SETTLE_MS. (2.4.0) Drops to that floor on the
  *                        empty routes (#/login, #/selectserver), under the
@@ -874,7 +879,12 @@
      *           engine standing down, a repair-only budget commit, a late
      *           registration or handoff lengthening the settle grace — left
      *           the next evaluation reading 'hidden_settling' and re-arming
-     *           nothing, with polling suspended, until the user came back.
+     *           nothing, with polling suspended, until the user came back;
+     *           and a newest-wins handoff while hidden parked the inherited
+     *           confirmation until the tab was shown, then reloaded on show.
+     *           The successor now re-arms that confirmation (and re-issues
+     *           an orphaned confirmation request) hidden or not, as
+     *           scheduleConfirm already did for a hidden sighting.
      *           While hidden, a discrete interaction now leaves the shot
      *           alone (untrusted, script-dispatched events are ignored there
      *           outright), a 'hidden_settling' verdict with no shot armed
@@ -900,15 +910,19 @@
      *           whose body matched a pattern got `?v=` appended and threw),
      *           strips the whitespace/C0 controls the URL parser would strip
      *           before matching or stamping, and matches assetPatterns
-     *           against the RESOLVED URL minus its fragment, so a relative
-     *           `MyPlugin/x.js` is versioned like `/web/MyPlugin/x.js`, a
-     *           CDN pattern that names its host keeps matching, and a
-     *           pattern can never match inside a fragment. A `mode: 'off'` first fetch
-     *           joins the single-flight so checkNow() during boot issues no
-     *           second request; a bootVersion-seeded bootstrap loads its
-     *           entries at ?v=<seed> immediately instead of waiting out
-     *           entryTimeoutMs and warning "UNVERSIONED" while stamping the
-     *           seed. Smaller: per-element src/href accessors are non-
+     *           against the RESOLVED URL — same-origin on its path and query,
+     *           cross-origin on the full URL, never the fragment — so a
+     *           relative `MyPlugin/x.js` is versioned like
+     *           `/web/MyPlugin/x.js`, an anchored `/^\/web\/MyPlugin\//`
+     *           still matches, a pattern that names this host cannot version
+     *           every asset, and a CDN pattern that names its host keeps
+     *           matching. A `mode: 'off'` first fetch joins the single-flight
+     *           so checkNow() during boot issues no second request; a
+     *           bootVersion-seeded bootstrap loads its entries at ?v=<seed>
+     *           immediately instead of waiting out entryTimeoutMs and warning
+     *           "UNVERSIONED" while stamping the seed ('auto'/'notify' still
+     *           make the first fetch; 'off' makes none — the seed is the
+     *           served build). Smaller: per-element src/href accessors are non-
      *           enumerable; an instance named "__proto__" survives state()
      *           and keyed-config lookup; the fullscreen gate also reads
      *           webkitFullscreenElement; the `i`-flag / `:disabled` selectors
@@ -919,7 +933,12 @@
      *           srcObject signature map; future-dated budget stamps are
      *           clamped to now when read; and a browser-AUTOFILLED, never-
      *           typed login field counts as empty for the empty-route
-     *           relaxation only (typed work still refuses everywhere).
+     *           relaxation only, and only while the page has seen no trusted
+     *           click or keypress since the kit booted — a credential the
+     *           user had to PICK (Chrome's account chooser, Safari's AutoFill
+     *           picker, Firefox's multi-login menu) is not refilled
+     *           unprompted after the reload (typed work still refuses
+     *           everywhere).
      */
     var KIT_VERSION = '2.4.9';
 
@@ -2168,6 +2187,18 @@
     var anonymousCount = 0;
     /** @type {number} Timestamp of the last user interaction (page-level). */
     var lastInteractionAt = Date.now();
+    /**
+     * Has the page seen a TRUSTED pointerdown/keydown/click (a real click or
+     * keypress: not script-dispatched, and not the input/change a browser
+     * fires when it fills a field itself) since this kit booted? Carried
+     * across handoff. The autofill relaxations read it: a credential the
+     * browser filled unprompted comes back the same way after a reload, but
+     * one the user had to pick (Chrome with several saved accounts, Safari's
+     * AutoFill picker, Firefox's multi-login menu) needed a click or keypress
+     * on the page and would be lost — so the first trusted interaction ends
+     * the relaxation for the life of the tab. @type {boolean}
+     */
+    var trustedInteractionSeen = false;
     /** @type {number|null} setTimeout handle for the blocked-reload retry. */
     var retryTimer = null;
     /**
@@ -2496,15 +2527,18 @@
     }
 
     /**
-     * The string assetPatterns are matched against (2.4.9): the RESOLVED URL's
-     * pathname + search. Resolving against the document base is what lets
-     * `s.src = 'MyPlugin/rel.js'` under /web/ match the same `/MyPlugin/`
-     * pattern `/web/MyPlugin/rel.js` matches, and taking only path+query is
-     * what keeps a pattern from matching inside a fragment (never sent to the
-     * server) or against the host name (a folder pattern "jellyfin" must not
-     * version every asset on jellyfin.example.com). Without a URL parser, or
-     * for a string it cannot resolve, the raw string minus its fragment is
-     * used — the pre-2.4.9 behaviour.
+     * The string assetPatterns are matched against (2.4.9): the RESOLVED URL —
+     * its pathname + search when it is same-origin, its full href when it is
+     * not — never the fragment. Resolving against the document base is what
+     * lets `s.src = 'MyPlugin/rel.js'` under /web/ match the same `/MyPlugin/`
+     * pattern `/web/MyPlugin/rel.js` matches. Same-origin URLs drop the
+     * scheme and host so an anchored `/^\/web\/MyPlugin\//` keeps matching
+     * and a pattern that happens to name this host (a folder pattern
+     * "jellyfin" on jellyfin.example.com) cannot version every asset;
+     * cross-origin URLs keep theirs so a CDN pattern that names its host
+     * still matches. The fragment is dropped either way: it is never sent to
+     * the server. Without a URL parser, or for a string it cannot resolve,
+     * the raw string minus its fragment is used — the pre-2.4.9 behaviour.
      * @param {string} url Already trimmed.
      * @returns {string}
      */
@@ -2517,6 +2551,10 @@
             }, null);
             if (resolved && typeof resolved.href === 'string') {
                 // `base` carries no fragment, so neither does the href.
+                if (typeof resolved.origin === 'string' && resolved.origin === location.origin &&
+                    typeof resolved.pathname === 'string') {
+                    return resolved.pathname + (typeof resolved.search === 'string' ? resolved.search : '');
+                }
                 return resolved.href;
             }
         }
@@ -3040,11 +3078,15 @@
             if (typeof value === 'string' && value.length > 0
                 && !isDisabledFormControl(fields[i]) && isRenderedElement(fields[i])) {
                 // AUTOFILLED, NEVER TYPED (2.4.9), on an empty route only: a
-                // saved password the browser put there comes back after the
-                // reload by the same mechanism. It is only ignored while NO
-                // text field on the page holds typed work — the promise that
-                // anything the user typed refuses is kept whole.
-                if (ignoreAutofilled === true && isAutofilledField(fields[i])) {
+                // saved password the browser put there UNPROMPTED comes back
+                // after the reload by the same mechanism. A fill that needed
+                // the user's choice does not, and that choice always takes a
+                // trusted click or keypress on the page — so the relaxation
+                // ends at the first one (trustedInteractionSeen). It is also
+                // only applied while NO text field on the page holds typed
+                // work — the promise that anything the user typed refuses is
+                // kept whole.
+                if (ignoreAutofilled === true && !trustedInteractionSeen && isAutofilledField(fields[i])) {
                     if (typedElsewhere === null) typedElsewhere = hasTypedTextField();
                     if (!typedElsewhere) continue;
                 }
@@ -3236,10 +3278,14 @@
             // field and the browser fills the saved credentials into it, so a
             // user with a saved login never saw the 2.4.1 relaxation: the
             // field was "non-empty" for the life of the tab. A value the
-            // browser put there and the user has not edited is not work in
-            // progress — it will be put there again after the reload. Any
-            // typed text anywhere on the page still counts as work.
-            return isAutofilledField(el) && !hasTypedTextField();
+            // browser put there UNPROMPTED and the user has not edited is not
+            // work in progress — it will be put there again after the reload.
+            // A value the user had to pick from a chooser will not be, and
+            // the pick is a trusted click or keypress on the page, so the
+            // relaxation holds only until the first one
+            // (trustedInteractionSeen). Any typed text anywhere on the page
+            // still counts as work.
+            return !trustedInteractionSeen && isAutofilledField(el) && !hasTypedTextField();
         } catch (err) {
             return false;
         }
@@ -5851,6 +5897,14 @@
      */
     function onDiscreteInteraction(event) {
         if (handedOff) return;
+        // Recorded before anything below can decline: the autofill
+        // relaxations end at the first real click or keypress, hidden or not.
+        // Only events a human must produce count — a browser dispatches
+        // trusted input/change itself when IT fills a field, which is the
+        // very case those relaxations exist for.
+        if (event && event.isTrusted === true && /^(pointerdown|keydown|click)$/.test(String(event.type))) {
+            trustedInteractionSeen = true;
+        }
         // A HIDDEN DOCUMENT (2.4.9). A user cannot click or type into a tab
         // they cannot see, so a discrete event arriving here is either
         // script-dispatched — `element.click()`, a synthetic `change`, a
@@ -6122,9 +6176,9 @@
         /** @type {number} Wall-clock deadline for the live confirmation timer. */
         var confirmDueAt = 0;
         /**
-         * A handoff carried an earned confirmation not yet fired. A hidden
-         * successor keeps it as intent (no timer) and wake() issues it as one
-         * forced confirm poll.
+         * A handoff carried an earned confirmation not yet fired.
+         * resumeTransferredConfirmation() re-arms it, hidden or not; should
+         * that not happen, wake() still issues it as one forced confirm poll.
          * @type {boolean}
          */
         var confirmationPendingFromHandoff = false;
@@ -6322,10 +6376,11 @@
 
         /**
          * Does this URL belong to an asset THIS instance is supposed to version?
-         * @param {string} url The match target — since 2.4.9 the resolved
-         *   URL's path+query as produced by assetMatchTarget(), never a raw
-         *   assignment (callers resolve first so every instance is asked the
-         *   same question about the same string).
+         * @param {string} url The match target — since 2.4.9 what
+         *   assetMatchTarget() produces (same-origin: the resolved path +
+         *   query; cross-origin: the full resolved URL; never a fragment),
+         *   never a raw assignment (callers resolve first so every instance
+         *   is asked the same question about the same string).
          * @returns {boolean}
          */
         function matchesAssetPattern(url) {
@@ -6677,8 +6732,11 @@
          * Re-arm a confirmation timer already earned under the previous
          * manager. This is not a new confirmation cycle: confirmSpentThisCycle
          * remains true and the eventual fetch is still marked `isConfirm`.
-         * Hidden tabs keep zero timers; their ordinary wake poll re-observes the
-         * retained candidate evidence instead.
+         * Armed hidden or not, exactly like scheduleConfirm(): the sighting was
+         * the one opportunistic attempt a hidden tab may make and its
+         * confirmation is what lets the hidden reload path proceed. Parking
+         * it until the tab was shown stranded the update, then reloaded on
+         * the very moment the user came back.
          */
         function resumeTransferredConfirmation() {
             if (!confirmationPendingFromHandoff) return;
@@ -6687,7 +6745,6 @@
                 confirmDueAt = 0;
                 return;
             }
-            if (document.visibilityState === 'hidden') return;
 
             var delay = confirmDueAt > 0
                 ? Math.max(0, confirmDueAt - Date.now()) : VERSION_CONFIRM_MS;
@@ -6703,8 +6760,11 @@
         /**
          * Replace exactly one request whose response was orphaned by handoff.
          * A confirmation remains a confirmation (it does not open/grant a new
-         * cycle). Hidden tabs retain the intent with zero timers until wake().
-         * @returns {boolean} True when a visible replacement was started.
+         * cycle). A hidden tab re-issues an orphaned CONFIRMATION at once (the
+         * same attempt scheduleConfirm() allows hidden; holding it stranded
+         * the hidden reload path) but keeps an orphaned ordinary poll as
+         * intent until wake(): hidden tabs do not poll.
+         * @returns {boolean} True when a replacement was started.
          */
         function resumeTransferredObservation() {
             if (!observationPendingFromHandoff) return false;
@@ -6713,7 +6773,7 @@
                 observationPendingWasConfirm = false;
                 return false;
             }
-            if (document.visibilityState === 'hidden') return false;
+            if (document.visibilityState === 'hidden' && !observationPendingWasConfirm) return false;
             var wasConfirm = observationPendingWasConfirm;
             observationPendingFromHandoff = false;
             observationPendingWasConfirm = false;
@@ -7254,11 +7314,11 @@
          *
          * The first branch looks like resumeTransferredObservation() and is
          * deliberately NOT it: that function is the RESUME path and declines
-         * while the document is hidden, whereas this one is only ever reached
-         * with the document visible and must also stand the carried
-         * confirmation down (the wake poll IS that confirmation). Folding one
-         * into the other would make the hidden check — which belongs to the
-         * caller here — decide for both.
+         * an ordinary poll while the document is hidden, whereas this one is
+         * only ever reached with the document visible and must also stand the
+         * carried confirmation down (the wake poll IS that confirmation).
+         * Folding one into the other would make the hidden check — which
+         * belongs to the caller here — decide for both.
          */
         function wake() {
             if (cfg.mode === 'off') return;
@@ -7272,9 +7332,10 @@
                 safe(function () { poll(true, wasConfirm); });
                 return;
             }
-            // Hidden handoffs intentionally did not recreate their timer. The
-            // wake poll below IS the carried confirmation observation, so it
-            // is issued as one (2.4.9; it used to be a plain poll):
+            // A carried confirmation resume() could not re-arm (it re-arms
+            // hidden or not since 2.4.9, so this is the fallback). The wake
+            // poll below IS that confirmation observation, so it is issued as
+            // one (2.4.9; it used to be a plain poll):
             // forced (the ordinary poll's spacing floor would otherwise skip
             // it when the hide was brief) and marked isConfirm (so it neither
             // opens a new cycle nor spends another confirmation).
@@ -7506,13 +7567,15 @@
         function bootstrapEntries() {
             // A SEEDED BASELINE (2.4.9). `bootVersion` is the identity of the
             // build that served this document, which is exactly the version
-            // the entries should load at — there is nothing to wait for. The
-            // first fetch still goes out (it is what detects the next
-            // release, and a seed that disagrees with the endpoint is
-            // reconciled by onVersion as before); the entries simply do not
-            // sit behind it. Before, they waited out entryTimeoutMs, and the
-            // timer then warned "loading UNVERSIONED" while loadEntries
-            // stamped the seed anyway.
+            // the entries should load at — there is nothing to wait for. In
+            // 'auto' and 'notify' the first fetch still goes out (it is what
+            // detects the next release, and a seed that disagrees with the
+            // endpoint is reconciled by onVersion as before); the entries
+            // simply do not sit behind it. In 'off' nothing is fetched: the
+            // seed IS the served build, and poll() declines because the one
+            // resolution 'off' is entitled to is already made. Before, the
+            // entries waited out entryTimeoutMs, and the timer then warned
+            // "loading UNVERSIONED" while loadEntries stamped the seed anyway.
             if (baselineVersion) {
                 safe(function () { return firstVersionAttempt(); });
                 return proceed();
@@ -7756,6 +7819,9 @@
                 authorizedEpoch: authorizedEpoch,
                 flapDisarmedFor: flapDisarmedFor,
                 updatePending: inst.updatePending,
+                // A confirmation fetch is owed: its timer is live, or a handoff
+                // carried it and it has not been re-armed yet.
+                confirmationPending: confirmTimer !== null || confirmationPendingFromHandoff,
                 blockReason: isPending ? blockReasonFor(idleWindow) : null,
                 wouldBlockNow: cfg.mode === 'auto' ? blockReasonFor(ownIdleWindow) : null,
                 lastBlockReason: lastBlockReason,
@@ -8410,6 +8476,7 @@
             })(),
             shared: {
                 lastInteractionAt: lastInteractionAt,
+                trustedInteractionSeen: trustedInteractionSeen,
                 blockedRetries: blockedRetries,
                 lastBlockReason: lastBlockReason,
                 warnedOverlap: warnedOverlap,
@@ -8575,6 +8642,9 @@
         if (typeof s.lastInteractionAt === 'number' && isFinite(s.lastInteractionAt)) {
             lastInteractionAt = s.lastInteractionAt;
         }
+        // A copy that did not track this cannot say the user never touched
+        // the page; absent means "seen" — the autofill relaxation stays off.
+        trustedInteractionSeen = s.trustedInteractionSeen !== false;
         if (typeof s.blockedRetries === 'number' && isFinite(s.blockedRetries)) blockedRetries = s.blockedRetries;
         if (typeof s.lastBlockReason === 'string') lastBlockReason = s.lastBlockReason;
         // One-shot warning latches: the page has already been told these things
@@ -8939,6 +9009,7 @@
                     blockReason: hasPending ? blockReasonFor(effectiveIdleWindowMs(pending)) : null,
                     lastBlockReason: lastBlockReason,
                     msSinceInteraction: Date.now() - lastInteractionAt,
+                    trustedInteractionSeen: trustedInteractionSeen,
                     effectiveIdleWindowMs: hasPending ? effectiveIdleWindowMs(pending) : null,
                     effectiveIdleWindowFrom: hasPending
                         ? ((strictestIdleInstance(pending) || {}).name || null)

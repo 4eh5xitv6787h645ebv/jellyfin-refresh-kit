@@ -6540,4 +6540,157 @@ test('a browser-autofilled login field counts as empty on the login route only w
   assert.equal(await blockReason(page), 'password_entry', 'off the empty routes autofill changes nothing');
   await page.evaluate(() => { document.querySelector('#txtManualName').focus(); });
   assert.equal(await blockReason(page), 'active_editor');
+
+  // Back on the login route with both fields autofilled and untouched: the
+  // relaxation applies again, right up to the first TRUSTED interaction.
+  await page.evaluate(() => { location.hash = '#/login'; });
+  assert.equal(await blockReason(page), null, 'the untouched autofill relaxes again on the login route');
+  assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.trustedInteractionSeen), false);
+  // A real click (CDP input, so isTrusted is true) — what picking a saved
+  // account from the browser's chooser needs. The pick would be lost by a
+  // reload, so from here on the 2.4.8 gates apply for the life of the tab.
+  await page.click('#txtManualName');
+  assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.trustedInteractionSeen), true);
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'txtManualName');
+  assert.equal(await blockReason(page), 'active_editor',
+    'a focused autofilled field blocks once the user has interacted with the page');
+  await page.evaluate(() => { document.querySelector('#txtManualName').blur(); });
+  assert.equal(await blockReason(page), 'password_entry',
+    'an autofilled password blocks once the user has interacted with the page');
+
+  // The flag is carried across a newest-wins handoff like the other gates'
+  // state: the successor does not start believing the page was never touched.
+  await injectRuntime(page, runtimeAtVersion('2.4.10'));
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.managerHandoffs), 1);
+  assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.trustedInteractionSeen), true);
+  assert.equal(await blockReason(page), 'password_entry', 'the successor keeps the gates closed');
+});
+
+test('assetPatterns match same-origin URLs on path and query and cross-origin URLs on the full URL', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/web/index.html#/home`);
+  await page.evaluate(() => {
+    window.JellyfinRefreshKitConfig = {
+      name: 'PatternTarget',
+      mode: 'off',
+      bootVersion: '1.2.3',
+      pollSeconds: 3600,
+      // An anchored path regex, a string that happens to name this host, a
+      // CDN pattern that names its host, and a query-only string.
+      assetPatterns: [/^\/web\/MyPlugin\//, '127.0.0.1', 'cdn.example.test/lib/', 'plugin=Mine'],
+    };
+  });
+  await injectRuntime(page);
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.state().interceptorInstalled === true);
+  const observed = await page.evaluate(() => {
+    const assign = (url) => {
+      const script = document.createElement('script');
+      script.src = url;
+      return script.getAttribute('src');
+    };
+    const api = window.JellyfinRefreshKit.get('PatternTarget');
+    return {
+      anchoredAbsolute: assign('/web/MyPlugin/x.js'),
+      anchoredRelative: assign('MyPlugin/y.js'),
+      anchoredWithQuery: assign('/web/MyPlugin/z.js?a=1'),
+      anchoredFullUrl: assign(`${location.origin}/web/MyPlugin/full.js`),
+      anchoredCrossOrigin: assign('https://elsewhere.example.test/web/MyPlugin/far.js'),
+      hostNameOnly: assign('/unrelated/host.js'),
+      queryOnly: assign('/unrelated/q.js?plugin=Mine'),
+      cdnHost: assign('https://cdn.example.test/lib/x.js'),
+      cdnOtherPath: assign('https://cdn.example.test/other/x.js'),
+      apiSameOrigin: api.versionedUrl(`${location.origin}/web/MyPlugin/api.js`),
+      apiHostNameOnly: api.versionedUrl(`${location.origin}/unrelated/api.js`),
+    };
+  });
+  assert.equal(observed.anchoredAbsolute, '/web/MyPlugin/x.js?v=1.2.3', 'an anchored path regex matches the resolved path');
+  assert.equal(observed.anchoredRelative, 'MyPlugin/y.js?v=1.2.3', 'a relative URL is resolved before the anchored regex sees it');
+  assert.equal(observed.anchoredWithQuery, '/web/MyPlugin/z.js?a=1&v=1.2.3');
+  assert.equal(observed.anchoredFullUrl, `${origin}/web/MyPlugin/full.js?v=1.2.3`,
+    'an absolute same-origin URL is matched on its path, not its scheme and host');
+  assert.equal(observed.anchoredCrossOrigin, 'https://elsewhere.example.test/web/MyPlugin/far.js',
+    'a cross-origin URL is matched on the full URL, so the anchored path regex does not match it');
+  assert.equal(observed.hostNameOnly, '/unrelated/host.js', 'a pattern naming this host versions nothing on its own');
+  assert.equal(observed.queryOnly, '/unrelated/q.js?plugin=Mine&v=1.2.3', 'the query is part of the same-origin target');
+  assert.equal(observed.cdnHost, 'https://cdn.example.test/lib/x.js?v=1.2.3', 'a CDN pattern that names its host matches the full URL');
+  assert.equal(observed.cdnOtherPath, 'https://cdn.example.test/other/x.js');
+  assert.equal(observed.apiSameOrigin, `${origin}/web/MyPlugin/api.js?v=1.2.3`);
+  assert.equal(observed.apiHostNameOnly, `${origin}/unrelated/api.js`);
+});
+
+test('a newest-wins handoff while hidden re-arms the inherited confirmation and takes the hidden reload path', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/hidden-handoff#/home`);
+  await fakeVisibility(page);
+  await page.evaluate(() => {
+    window.__fetchCalls = 0;
+    window.__releaseFirst = null;
+    window.__reloadAttempts = 0;
+    const body = () => new Response(JSON.stringify({ version: 'B' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+    window.fetch = () => {
+      window.__fetchCalls += 1;
+      if (window.__fetchCalls === 1) {
+        return new Promise((resolve) => { window.__releaseFirst = () => resolve(body()); });
+      }
+      return Promise.resolve(body());
+    };
+  });
+  // Tag attributes rather than the global: the newer tag must adopt THIS
+  // instance, not register an anonymous sibling whose default 25 s settle
+  // grace would legitimately hold the page in hidden_settling.
+  const attributes = {
+    'data-name': 'HiddenHandoff',
+    'data-mode': 'auto',
+    'data-boot-version': 'A',
+    'data-version-url': '/version',
+    'data-version-json-field': 'version',
+    'data-poll-seconds': '3600',
+    'data-idle-seconds': '0',
+    'data-hidden-reload': 'true',
+    'data-hidden-settle-seconds': '0',
+  };
+  // The real VERSION_CONFIRM_MS: the confirmation must still be owed when the
+  // handoff lands.
+  await injectConfiguredRuntime(page, reloadInterceptedRuntime(runtimeAtVersion('2.4.9')), attributes);
+  await page.waitForFunction(() => window.__fetchCalls === 1 && typeof window.__releaseFirst === 'function');
+  await setVisibility(page, 'hidden');
+  await page.evaluate(() => window.__releaseFirst());
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.get('HiddenHandoff').state().candidateVersion === 'B'
+  ));
+  assert.equal(await page.evaluate(() => (
+    window.JellyfinRefreshKit.get('HiddenHandoff').state().confirmationPending
+  )), true, 'the hidden sighting earned its confirmation');
+
+  await injectConfiguredRuntime(page, reloadInterceptedRuntime(runtimeAtVersion('2.4.10')), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  const after = await page.evaluate(() => ({
+    shared: window.JellyfinRefreshKit.state().shared,
+    instance: window.JellyfinRefreshKit.get('HiddenHandoff').state(),
+    instances: Object.keys(window.JellyfinRefreshKit.state().instances || {}),
+  }));
+  assert.equal(after.shared.managerHandoffs, 1);
+  assert.deepEqual(after.instances, ['HiddenHandoff'], 'the newer tag adopted the instance, registering no sibling');
+  assert.equal(after.instance.hiddenSettleSeconds, 0);
+  assert.equal(after.instance.confirmationPending, true, 'the successor re-armed the inherited confirmation while hidden');
+
+  // The successor confirms and reloads without ever being shown. Before, the
+  // confirmation was parked until the tab was shown and the reload landed
+  // the moment the user came back.
+  await page.waitForFunction(() => window.__reloadAttempts === 1, { timeout: 10000 });
+  const final = await page.evaluate(() => ({
+    visibility: document.visibilityState,
+    fetches: window.__fetchCalls,
+    reloadCommitted: window.JellyfinRefreshKit.state().shared.reloadCommitted,
+  }));
+  assert.equal(final.visibility, 'hidden');
+  assert.equal(final.fetches, 2, 'exactly one confirmation request, issued by the successor');
+  assert.equal(final.reloadCommitted, true, 'the reload was taken on the hidden path');
 });

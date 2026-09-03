@@ -188,7 +188,7 @@ A configuration file that is a symbolic link (or another reparse point) is never
 Configuration signals are controlled in three ways:
 
 - **Debounce:** a changed configuration-content identity must remain stable for 10 seconds before publication.
-- **Per-plugin cooldown:** the first change publishes promptly; further changes during the configured window are coalesced into one later update. The window's length follows the current setting, so lowering the cooldown releases an already-held change on the next scan and raising it extends the hold.
+- **Per-plugin cooldown:** the first change publishes promptly; further changes during the configured window are coalesced into one later update. The window's length follows the current setting, so lowering the cooldown releases an already-held change on the next scan (as the held publish it is, closing the window rather than arming a new one) and raising it extends a window that is still open; a window that has already expired is never revived by a later raise.
 - **Exclusions:** individual plugins can be ignored for configuration-change tracking.
 
 Loaded-module and active loose-asset identity changes are not held behind the
@@ -206,8 +206,8 @@ light-DOM safety probes observe an interaction that should not be interrupted.
 | Fullscreen media | media is fullscreen or in picture-in-picture |
 | Dialog | a rendered native, Jellyfin, or ARIA dialog/action sheet is open |
 | Media session | real media playback is active on the page |
-| Active editor | a text-editing field has focus (on `#/login` and `#/selectserver` only, an empty field — or, since 2.4.9, one the browser autofilled and the user never edited — does not count) |
-| Password entry | a rendered, enabled, non-inert password field still contains a value (on the empty routes only, since 2.4.9, a browser-autofilled password is ignored while no text field on the page holds typed text) |
+| Active editor | a text-editing field has focus (on `#/login` and `#/selectserver` only, an empty field — or, since 2.4.9, one the browser autofilled and the user never edited, while the page has seen no trusted click or keypress since the kit booted — does not count) |
+| Password entry | a rendered, enabled, non-inert password field still contains a value (on the empty routes only, since 2.4.9, a browser-autofilled password is ignored while no text field on the page holds typed text and no trusted click or keypress has happened since the kit booted; a credential the user had to pick from the browser's chooser is not refilled unprompted after a reload) |
 | Not idle | the configured user-idle period has not elapsed — never less than the runtime's 1-second settle floor, and relaxed to that floor on the empty routes, under Jellyfin's screensaver and for 2.5 s after leaving playback |
 
 Refresh Kit also uses:
@@ -478,8 +478,9 @@ deliberately does not rewrite markup created through `innerHTML`,
 / `href` property and `setAttribute` on elements handed out by the page's
 `document.createElement` are intercepted). `data:`, `blob:`, `javascript:` and
 `about:` URLs are never versioned, and `assetPatterns` are matched against the
-resolved URL with its fragment removed (relative URLs are resolved against the
-document base; a fragment is never matched).
+resolved URL: a same-origin URL on its path and query only, a cross-origin URL
+on the full URL, and never on the fragment (relative URLs are resolved against
+the document base first).
 
 ### Bootstrap mode — recommended when the kit should load your entry files
 
@@ -504,7 +505,7 @@ Bootstrap mode:
 - treats path-ending `.mjs` entries as ES modules
 - logs and skips an entry element that reports a load failure
 - falls back to unversioned entries if the initial version lookup exceeds `entryTimeoutMs`
-- loads the entries at `?v=<bootVersion>` immediately when a `bootVersion` seed is configured (runtime 2.4.9 and newer); the first version fetch still runs for update detection
+- loads the entries at `?v=<bootVersion>` immediately when a `bootVersion` seed is configured (runtime 2.4.9 and newer); in `auto` and `notify` the first version fetch still runs for update detection, while `off` makes no fetch at all (the seed is the served build)
 
 That timeout keeps a broken version endpoint from preventing the plugin itself from loading. Its effective ceiling is the runtime's 10-second version-fetch timeout: the option accepts values up to 30000, but a version request that has not answered after 10 s fails on its own, so the entries never wait longer than that.
 
@@ -549,7 +550,7 @@ Important options:
 | `bootVersion` | — | Build identity that produced the current document; should represent the same identity as the version endpoint. |
 | `pollSeconds` | 60 | Visible-tab polling interval, clamped to 15–3600 seconds. |
 | `idleSeconds` | 5 | Required idle time before automatic reload, clamped to 0–300 seconds. |
-| `assetPatterns` | None | URL patterns (substrings, or `RegExp` objects in JavaScript config) whose dynamically-created assets should receive versioning. Matched against the resolved URL with its fragment removed (scheme, host, path and query), so a relative `MyPlugin/x.js` under `/web/` matches `/MyPlugin/` like `/web/MyPlugin/x.js` does, and a pattern that names a CDN host keeps working. A URL that already carries a cache-busting query parameter (`v`, `ver`, `version`, `rev`, `hash`, `build`, `cb`, `nocache`, `_`, or the standalone plugin's own `rkv`, …) is left exactly as its author wrote it. |
+| `assetPatterns` | None | URL patterns (substrings, or `RegExp` objects in JavaScript config) whose dynamically-created assets should receive versioning. Matched against the resolved URL — a same-origin URL on its path and query, a cross-origin URL on the full URL, never the fragment — so a relative `MyPlugin/x.js` under `/web/` matches `/MyPlugin/` like `/web/MyPlugin/x.js` does, an anchored `/^\/web\/MyPlugin\//` keeps matching, a pattern that happens to name this host cannot version every asset, and a pattern that names a CDN host keeps working. A URL that already carries a cache-busting query parameter (`v`, `ver`, `version`, `rev`, `hash`, `build`, `cb`, `nocache`, `_`, or the standalone plugin's own `rkv`, …) is left exactly as its author wrote it. |
 | `entryScripts` | None | Ordered entry URLs for bootstrap mode. |
 | `entryTimeoutMs` | 3000 | Maximum initial version wait before bootstrap entries fall back to unversioned loading. Clamped to 250–30000, but effectively capped at the 10-second version-fetch timeout. Ignored when `bootVersion` seeds the version. |
 | `mode` | `auto` | `auto` reloads, `notify` reports updates without reloading, `off` leaves URL versioning active without update polling behaviour. The value is trimmed and case-insensitive; any other value logs one warning and falls back to `notify` (a mistyped mode never enables automatic reloads). |
@@ -625,7 +626,7 @@ public ActionResult GetScript()
 
 Two plugins can each copy `RefreshKit.cs` in. Each gets its own middleware instance, its own representation cache, and its own `plugin="…"` scrub identity, so their tags never scrub each other and the only real collision risk is route names (which is why the version controller is opt-in).
 
-The **innermost** instance owns the shell response. ASP.NET composes startup filters first-registered-outermost and Jellyfin's plugin load order is not something a plugin can choose, so the instance nearest the shell finishes first and commits its own representation — status, framing, and its strong `rk-` ETag. An outer instance recognises that commitment arriving through its own response body feature before it had decided anything, **signed with the `rk-` ETag**, and **stands down** for that response: it forwards the owner's bytes, validators, and conditional answers untouched, and it does not inject, rewrite a late status, harden metadata, or evaluate preconditions. The signature is what makes it an owner: a plain downstream that merely starts the response early (`HttpResponse.WriteAsync(string)` does so on every call) is not one, and is finalized like any other late-started source response. Once a signed owner has committed a complete shell, the outer instance also steps aside from the start of later shell requests, so the owner keeps seeing the client's own `If-None-Match` and can answer it with a real `304`. That stand-down is **recoverable**: while stood down the outer instance still watches each shell response, and the first one that arrives without the signature — the inner kit was disabled through its kill switch, or its plugin was unloaded — clears it, so the outer instance injects again from the next request without a restart. It logs once each way (standing down, resuming).
+The **innermost** instance owns the shell response. ASP.NET composes startup filters first-registered-outermost and Jellyfin's plugin load order is not something a plugin can choose, so the instance nearest the shell finishes first and commits its own representation — status, framing, and its strong `rk-` ETag. An outer instance recognises that commitment arriving through its own response body feature before it had decided anything, **signed with the `rk-` ETag**, and **stands down** for that response: it forwards the owner's bytes, validators, and conditional answers untouched, and it does not inject, rewrite a late status, harden metadata, or evaluate preconditions. The signature is what makes it an owner: a plain downstream that merely starts the response early (`HttpResponse.WriteAsync(string)` does so on every call) is not one, and is finalized like any other late-started source response. Once a signed owner has committed a complete shell, the outer instance also steps aside from the start of later shell requests, so the owner keeps seeing the client's own `If-None-Match` and can answer it with a real `304`. That stand-down is **recoverable**: while stood down the outer instance still watches each shell response, and two in a row that arrive without the signature — the inner kit was disabled through its kill switch, or its plugin was unloaded — clear it, so the outer instance injects again from the request after that without a restart. A single unsigned shell is not enough on purpose: a live owner serves one whenever it fails open (its transform cap, a decode failure), and resuming on it would cost the next client its `304`. It logs once each way (standing down, resuming).
 
 The consequence is the same ownership boundary as the [standalone plugin's ordering caveat](plugin/README.md#ordering-caveat): the outer instance's tag is not on that page. If your plugin's tag must always be present, inject it yourself rather than relying on being outermost; two instances still coexist safely, and a page that already carries the inner owner's tag is a correctly revalidating page.
 

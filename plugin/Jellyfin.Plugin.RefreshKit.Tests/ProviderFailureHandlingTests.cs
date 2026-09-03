@@ -310,6 +310,86 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Equal(0, row.AssetEntriesUnreadable);
         }
 
+        [Fact]
+        public void TransientIoErrorListingASubdirectoryRetainsLastGoodInsteadOfFoldingASentinel()
+        {
+            // An EIO while listing web/ during one scan is not a permission
+            // problem: folding it as an unreadable sentinel would move the
+            // identity now and move it back on the next scan — two reloads for
+            // an error that never touched the assets.
+            var a = Plugin("Aaa", AaaId, "a body");
+            var web = Path.Combine(a.DirectoryPath, "web");
+            var failWeb = false;
+            var provider = new PluginGenerationProvider(
+                () => new[] { a },
+                _configurations,
+                fileSystemEntriesProvider: path =>
+                {
+                    if (failWeb && path.Equals(web, StringComparison.Ordinal))
+                    {
+                        throw new IOException("EIO");
+                    }
+
+                    return Directory.EnumerateFileSystemEntries(path);
+                });
+
+            var g1 = provider.Snapshot;
+            failWeb = true;
+            provider.Invalidate();
+            var g2 = provider.Snapshot;
+            failWeb = false;
+            provider.Invalidate();
+            var g3 = provider.Snapshot;
+
+            var row2 = Row(g2, "Aaa");
+            Assert.True(row2.UsingLastGoodAssets);
+            Assert.Equal(0, row2.AssetEntriesUnreadable);
+            Assert.Equal(Row(g1, "Aaa").AssetIdentity, row2.AssetIdentity);
+            Assert.Equal(g1.Generation, g2.Generation);
+            Assert.Equal(g1.Generation, g3.Generation);
+            Assert.False(Row(g3, "Aaa").UsingLastGoodAssets);
+        }
+
+        [Fact]
+        public void PermissionDeniedListingASubdirectoryStillFoldsTheSentinel()
+        {
+            // The injected counterpart of the mode-000 fixture above: a listing
+            // the process is not allowed to make is stable across scans, so it
+            // is skipped, counted and folded rather than retained as last-good.
+            var a = Plugin("Aaa", AaaId, "a body");
+            var web = Path.Combine(a.DirectoryPath, "web");
+            var denyWeb = false;
+            var provider = new PluginGenerationProvider(
+                () => new[] { a },
+                _configurations,
+                fileSystemEntriesProvider: path =>
+                {
+                    if (denyWeb && path.Equals(web, StringComparison.Ordinal))
+                    {
+                        throw new UnauthorizedAccessException("EACCES");
+                    }
+
+                    return Directory.EnumerateFileSystemEntries(path);
+                });
+
+            var readable = provider.Snapshot;
+            denyWeb = true;
+            provider.Invalidate();
+            var denied = provider.Snapshot;
+            provider.Invalidate();
+            var deniedAgain = provider.Snapshot;
+
+            var row = Row(denied, "Aaa");
+            Assert.False(row.UsingLastGoodAssets);
+            Assert.False(row.AssetScanUnavailable);
+            Assert.Equal(1, row.AssetEntriesUnreadable);
+            Assert.Equal(0, row.AssetFileCount);
+            Assert.NotEqual(Row(readable, "Aaa").AssetIdentity, row.AssetIdentity);
+            Assert.NotEqual(readable.Generation, denied.Generation);
+            // Deterministic: the same unreadable set folds to the same identity.
+            Assert.Equal(denied.Generation, deniedAgain.Generation);
+        }
+
         // ---------------------------------------------------------------
         // F3: symlinked asset files and directories are not followed, and
         // that is reported instead of silent.
@@ -484,6 +564,85 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             now = openedAt.AddMinutes(60);
             provider.Invalidate();
             Assert.NotEqual(opened, provider.Generation);
+        }
+
+        [Fact]
+        public void RaisingCooldownDoesNotResurrectAWindowThatAlreadyExpired()
+        {
+            var cfg = Path.Combine(_configurations, "Jellyfin.Plugin.Demo.xml");
+            File.WriteAllText(cfg, "<a/>");
+            var p = Plugin("Cool", AaaId, "body", configNames: new[] { "Jellyfin.Plugin.Demo.xml" });
+            var now = FixedTimestamp;
+            var cooldown = 1;
+            var provider = new PluginGenerationProvider(
+                () => new[] { p },
+                _configurations,
+                utcNow: () => now,
+                configurationProvider: () => new Configuration.PluginConfiguration { ConfigCooldownMinutes = cooldown });
+            _ = provider.Generation;
+
+            // Leading edge at T: publishes and opens a 1-minute window.
+            File.WriteAllText(cfg, "<b/>");
+            var opened = Settle(provider, ref now);
+            var openedAt = now;
+
+            // The window expires quietly. The regular scan cadence observes the
+            // plugin (unchanged) well after that, with the setting still at 1.
+            now = openedAt.AddMinutes(30);
+            provider.Invalidate();
+            Assert.Equal(opened, provider.Generation);
+
+            // The admin now raises the cooldown to a day. That must size the NEXT
+            // window, not revive the one that closed 29 minutes ago: the save a
+            // minute later is a leading edge and publishes, instead of being
+            // held until T + 24 h.
+            cooldown = 1440;
+            now = openedAt.AddMinutes(31);
+            File.WriteAllText(cfg, "<c/>");
+            var afterRaise = Settle(provider, ref now);
+            Assert.NotEqual(opened, afterRaise);
+        }
+
+        [Fact]
+        public void LoweringCooldownReleasesAHeldChangeAsAHeldPublishNotALeadingEdge()
+        {
+            var cfg = Path.Combine(_configurations, "Jellyfin.Plugin.Demo.xml");
+            File.WriteAllText(cfg, "<a/>");
+            var p = Plugin("Cool", AaaId, "body", configNames: new[] { "Jellyfin.Plugin.Demo.xml" });
+            var now = FixedTimestamp;
+            var cooldown = 60;
+            var provider = new PluginGenerationProvider(
+                () => new[] { p },
+                _configurations,
+                utcNow: () => now,
+                configurationProvider: () => new Configuration.PluginConfiguration { ConfigCooldownMinutes = cooldown });
+            _ = provider.Generation;
+
+            // Leading edge at T: opens a 60-minute window.
+            File.WriteAllText(cfg, "<b/>");
+            var opened = Settle(provider, ref now);
+            var openedAt = now;
+
+            // A change at T+5 is held inside it.
+            now = openedAt.AddMinutes(5);
+            File.WriteAllText(cfg, "<c/>");
+            var held = Settle(provider, ref now);
+            Assert.Equal(opened, held);
+
+            // The admin lowers the cooldown to 1 minute at T+5:17. The held
+            // change is released on the next scan ...
+            cooldown = 1;
+            now = now.AddSeconds(5);
+            provider.Invalidate();
+            var released = provider.Generation;
+            Assert.NotEqual(held, released);
+
+            // ... as the HELD publish it is, which closes the window rather than
+            // arming a fresh 1-minute one: a save made in that same minute must
+            // publish after the debounce instead of being held again.
+            File.WriteAllText(cfg, "<d/>");
+            var nextSave = Settle(provider, ref now);
+            Assert.NotEqual(released, nextSave);
         }
 
         // ---------------------------------------------------------------

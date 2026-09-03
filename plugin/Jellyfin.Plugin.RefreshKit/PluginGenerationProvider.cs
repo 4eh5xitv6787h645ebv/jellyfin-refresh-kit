@@ -1139,9 +1139,14 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
                 catch
                 {
-                    // The root cannot be listed, or an entry disappeared between
+                    // The root cannot be listed, an entry disappeared between
                     // readdir and stat (an uninstall's recursive delete racing the
-                    // scan). Transient: retain the last coherent snapshot. Only
+                    // scan), or a subdirectory listing hit a plain I/O error (a
+                    // network share hiccup, a device returning EIO once). All
+                    // transient: retain the last coherent snapshot. Folding a
+                    // one-off error as an unreadable sentinel would move the
+                    // identity now and move it back on the next scan — two client
+                    // reloads for a failure that never touched the assets. Only
                     // when there is none does the conservative ceiling apply — the
                     // result cannot reveal what the enumerator would have yielded
                     // next, so the charge must not depend on where it stopped.
@@ -1179,17 +1184,20 @@ namespace Jellyfin.Plugin.RefreshKit
 
         /// <summary>
         /// Whether a per-entry exception describes an entry that exists but
-        /// cannot be read by this process (permission denied, a path the
-        /// platform rejects, an I/O error on the entry itself) as opposed to an
-        /// entry that vanished after the directory listing yielded it. The former
-        /// is stable across scans and is folded as an unreadable sentinel; the
-        /// latter is a race with a writer or an uninstall and is transient.
+        /// cannot be read by this process — permission denied, or a path the
+        /// platform rejects outright — as opposed to anything else that can go
+        /// wrong while stat'ing or listing it. Only the former is stable across
+        /// scans and is folded as an unreadable sentinel. A generic
+        /// <see cref="IOException"/> is deliberately NOT persistent, even though
+        /// it may be: a transient EIO or a share that dropped for one scan must
+        /// retain the last-good snapshot, the same way a failed content read of
+        /// an asset file does, or the sentinel would move the identity and move
+        /// it back on the next scan. A permanent I/O error therefore keeps a
+        /// plugin on its last-good snapshot until restart, which is the same
+        /// outcome as a root that cannot be listed and is reported the same way.
         /// </summary>
         private static bool IsPersistentEntryFailure(Exception exception) =>
-            exception is UnauthorizedAccessException
-            || (exception is IOException
-                && exception is not FileNotFoundException
-                && exception is not DirectoryNotFoundException);
+            exception is UnauthorizedAccessException or PathTooLongException;
 
         /// <summary>
         /// Normalizes the hidden aggregate charge after native entry enumeration
@@ -1450,9 +1458,34 @@ namespace Jellyfin.Plugin.RefreshKit
                     ? DateTime.MinValue
                     : now;
                 signal.CooldownOpenedUtc = DateTime.MinValue;
+                // The window the pending change was held in no longer exists on
+                // this timeline, so it publishes as a leading edge and re-arms.
+                signal.PendingWasHeld = false;
             }
 
             signal.LastObservedUtc = now;
+
+            var cooldownMinutes = Math.Clamp(configuration?.ConfigCooldownMinutes ?? 5, 0, 1440);
+            // The window's END is derived from the CURRENT setting on every
+            // evaluation, never frozen from the setting in force when it opened.
+            // An admin who lowers the cooldown (to 0, say) therefore releases a
+            // change already held in an open window on the next scan, and one
+            // who raises it extends the hold; neither needs a restart or a
+            // fresh save to take effect.
+            //
+            // The window is closed on the first OBSERVATION past its end, not
+            // only when a publish or a clock rollback happens to reset it. A
+            // window that expired quietly (nothing arrived inside it) would
+            // otherwise linger as a start timestamp, and raising the cooldown
+            // half an hour later would resurrect it: a save made then would be
+            // held for the whole new length, measured from a start long past.
+            // Closing eagerly means a raise can only extend a window that is
+            // genuinely still open at this scan.
+            if (signal.CooldownOpenedUtc != DateTime.MinValue
+                && now >= signal.CooldownOpenedUtc.AddMinutes(cooldownMinutes))
+            {
+                signal.CooldownOpenedUtc = DateTime.MinValue;
+            }
 
             if (rawIdentity.Equals(signal.PublishedIdentity, StringComparison.Ordinal))
             {
@@ -1464,6 +1497,14 @@ namespace Jellyfin.Plugin.RefreshKit
             {
                 signal.PendingIdentity = rawIdentity;
                 signal.PendingFirstSeenUtc = now;
+                // Held (trailing) or leading edge is decided NOW, while the
+                // window's state is known, not when the change is finally
+                // released. Deriving it then from the recomputed end would
+                // misclassify a change that an admin released early by lowering
+                // the cooldown: it was held, yet its first-seen time would lie
+                // past the shrunken end, so it would read as a leading edge and
+                // re-arm a fresh window right after the one it waited out.
+                signal.PendingWasHeld = signal.CooldownOpenedUtc != DateTime.MinValue;
                 return signal.PublishedIdentity;
             }
 
@@ -1472,31 +1513,22 @@ namespace Jellyfin.Plugin.RefreshKit
                 return signal.PublishedIdentity;
             }
 
-            var cooldownMinutes = Math.Clamp(configuration?.ConfigCooldownMinutes ?? 5, 0, 1440);
-            var windowOpen = signal.CooldownOpenedUtc != DateTime.MinValue;
-            // The window's END is derived from the CURRENT setting on every
-            // evaluation, never frozen from the setting in force when it opened.
-            // An admin who lowers the cooldown (to 0, say) therefore releases a
-            // change already held in an open window on the next scan, and one
-            // who raises it extends the hold; neither needs a restart or a
-            // fresh save to take effect.
-            var cooldownUntil = windowOpen
-                ? signal.CooldownOpenedUtc.AddMinutes(cooldownMinutes)
-                : DateTime.MinValue;
-
-            if (windowOpen && now < cooldownUntil)
+            if (signal.CooldownOpenedUtc != DateTime.MinValue)
             {
-                // Inside the window: hold the newest identity until the window ends.
+                // Inside the window (an open window is, after the normalisation
+                // above, one whose end under the current setting is still
+                // ahead): hold the newest identity until it ends.
                 return signal.PublishedIdentity;
             }
 
-            // A change first seen while the window was still running is a held
-            // (trailing) publish; one first seen after the window had already
-            // expired is a fresh leading edge.
-            var wasHeldBack = windowOpen && signal.PendingFirstSeenUtc < cooldownUntil;
+            // A change first seen while a window was running is a held
+            // (trailing) publish and closes that window; one first seen with no
+            // window open is a fresh leading edge and opens one.
+            var wasHeldBack = signal.PendingWasHeld;
 
             signal.PublishedIdentity = rawIdentity;
             signal.PendingIdentity = null;
+            signal.PendingWasHeld = false;
             signal.CooldownOpenedUtc = wasHeldBack || cooldownMinutes <= 0
                 ? DateTime.MinValue
                 : now;
@@ -1711,11 +1743,23 @@ namespace Jellyfin.Plugin.RefreshKit
             public DateTime PendingFirstSeenUtc { get; set; }
 
             /// <summary>
+            /// Whether a cooldown window was open when <see cref="PendingIdentity"/>
+            /// was first seen. Recorded at that moment because the window's end
+            /// moves with the setting: a change released early by a lowered
+            /// cooldown is still a held publish and must close the window, not
+            /// re-arm it. Meaningless while <see cref="PendingIdentity"/> is null.
+            /// </summary>
+            public bool PendingWasHeld { get; set; }
+
+            /// <summary>
             /// Start of the open cooldown window, or <see cref="DateTime.MinValue"/>
             /// when no window is open — in which case the next debounced change
             /// publishes on the leading edge. Only the START is stored: the end
             /// is start + the cooldown setting CURRENT at evaluation time, so a
-            /// settings change re-sizes an already-open window.
+            /// settings change re-sizes an already-open window. Reset on the
+            /// first observation past that end, so a window never outlives its
+            /// length by more than one scan interval and a later raise of the
+            /// setting cannot revive it.
             /// </summary>
             public DateTime CooldownOpenedUtc { get; set; } = DateTime.MinValue;
 

@@ -78,7 +78,8 @@
                         After the provider observes new content, it must remain stable for 10 seconds; a later
                         scan publishes the leading change and opens a window this many minutes long. Further
                         saves inside that window are coalesced and published when it expires — nothing is lost.
-                        0 disables the cooldown (the 10-second settle still applies); the page caps it at 1440 (a day).
+                        0 disables the cooldown (the 10-second settle still applies). 0 to 1440 (a day); a value outside
+                        that range is refused by the field or clamped to it. Blank restores 5.
                     </div>
                 </div>
 
@@ -99,7 +100,8 @@
                     <input is="emby-input" type="number" id="rkPollSeconds" min="15" max="3600" />
                     <div class="fieldDescription">
                         How often a visible tab asks the server for the current generation. 15 to 3600
-                        seconds; hidden tabs do not poll and catch up when shown. Blank restores 60.
+                        seconds (out-of-range values are refused or clamped); hidden tabs do not poll and
+                        catch up when shown. Blank restores 60.
                     </div>
                 </div>
 
@@ -153,7 +155,7 @@
                     <button is="emby-button" type="button" id="rkShowDiagnostics" class="raised block">
                         <span>Show diagnostics</span>
                     </button>
-                    <button is="emby-button" type="button" id="rkCopyDiagnostics" class="raised block" hidden>
+                    <button is="emby-button" type="button" id="rkCopyDiagnostics" class="raised block hide">
                         <span>Copy JSON</span>
                     </button>
                 </div>
@@ -171,12 +173,17 @@
             // `parseInt(...) || fallback` idiom also swallows an explicit 0.
             // Zero is a legal, documented value for the cooldown (no cooldown)
             // and for the idle wait (reload without waiting for idle), so a
-            // blanked field must fall back to the real default while a typed 0
-            // is kept. The poll interval (min 15) and the reload budget (min 1)
-            // have no legal zero, so anything below their minimum is a default.
-            function readNumber(page, selector, fallback, minimum) {
+            // blanked or unparseable field falls back to the real default while
+            // a typed 0 is kept. A typed value outside the range is CLAMPED to
+            // it, never replaced by the default: the browser's own min/max
+            // validation already refuses such a submit, so this only matters
+            // when that validation is bypassed, and "5 became 15" is what the
+            // help text promises. The server clamps again on read, so a value
+            // posted straight to the API is bounded the same way.
+            function readNumber(page, selector, fallback, minimum, maximum) {
                 var parsed = parseInt(page.querySelector(selector).value, 10);
-                return isNaN(parsed) || parsed < minimum ? fallback : parsed;
+                if (isNaN(parsed)) return fallback;
+                return Math.min(Math.max(parsed, minimum), maximum);
             }
 
             function reportFailure(error) {
@@ -265,6 +272,8 @@
                     if (field(row, 'AssetScanUnavailable')) flags.push('assets unavailable');
                     if (field(row, 'ConfigurationScanTruncated')) flags.push('config truncated');
                     if (field(row, 'ConfigurationScanUnavailable')) flags.push('config unavailable');
+                    if (field(row, 'AssetReparsePointsSkipped')) flags.push((field(row, 'AssetReparsePointsSkipped')) + ' symlinked assets skipped');
+                    if (field(row, 'AssetEntriesUnreadable')) flags.push((field(row, 'AssetEntriesUnreadable')) + ' unreadable asset entries');
                     if (field(row, 'ConfigurationReparsePointsSkipped')) flags.push((field(row, 'ConfigurationReparsePointsSkipped')) + ' symlinked config skipped');
                     if (field(row, 'UsingLastGoodAssets') || field(row, 'UsingLastGoodConfiguration')) flags.push('using last good snapshot');
                     tr.appendChild(el('td', flags.join(', ') || '-'));
@@ -276,7 +285,10 @@
                 diagnosticsJson = JSON.stringify(info, null, 2);
                 pre.textContent = diagnosticsJson;
                 pre.hidden = false;
-                page.querySelector('#rkCopyDiagnostics').hidden = false;
+                // The `hidden` attribute loses to jellyfin-web's own
+                // `.emby-button.block { display: block }` rule, so the button
+                // is toggled with the dashboard's `hide` class instead.
+                page.querySelector('#rkCopyDiagnostics').classList.remove('hide');
             }
 
             document.querySelector('#rkShowDiagnostics').addEventListener('click', function () {
@@ -304,10 +316,29 @@
                     button.querySelector('span').textContent = ok ? 'Copied' : 'Copy failed';
                     setTimeout(function () { button.querySelector('span').textContent = 'Copy JSON'; }, 2000);
                 };
+                // navigator.clipboard exists only in secure contexts, and a
+                // LAN Jellyfin over plain http:// is not one; fall back to
+                // selecting the rendered JSON and using the legacy command.
+                var legacyCopy = function () {
+                    var ok = false;
+                    try {
+                        var pre = document.querySelector('#rkDiagnosticsJson');
+                        var range = document.createRange();
+                        range.selectNodeContents(pre);
+                        var selection = window.getSelection();
+                        selection.removeAllRanges();
+                        selection.addRange(range);
+                        ok = document.execCommand('copy');
+                        selection.removeAllRanges();
+                    } catch (error) {
+                        ok = false;
+                    }
+                    done(ok);
+                };
                 if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(diagnosticsJson).then(function () { done(true); }, function () { done(false); });
+                    navigator.clipboard.writeText(diagnosticsJson).then(function () { done(true); }, legacyCopy);
                 } else {
-                    done(false);
+                    legacyCopy();
                 }
             });
 
@@ -319,12 +350,12 @@
                     config.EnableInjection = page.querySelector('#rkEnableInjection').checked;
                     config.EnableThirdPartyStamping = page.querySelector('#rkEnableStamping').checked;
                     config.EnableAutoReload = page.querySelector('#rkEnableAutoReload').checked;
-                    config.PollSeconds = readNumber(page, '#rkPollSeconds', 60, 15);
-                    config.IdleSeconds = readNumber(page, '#rkIdleSeconds', 5, 0);
-                    config.ReloadBudget = readNumber(page, '#rkReloadBudget', 3, 1);
+                    config.PollSeconds = readNumber(page, '#rkPollSeconds', 60, 15, 3600);
+                    config.IdleSeconds = readNumber(page, '#rkIdleSeconds', 5, 0, 300);
+                    config.ReloadBudget = readNumber(page, '#rkReloadBudget', 3, 1, 100);
                     config.DevMode = page.querySelector('#rkDevMode').checked;
                     config.EnableConfigWatching = page.querySelector('#rkEnableConfigWatching').checked;
-                    config.ConfigCooldownMinutes = readNumber(page, '#rkConfigCooldown', 5, 0);
+                    config.ConfigCooldownMinutes = readNumber(page, '#rkConfigCooldown', 5, 0, 1440);
                     config.ConfigWatchExclusions = page.querySelector('#rkConfigExclusions').value
                         .split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
                     return ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {

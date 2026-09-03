@@ -181,9 +181,10 @@
 //    from the START of later shell requests, so the owner keeps seeing the
 //    client's own `If-None-Match` and can answer it with a real 304. That
 //    stand-down is recoverable: while stood down the outer instance still
-//    watches each shell response, and the first one that arrives WITHOUT the
-//    signature (the owner was disabled or unloaded) clears it, so injection
-//    resumes on the next request without a restart. Consequence: the outer
+//    watches each shell response, and two in a row that arrive WITHOUT the
+//    signature (the owner was disabled or unloaded; one alone is just a live
+//    owner failing open once) clear it, so injection resumes on the request
+//    after that without a restart. Consequence: the outer
 //    instance's tags are NOT on an owner's page. That is the same ownership
 //    boundary as the documented middleware-ordering caveat — a plugin cannot
 //    make itself outermost, and an outer instance must never mangle an inner
@@ -2874,6 +2875,7 @@ namespace Jellyfin.Plugin.RefreshKit
         private int _loggedOnce;
         private int _loggedFailClosedOnce;
         private int _downstreamOwnsShellResponse;
+        private int _unsignedShellResponsesWhileStoodDown;
 
         internal RefreshKitScriptInjectionFilter(RefreshKitOptions options, ILogger logger)
             : this(options, logger, () => RefreshKit.BuildScriptTags(options), null)
@@ -3581,10 +3583,11 @@ namespace Jellyfin.Plugin.RefreshKit
         // headers in front of it would only cost that owner its revalidation
         // without ever letting this instance inject. The owner can still go
         // away without a restart — its kill switch, its plugin being disabled —
-        // so the latch is cleared again by ObserveStoodDownShellResponse the
-        // moment an unsigned shell response is seen.
+        // so the latch is cleared again by ObserveStoodDownShellResponse once
+        // unsigned shell responses are seen back to back.
         private void NoteDownstreamOwnedShellResponse()
         {
+            Interlocked.Exchange(ref _unsignedShellResponsesWhileStoodDown, 0);
             if (Interlocked.Exchange(ref _downstreamOwnsShellResponse, 1) != 0)
             {
                 return;
@@ -3610,9 +3613,30 @@ namespace Jellyfin.Plugin.RefreshKit
         {
             try
             {
-                if (response.StatusCode == StatusCodes.Status200OK
-                    && IsHtmlContentType(response.ContentType)
-                    && !IsRefreshKitOwnerETag(response.Headers["ETag"]))
+                // Any signed response — a 304 included — proves the owner is
+                // still there and restarts the count.
+                if (IsRefreshKitOwnerETag(response.Headers["ETag"]))
+                {
+                    Interlocked.Exchange(ref _unsignedShellResponsesWhileStoodDown, 0);
+                    return;
+                }
+
+                if (response.StatusCode != StatusCodes.Status200OK
+                    || !IsHtmlContentType(response.ContentType))
+                {
+                    return;
+                }
+
+                // One unsigned shell is not proof the owner left: an owner that
+                // is still loaded serves one unsigned shell whenever it fails
+                // open (its transform cap, a decode failure, a throwing tag
+                // provider). Resuming on that single response would strip the
+                // next client's validator in front of a live owner and log a
+                // stand-down/resume pair per fail-open. An owner that is really
+                // gone leaves every shell unsigned, so two in a row is proof
+                // enough and costs a genuinely departed owner one extra request.
+                if (Interlocked.Increment(ref _unsignedShellResponsesWhileStoodDown)
+                    >= UnsignedShellResponsesBeforeResume)
                 {
                     ResumeAfterDownstreamOwnerLeft();
                 }
@@ -3624,8 +3648,11 @@ namespace Jellyfin.Plugin.RefreshKit
             }
         }
 
+        private const int UnsignedShellResponsesBeforeResume = 2;
+
         private void ResumeAfterDownstreamOwnerLeft()
         {
+            Interlocked.Exchange(ref _unsignedShellResponsesWhileStoodDown, 0);
             if (Interlocked.Exchange(ref _downstreamOwnsShellResponse, 0) == 0)
             {
                 return;
