@@ -34,7 +34,9 @@ deliberately does not rewrite markup created through `innerHTML`,
 `setAttributeNS`, `setAttributeNode`, or on an element created by calling
 `Document.prototype.createElement.call(document, …)` directly (only the `src`
 / `href` property and `setAttribute` on elements handed out by the page's
-`document.createElement` are intercepted). `data:`, `blob:`, `javascript:` and
+`document.createElement` are intercepted).
+
+`data:`, `blob:`, `javascript:` and
 `about:` URLs are never versioned, and `assetPatterns` are matched against the
 resolved URL: a same-origin URL on its path and query only, a cross-origin URL
 on the full URL, and never on the fragment (relative URLs are resolved against
@@ -63,7 +65,7 @@ Bootstrap mode:
 - treats path-ending `.mjs` entries as ES modules
 - logs and skips an entry element that reports a load failure
 - falls back to unversioned entries if the initial version lookup exceeds `entryTimeoutMs`
-- loads the entries at `?v=<bootVersion>` immediately when a `bootVersion` seed is configured (runtime 2.4.9 and newer); in `auto` and `notify` the first version fetch still runs for update detection, while `off` makes no fetch at all (the seed is the served build)
+- loads the entries at `?v=<bootVersion>` immediately when a `bootVersion` seed is configured (runtime 2.4.9 and newer; `bootVersion` is the build identity of the served page, see the options table below); in `auto` and `notify` the first version fetch still runs for update detection, while `off` makes no fetch at all (the seed is the served build)
 
 That timeout keeps a broken version endpoint from preventing the plugin itself from loading. Its effective ceiling is the runtime's 10-second version-fetch timeout: the option accepts values up to 30000, but a version request that has not answered after 10 s fails on its own, so the entries never wait longer than that.
 
@@ -104,7 +106,7 @@ Important options:
 | `name` | Derived | Instance identity used in logs, diagnostics, and keyed configuration. |
 | `versionUrl` | — | Endpoint that reports the current version. |
 | `versionJsonField` | — | JSON property containing the string version when the endpoint returns JSON; arrays, objects, numbers, booleans, and null are rejected. |
-| `versionEpochJsonField` | — | Optional JSON property containing an opaque process epoch. After two observations of a fresh exact pair, it can provide one-shot authorization for an otherwise-historical target generation; same-generation epoch rotation is not another update and it never versions assets. |
+| `versionEpochJsonField` | — | Optional JSON property containing an opaque process epoch (an identity for the server process that changes on restart). After the same fresh version/epoch pair has been observed twice, it can authorize one revisit of a version this tab has already left — a genuine rollback after a restart — which the flap guard would otherwise refuse; an epoch change on an unchanged version is not another update, and the epoch never versions assets. |
 | `bootVersion` | — | Build identity that produced the current document; should represent the same identity as the version endpoint. |
 | `pollSeconds` | 60 | Visible-tab polling interval, clamped to 15–3600 seconds. |
 | `idleSeconds` | 5 | Required idle time before automatic reload, clamped to 0–300 seconds. |
@@ -182,7 +184,7 @@ public ActionResult GetScript()
 
 ### More than one plugin embedding the helper
 
-Two plugins can each copy `RefreshKit.cs` in. Each gets its own middleware instance, its own representation cache, and its own `plugin="…"` scrub identity, so their tags never scrub each other and the only real collision risk is route names (which is why the version controller is opt-in).
+Two plugins can each copy `RefreshKit.cs` in. Each gets its own middleware instance, its own representation cache, and its own `plugin="…"` scrub identity (the marker each instance uses to find and remove its own previously injected tag), so their tags never scrub each other and the only real collision risk is route names (which is why the version controller is opt-in).
 
 The **innermost** instance owns the shell response. ASP.NET composes startup filters first-registered-outermost and Jellyfin's plugin load order is not something a plugin can choose, so the instance nearest the shell finishes first and commits its own representation — status, framing, and its strong `rk-` ETag. An outer instance recognises that commitment arriving through its own response body feature before it had decided anything, **signed with the `rk-` ETag**, and **stands down** for that response: it forwards the owner's bytes, validators, and conditional answers untouched, and it does not inject, rewrite a late status, harden metadata, or evaluate preconditions. The signature is what makes it an owner: a plain downstream that merely starts the response early (`HttpResponse.WriteAsync(string)` does so on every call) is not one, and is finalized like any other late-started source response. Once a signed owner has committed a complete shell, the outer instance also steps aside from the start of later shell requests, so the owner keeps seeing the client's own `If-None-Match` and can answer it with a real `304`. That stand-down is **recoverable**: while stood down the outer instance still watches each shell response, and two in a row that arrive without the signature — the inner kit was disabled through its kill switch, or its plugin was unloaded — clear it, so the outer instance injects again from the request after that without a restart. A single unsigned shell is not enough on purpose: a live owner serves one whenever it fails open (its transform cap, a decode failure), and resuming on it would cost the next client its `304`. It logs once each way (standing down, resuming).
 
@@ -220,7 +222,7 @@ Using the same cache identity for the page's boot version and the polled version
 
 | Option | Required | Purpose |
 | --- | --- | --- |
-| `PluginName` | Yes | Stable identity used by the injected tag and the helper's own-tag scrub logic. |
+| `PluginName` | Yes | Stable identity used by the injected tag and the helper's own-tag scrub (removal of a previously injected copy of its tag). |
 | `BasePath` | Yes | Controller route segment used to build relative script URLs. Spliced into `src` unescaped, so it is validated at registration. |
 | `ScriptPaths` | Yes | Ordered script paths. Because injected tags use `defer`, this is also execution order. Each entry is spliced into `src` unescaped and validated at registration. |
 | `DevMode` | No | Live flag used by script-cache handling and stamped into the tag. Dev mode also adds `dev=1` to the script URL; that marker remains `no-store` even if the setting changes before the request, so an immutable production response cannot poison the dev URL. |

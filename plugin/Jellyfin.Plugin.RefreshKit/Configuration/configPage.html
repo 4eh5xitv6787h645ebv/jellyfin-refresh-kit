@@ -65,8 +65,8 @@
                         A plugin's saved settings can change what the web UI renders (a new tab, a new button),
                         so saving them counts as an update. Bursts are coalesced and each plugin is
                         rate-limited by the cooldown below. This applies to Refresh Kit too: saving this page
-                        reloads open tabs once (after the 10-second settle), which is how new poll/idle/budget
-                        values reach them. Turn off to exclude configuration content; loaded host/plugin code
+                        reloads open tabs once after the 10-second settle and their next poll, which is how new
+                        poll/idle/budget values reach them. Turn off to exclude configuration content; loaded host/plugin code
                         identities and active client assets are still tracked.
                     </div>
                 </div>

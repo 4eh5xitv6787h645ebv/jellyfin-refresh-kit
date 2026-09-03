@@ -104,7 +104,8 @@ unvalidated finalized manifest is never placed on `main`:
    `main` yet, and never move or reuse that candidate ref.
 3. Dispatch `release-validation.yml` with `--ref
    release-candidate/v<version>` and inputs `source_revision=S`,
-   `manifest_revision=M`, the four-part version, and the policy kind. Its five
+   `manifest_revision=M`, the four-part version, and the policy kind
+   (`release_kind`: `final` or `milestone`). Its five
    jobs keep every hosted-runner timeout at or below 360 minutes: immutable-ref
    preflight, fast/reproducibility/security, integration, compatibility, and a
    final rebuild/retention job. The final artifact contains the three original
@@ -129,9 +130,9 @@ unvalidated finalized manifest is never placed on `main`:
    retaining its read-only correspondence receipt. Keep the temporary candidate
    ref until this workflow succeeds.
 
-The campaign verifier derives any milestone number and boundary from the fixed
-campaign origin `1786193837` (2026-08-08 20:57:17 AWST); a caller cannot choose
-either. Every release source and validation must be at or after the first fixed
+The release-policy verifier (`scripts/verify-release-policy.py`) derives any
+milestone number and boundary from the fixed campaign origin `1786193837`
+(2026-08-08 20:57:17 AWST); a caller cannot choose either. Every release source and validation must be at or after the first fixed
 24-hour boundary (2026-08-09 20:57:17 AWST). The workflows validate and retain
 bytes; they never tag, publish, or move `main` themselves.
 
@@ -172,8 +173,9 @@ only), `static` (the shell/JavaScript/JSON/Compose and release-tooling checks
 only), `package` (verify an existing `plugin/build` snapshot) and `locking`
 (the build-lock proof). `package` needs a prior `build`.
 
-The read-only **Locked ecosystem compatibility** workflow runs all 14 pinned
-matrices weekly and can be manually dispatched for an exact source revision.
+The read-only **Locked ecosystem compatibility** workflow
+(`.github/workflows/compatibility.yml`) runs all 14 pinned matrices weekly and
+can be manually dispatched for an exact source revision.
 It retains the collector's sanitized, completeness-checked evidence artifact.
 
 The fast and focused suites cover, among other invariants:

@@ -38,41 +38,25 @@ The two coexist on one page by design.
 
 ## Install
 
-### Method 1 — plugin repository (recommended)
+Both install methods — plugin repository (recommended) and manual folder — are
+step-by-step in the root README under [Install](../README.md#install), and
+[Verifying it works](../README.md#verifying-it-works) covers the post-restart
+check. Two manual-install details the root README does not spell out:
 
-1. Dashboard → **Plugins** → **Repositories** → **+**
-2. Repository name: `Jellyfin Refresh Kit`
-   Repository URL:
-   `https://raw.githubusercontent.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/main/manifest.json`
-3. **Catalog** → **General** → *Jellyfin Refresh Kit* → **Install**
-4. Restart Jellyfin.
-
-### Method 2 — manual folder install
-
-1. Download the zip for your server from the
-   [releases](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases):
-   `jellyfin-refresh-kit_<version>.zip` for Jellyfin 10.11.x, or
-   `jellyfin-refresh-kit_<version>_jf12.zip` for Jellyfin 12.x. (See
-   [Requirements](#requirements) — the wrong one will not load.)
-2. Unzip it into a folder named `Jellyfin Refresh Kit_<version>` inside your
-   Jellyfin config's `plugins` directory — e.g.
-   `/config/plugins/Jellyfin Refresh Kit_<version>/`, containing
-   `Jellyfin.Plugin.RefreshKit.dll`, its portable PDB, and `meta.json`.
-   The `Name_version` folder layout is what the server's plugin loader expects;
-   a folder without it is ignored.
-   On a native install there is no `/config`: the loader reads
-   `<datadir>/plugins/`, i.e. whatever `--datadir` points at (default
-   `/var/lib/jellyfin/plugins/` for the packaged service). Same folder layout.
-3. Restart Jellyfin.
-
-Verify: Dashboard → Plugins shows **Jellyfin Refresh Kit — Active**, and
-`GET /RefreshKit/Generation` returns JSON.
+* The folder must be named `Jellyfin Refresh Kit_<version>` inside Jellyfin's
+  `plugins` directory (e.g. `/config/plugins/Jellyfin Refresh Kit_<version>/`).
+  The `Name_version` folder layout is what the server's plugin loader expects;
+  a folder without it is ignored.
+* On a native install there is no `/config`: the loader reads
+  `<datadir>/plugins/`, i.e. whatever `--datadir` points at (default
+  `/var/lib/jellyfin/plugins/` for the packaged service). Same folder layout.
 
 ### Requirements
 
-Jellyfin **10.11.x** or **12.x**. There is one plugin per
-server generation, because a plugin assembly has to match the framework its host
-runs on:
+Jellyfin **10.11.x** or **12.x**, as in the root README's
+[Requirements](../README.md#requirements). What that section only summarises
+is why there are two zips: one plugin per server generation, because a plugin
+assembly has to match the framework its host runs on:
 
 | Server | Zip | Framework | Built against | `targetAbi` |
 |---|---|---|---|---|
@@ -82,7 +66,7 @@ runs on:
 Installing from the plugin repository, this is not a choice you have to make:
 both are listed in the one `manifest.json`, and the server offers only the build
 it can run. A 10.11 server never sees the 12 entry at all. Installing by hand,
-take the zip whose row matches the server.
+take the zip whose row matches the server — the wrong one will not load.
 
 The two builds are the SAME SOURCE, compiled twice — the plugin uses only the
 part of the plugin surface that survived the 12 rewrite, so there is no
@@ -456,7 +440,11 @@ on matching DOM nodes:
   whether focused or not. A populated login field that is retained but hidden,
   natively disabled (including by a disabled fieldset), or inert after
   authentication does not block the document for life. `aria-disabled` alone
-  does not make a native input non-interactive.
+  does not make a native input non-interactive. Since runtime 2.4.9, on
+  `#/login` and `#/selectserver` only, a password the browser autofilled and
+  the user never edited is ignored while no text field on the page holds typed
+  text and no trusted click or keypress has happened since the kit booted — it
+  will be refilled by the same mechanism after the reload.
 
 The browser regressions cover both sides: Jellyfin 10.11's real hidden retained
 login password must permit a later update, while a visible interactive password
@@ -471,36 +459,57 @@ playback, dialog, or editor surface.
 
 ## Admin settings
 
-Dashboard → Plugins → **Jellyfin Refresh Kit**.
+The settings table — every switch, its default, its range and what it does —
+is in the root README under [Admin settings](../README.md#admin-settings),
+together with the blank-field and typed-zero rules. What this page adds, per
+setting, is how each one maps onto the mechanisms above:
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| Serve index.html through the refresh kit | on | Middleware switch. Off = host shell bytes pass through untouched; the configuration page and public generation/runtime endpoints remain available. |
-| Cache-bust other plugins' script tags | on | Mechanism 2. |
-| Reload open tabs after a plugin update | on | Off switches the client to `notify` mode: it logs the update instead of reloading. |
-| Treat plugin settings changes as updates | on | Mechanism 3's config input (above). |
-| Settings-change cooldown (minutes, per plugin) | 5 | Length of the leading-edge burst window: after debounce and a provider scan, the change that opens it publishes; later changes inside it coalesce to one publish at its end. 0 disables the cooldown; the debounce still applies. The settings page clamps the value to 0–1440. |
-| Ignore settings changes from these plugins | empty | One per line: plugin name, install folder, GUID or assembly name. An assembly-name entry matches every assembly the plugin loads, bundled dependencies included, so `Newtonsoft.Json` excludes each plugin that ships that DLL; prefer the plugin's own name, folder or GUID. |
-| Poll interval (seconds) | 60 | Clamped 15–3600 by the client runtime. |
-| Required idle time (seconds) | 5 | Clamped 0–300. |
-| Max reloads per minute | 3 | Clamped 1–100 and applied to verified same-origin reservation history. Unavailable coordination defers automatic reload. |
-| Developer mode | off | Serves the client runtime `no-store` and uses a distinct `dev=1` script URL. The marker itself remains `no-store` across setting races, so an immutable production response cannot poison the dev URL. |
-
-A numeric field left blank (or filled with something that is not a number)
-saves the default in the table above, not zero. A typed `0` is kept wherever
-the range allows it, because zero means something specific there: no cooldown,
-and no idle wait.
+* **Cache-bust other plugins' script tags** — mechanism 2.
+* **Reload open tabs after a plugin update** — off switches the injected
+  client to `notify` mode: it logs the update instead of reloading.
+* **Treat plugin settings changes as updates** — mechanism 3's configuration
+  input, described under
+  [Settings changes count as updates](#settings-changes-count-as-updates-and-what-that-costs).
+* **Settings-change cooldown (minutes, per plugin)** — the length of the
+  leading-edge burst window described there: after the debounce and a provider
+  scan, the change that opens the window publishes; later changes inside it
+  coalesce into one publish at its end. Clamped to 0–1440 by the settings page
+  and again by the server.
+* **Ignore settings changes from these plugins** — prefer the plugin's own
+  name, folder or GUID over an assembly name, which also matches every bundled
+  dependency the plugin loads.
+* **Max reloads per minute** — applied to verified same-origin reservation
+  history (the IndexedDB ledger described under
+  [Safe reload gates](#safe-reload-gates)); unavailable coordination defers
+  automatic reload.
+* **Developer mode** — besides serving the client runtime `no-store`, uses a
+  distinct `dev=1` script URL. The marker itself remains `no-store` across
+  setting races, so an immutable production response cannot poison the dev
+  URL.
 
 ## Endpoints
 
-| Route | Auth | Purpose |
-| --- | --- | --- |
-| `GET /RefreshKit/Generation` | anonymous | `{ Version, BuildId, CacheKey, Epoch }`; `CacheKey` = generation and `Epoch` = this process incarnation. `no-store`. |
-| `GET /RefreshKit/Generation.txt` | anonymous | The bare generation, `text/plain`. |
-| `GET /RefreshKit/kit.js` | anonymous | The embedded `jellyfin-refresh-kit.js`: immutable for a production generation URL, or `no-store` for developer mode / a `dev=1` URL. |
-| `GET /RefreshKit/Diagnostics` | admin | Loaded host modules plus per-plugin loaded/content identities, diagnostic timestamps, scan counts/budgets, truncation/unavailability, skipped reparse-point configuration files and asset entries (`AssetReparsePointsSkipped`), unreadable asset entries (`AssetEntriesUnreadable`), last-good/retained-record state, and stamping abort and failure counters (`StampFailures` counts passes the stamper abandoned by throwing; it is designed never to, so a non-zero value is a bug to report with the offending shell). All from one provider snapshot. |
+The route table (`GET /RefreshKit/Generation`, `Generation.txt` and `kit.js`
+anonymous; `Diagnostics` admin-only) is in the root README under
+[HTTP endpoints](../README.md#http-endpoints). Cache behaviour and field
+names the root table omits:
 
-The first three are anonymous **on purpose**: the login screen is a real page of
+* `/RefreshKit/Generation` is served `no-store`; `Epoch` in its JSON is this
+  process incarnation.
+* `/RefreshKit/kit.js` is the embedded `jellyfin-refresh-kit.js`: immutable
+  for a production generation URL, or `no-store` for developer mode / a
+  `dev=1` URL.
+* `/RefreshKit/Diagnostics` reports loaded host modules plus per-plugin
+  loaded/content identities, diagnostic timestamps, scan counts/budgets,
+  truncation/unavailability, skipped reparse-point configuration files
+  (`ConfigurationReparsePointsSkipped`) and asset entries
+  (`AssetReparsePointsSkipped`), unreadable asset entries
+  (`AssetEntriesUnreadable`), last-good/retained-record state, and stamping
+  abort and failure counters (`StampFailures` counts passes the stamper
+  abandoned by throwing; it is designed never to, so a non-zero value is a bug
+  to report with the offending shell). All from one provider snapshot.
+
+The three public routes are anonymous **on purpose**: the login screen is a real page of
 the web client, it is where a stale cache most often bites, and a tab can sit on
 it for days. An authenticated version endpoint would leave exactly that page
 unable to notice an update. The routes expose opaque generation/process tokens
