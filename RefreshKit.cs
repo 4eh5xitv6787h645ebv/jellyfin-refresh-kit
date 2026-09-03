@@ -155,16 +155,25 @@
 //    before it had decided anything, and STANDS DOWN for that response: no
 //    injection, no late-status rewrite, no metadata hardening and no
 //    precondition evaluation, so the owner's bytes and validators reach the
-//    wire byte-for-byte. Once such an owner has committed a complete shell, the
-//    outer instance also steps aside from the START of later shell requests, so
-//    the owner keeps seeing the client's own `If-None-Match` and can answer it
-//    with a real 304. Consequence: the outer instance's tags are NOT on that
-//    page. That is the same ownership boundary as the documented
-//    middleware-ordering caveat — a plugin cannot make itself outermost, and an
-//    outer instance must never mangle an inner owner's response to get its tag
-//    in. (An outer non-kit response BUFFER is a different shape: nothing has
-//    committed there, so this file still transforms and then serves the
-//    complete shell `no-store` without validators, exactly as before.)
+//    wire byte-for-byte. An owner is recognised by its signature — the strong
+//    `rk-` ETag this file stamps on every representation it commits; a plain
+//    component that merely starts the response early (HttpResponse
+//    .WriteAsync(string) does so on every call) is NOT an owner and is
+//    finalized like any other late-started source response. Once a signed
+//    owner has committed a complete shell, the outer instance also steps aside
+//    from the START of later shell requests, so the owner keeps seeing the
+//    client's own `If-None-Match` and can answer it with a real 304. That
+//    stand-down is recoverable: while stood down the outer instance still
+//    watches each shell response, and the first one that arrives WITHOUT the
+//    signature (the owner was disabled or unloaded) clears it, so injection
+//    resumes on the next request without a restart. Consequence: the outer
+//    instance's tags are NOT on an owner's page. That is the same ownership
+//    boundary as the documented middleware-ordering caveat — a plugin cannot
+//    make itself outermost, and an outer instance must never mangle an inner
+//    owner's response to get its tag in. (An outer non-kit response BUFFER is
+//    a different shape: nothing has committed there, so this file still
+//    transforms and then serves the complete shell `no-store` without
+//    validators, exactly as before.)
 //
 // -----------------------------------------------------------------------------
 
@@ -2645,6 +2654,10 @@ namespace JellyfinRefreshKit
         internal const int MaxCacheableRepresentationBytes = 2 * 1024 * 1024;
         internal const int MaxTransformBodyBytes = MaxCacheableRepresentationBytes;
         internal const int RepresentationGateCount = 4;
+        // Longest a cacheable request waits for its admission stripe before it
+        // proceeds without single-flight (see the gate comment in InvokeAsync).
+        internal static readonly TimeSpan RepresentationGateWaitTimeout =
+            TimeSpan.FromSeconds(5);
         internal const int MaxVaryHeaders = 16;
         internal const int MaxVaryMetadataCharacters = 16 * 1024;
         internal const int MaxCachedRequestHeaders = 128;
@@ -2859,15 +2872,43 @@ namespace JellyfinRefreshKit
                 return;
             }
 
-            // A downstream component (realistically a second embedded copy of
-            // this file, nearer the shell) has already committed a complete
-            // shell response of its own through this instance's body feature.
-            // It owns the entity; stay out of the request entirely from here on
-            // so its validators and the client's conditional headers keep
-            // reaching each other untouched. See the stand-down note in the
+            // An outer component already started the response (early headers,
+            // an informational response, a streamed prelude). Nothing this
+            // middleware registers could run, nothing it writes could be
+            // framed, and Response.OnStarting itself throws once headers are
+            // committed: fail open and let the host's bytes through untouched.
+            if (context.Response.HasStarted)
+            {
+                await nextMw().ConfigureAwait(false);
+                return;
+            }
+
+            // A downstream component (a second embedded copy of this file,
+            // nearer the shell) has committed a complete shell response of its
+            // own — signed with its `rk-` ETag — through this instance's body
+            // feature. It owns the entity; stay out of the request so its
+            // validators and the client's conditional headers keep reaching
+            // each other untouched, but keep watching: the latch clears again
+            // as soon as a shell response arrives without that signature (the
+            // owner was disabled or unloaded). See the stand-down note in the
             // file header.
             if (Volatile.Read(ref _downstreamOwnsShellResponse) != 0)
             {
+                try
+                {
+                    context.Response.OnStarting(() =>
+                    {
+                        ObserveStoodDownShellResponse(context.Response);
+                        return Task.CompletedTask;
+                    });
+                }
+                catch (Exception ex)
+                {
+                    // The probe only decides when to resume injecting; failing
+                    // to register it must never cost the host its shell.
+                    LogWarning(ex);
+                }
+
                 await nextMw().ConfigureAwait(false);
                 return;
             }
@@ -2918,9 +2959,30 @@ namespace JellyfinRefreshKit
                 ReleaseRepresentationGateLease);
             context.Response.OnStarting(responseFinalization.OnStartingAsync);
 
-            await representationGate.WaitAsync(context.RequestAborted).ConfigureAwait(false);
-            Volatile.Write(ref representationGateLease, 1);
+            // Single-flight admission is an optimisation for requests that can
+            // share the cache: one cold fill per stripe, then warm waiters
+            // revalidate the same entry. A request that can never use the
+            // shared cache (a Cookie, an Authorization header, an
+            // authenticated user, ...) gains nothing from the stripe and would
+            // only queue behind strangers, so it takes no lease at all. A
+            // cacheable request waits a bounded time; if the stripe is still
+            // held after that — a slow downstream, or a downstream that fetches
+            // the shell from this very server while producing it and would
+            // otherwise wait on its own lease until its client timed out — it
+            // proceeds WITHOUT single-flight. The cache stays correct either
+            // way: every warm hit is revalidated against the source before it
+            // is served and all admission/eviction work runs under the cache
+            // lock, so the only cost of an unserialised request is a duplicate
+            // transform. The shell must never wait on this gate forever.
             var requestCanUseSharedCache = requestSnapshot.IsSafe;
+            if (requestCanUseSharedCache
+                && await representationGate.WaitAsync(
+                    RepresentationGateWaitTimeout,
+                    context.RequestAborted).ConfigureAwait(false))
+            {
+                Volatile.Write(ref representationGateLease, 1);
+            }
+
             var cached = requestCanUseSharedCache
                 ? GetCached(baseCacheKey, requestSnapshot)
                 : null;
@@ -3037,7 +3099,36 @@ namespace JellyfinRefreshKit
                                 mappedPrecondition,
                                 isNewRepresentation: false,
                                 sourceFallbackBodyLength: 0);
+                            if (downstreamStartedResponse)
+                            {
+                                // The start came through our body feature. A
+                                // stacked owner with a warm cache of its own
+                                // answers our substituted validator exactly this
+                                // way — its status, `rk-` ETag and framing land in
+                                // its OnStarting callback, which runs before ours
+                                // — so whether the mapping above applies or the
+                                // owner's answer is forwarded untouched is decided
+                                // at commit time by OnStartingAsync.
+                                responseFinalization.StandDownForDownstreamOwner();
+                            }
+
                             StartOriginalResponse();
+                            if (responseFinalization.DownstreamOwnerConfirmed)
+                            {
+                                if (context.Response.HasStarted
+                                    && context.Response.StatusCode
+                                        == StatusCodes.Status200OK)
+                                {
+                                    NoteDownstreamOwnedShellResponse();
+                                }
+
+                                // The owner's own body follows through this
+                                // stream; a promoted HEAD still drops it.
+                                return PrepareSourceFallback(
+                                    context,
+                                    writeBody: !isHead);
+                            }
+
                             if (!isHead
                                 && responseFinalization.ShouldWriteRepresentation
                                 && responseFinalization.BodySelection
@@ -3065,15 +3156,21 @@ namespace JellyfinRefreshKit
                             originalIfModifiedSince);
                         if (downstreamStartedResponse)
                         {
-                            // A downstream owner is committing its own response
-                            // through our stream before this middleware decided
-                            // anything. Whatever it writes next goes straight to
-                            // the transport, so our final callback can no longer
-                            // suppress a body or restate framing for it: stand
-                            // down completely and let its status, framing,
-                            // validators and conditional answers reach the wire
-                            // untouched. A retained shell of ours can no longer
-                            // be proven to describe this resource either.
+                            // A downstream component is committing its own
+                            // response through our stream before this middleware
+                            // decided anything, and a retained shell of ours can
+                            // no longer be proven to describe this resource.
+                            // Whether it is an OWNER (another copy of this file,
+                            // recognisable by the `rk-` ETag its own OnStarting
+                            // callback stamps before ours runs) or merely a
+                            // component that starts early — HttpResponse
+                            // .WriteAsync(string) does so on every call — is
+                            // decided at commit time by OnStartingAsync. An
+                            // owner's status, framing, validators and
+                            // conditional answers reach the wire untouched;
+                            // anything else is finalized like any other
+                            // late-started source response and never latches
+                            // this instance off.
                             if (requestCanUseSharedCache
                                 && IsSharedCacheSafeRequest(context.Request))
                             {
@@ -3084,11 +3181,11 @@ namespace JellyfinRefreshKit
                         }
 
                         StartOriginalResponse();
-                        if (downstreamStartedResponse
+                        if (responseFinalization.DownstreamOwnerConfirmed
                             && context.Response.HasStarted
                             && context.Response.StatusCode == StatusCodes.Status200OK)
                         {
-                            // The owner reached the real transport with a
+                            // A signed owner reached the real transport with a
                             // complete shell of its own; an outer response
                             // BUFFER absorbing the start instead is the
                             // documented safe-degradation shape and keeps the
@@ -3392,12 +3489,15 @@ namespace JellyfinRefreshKit
                 _options.PluginName);
         }
 
-        // Latched once per loaded instance. Middleware composition does not
-        // change while the process runs, so an owner that committed the shell
-        // itself will do so on every later shell request too; continuing to
-        // buffer and strip the client's conditional headers in front of it
-        // would only cost that owner its revalidation without ever letting this
-        // instance inject.
+        // Latched while a signed downstream owner keeps committing the shell.
+        // Middleware composition does not change while the process runs, so an
+        // owner that committed the shell itself will do so on every later shell
+        // request too; continuing to buffer and strip the client's conditional
+        // headers in front of it would only cost that owner its revalidation
+        // without ever letting this instance inject. The owner can still go
+        // away without a restart — its kill switch, its plugin being disabled —
+        // so the latch is cleared again by ObserveStoodDownShellResponse the
+        // moment an unsigned shell response is seen.
         private void NoteDownstreamOwnedShellResponse()
         {
             if (Interlocked.Exchange(ref _downstreamOwnsShellResponse, 1) != 0)
@@ -3407,10 +3507,65 @@ namespace JellyfinRefreshKit
 
             _logger.LogInformation(
                 "{Plugin}: a downstream component committed the app shell response itself"
-                    + " (typically another plugin embedding this refresh kit, registered"
-                    + " nearer the shell). Standing down: its response is forwarded"
-                    + " untouched and this instance no longer injects into index.html.",
+                    + " and signed it with a refresh-kit strong ETag — another plugin"
+                    + " embedding this refresh kit is registered nearer the shell."
+                    + " Standing down: its responses are forwarded untouched and this"
+                    + " instance stops injecting into index.html until that owner stops"
+                    + " committing the shell.",
                 _options.PluginName);
+        }
+
+        // Runs at header-commit time on every shell request served while stood
+        // down. A complete HTML shell that reaches the wire WITHOUT the owner
+        // signature means nobody nearer the shell is committing it any more, so
+        // this instance takes the next shell request back. A 304/412 or a
+        // non-shell status says nothing about ownership and leaves the latch
+        // alone.
+        private void ObserveStoodDownShellResponse(HttpResponse response)
+        {
+            try
+            {
+                if (response.StatusCode == StatusCodes.Status200OK
+                    && IsHtmlContentType(response.ContentType)
+                    && !IsRefreshKitOwnerETag(response.Headers["ETag"]))
+                {
+                    ResumeAfterDownstreamOwnerLeft();
+                }
+            }
+            catch (Exception ex)
+            {
+                // Observation only; the response itself is already the host's.
+                LogWarning(ex);
+            }
+        }
+
+        private void ResumeAfterDownstreamOwnerLeft()
+        {
+            if (Interlocked.Exchange(ref _downstreamOwnsShellResponse, 0) == 0)
+            {
+                return;
+            }
+
+            _logger.LogInformation(
+                "{Plugin}: the downstream component that owned the app shell response"
+                    + " no longer commits it (its refresh kit was disabled or unloaded)."
+                    + " Resuming: this instance injects into index.html again from the"
+                    + " next request.",
+                _options.PluginName);
+        }
+
+        // The owner signature: a STRONG entity tag with the "rk-" prefix that
+        // CreateETag stamps on every representation this file commits. Weak
+        // tags and foreign validators never qualify.
+        private static bool IsRefreshKitOwnerETag(StringValues etag)
+        {
+            return EntityTagHeaderValue.TryParse(
+                    new StringSegment(etag.ToString()),
+                    out var parsed)
+                && parsed != null
+                && !parsed.IsWeak
+                && parsed.Tag.HasValue
+                && parsed.Tag.Value.StartsWith("\"rk-", StringComparison.Ordinal);
         }
 
         // The base cache key covers everything known before the source runs: the
@@ -5358,6 +5513,7 @@ namespace JellyfinRefreshKit
             private int _bodyFinalized;
             private int _provisionallyFinalized;
             private int _downstreamOwnedResponse;
+            private int _downstreamOwnerConfirmed;
             private int _outerMetadataFinalized;
             private int _outerFramingSnapshotRegistered;
             private int _outerBodyPending;
@@ -5467,8 +5623,21 @@ namespace JellyfinRefreshKit
             }
 
             /// <summary>
-            /// Suppresses this middleware's final callback for a response a
-            /// downstream owner committed through our body feature. Ordered
+            /// True once <see cref="OnStartingAsync"/> has seen the owner
+            /// signature on a response a downstream component started through
+            /// our body feature, i.e. the response really belongs to another
+            /// refresh-kit instance rather than to a component that merely
+            /// started early.
+            /// </summary>
+            public bool DownstreamOwnerConfirmed =>
+                Volatile.Read(ref _downstreamOwnerConfirmed) != 0;
+
+            /// <summary>
+            /// Marks a response a downstream component started through our body
+            /// feature as a stand-down CANDIDATE. Whether this middleware's
+            /// final callback really steps aside is decided when that callback
+            /// runs — after the downstream's own OnStarting callbacks, so the
+            /// owner signature (the <c>rk-</c> ETag) is present by then. Ordered
             /// after the provisional check in <see cref="OnStartingAsync"/>, so
             /// an outer response buffer that absorbs the same start keeps its
             /// existing safe-degradation behaviour unchanged.
@@ -5483,9 +5652,18 @@ namespace JellyfinRefreshKit
                     return FinalizeOuterOwnedMetadataAsync();
                 }
 
-                return Volatile.Read(ref _downstreamOwnedResponse) != 0
-                    ? CompleteDownstreamOwnedResponse()
-                    : EnsureBodyFinalizedAsync();
+                if (Volatile.Read(ref _downstreamOwnedResponse) != 0
+                    && IsRefreshKitOwnerETag(_context.Response.Headers["ETag"]))
+                {
+                    Volatile.Write(ref _downstreamOwnerConfirmed, 1);
+                    return CompleteDownstreamOwnedResponse();
+                }
+
+                // Started early by a component that is not a kit owner: its
+                // bytes are the source's, so finalize them exactly like a
+                // Flush-started source response (source preconditions,
+                // eviction, framing safety) and never latch this instance off.
+                return EnsureBodyFinalizedAsync();
             }
 
             private Task CompleteDownstreamOwnedResponse()
@@ -5625,24 +5803,32 @@ namespace JellyfinRefreshKit
                                 PreventSharedCaching(_context.Response);
                             }
                         }
+                        else if (!_requestSnapshot.IsSafe
+                            || !IsSharedCacheSafeRequest(_context.Request))
+                        {
+                            // A shared entry was selected before a downstream
+                            // handler authenticated this request (forward-auth
+                            // headers such as X-SSO-User, client certificates,
+                            // ... — anything outside SharedCacheSensitiveRequest
+                            // Headers). The source answered 304 to the entry's
+                            // OWN validator, which proves the entry's bytes are
+                            // exactly the representation it would serve here, so
+                            // serve them — to this request only, as no-store, and
+                            // without touching the shared entry, which is still
+                            // correct for anonymous requests. Never 503 the
+                            // shell: this middleware must not be the reason the
+                            // app fails to load.
+                            MergeOmittedCachedHeaders(
+                                _requestSnapshot,
+                                _context.Response,
+                                _representation,
+                                _initialHeaders!);
+                            NormalizeManagedConnectionNominations(
+                                _context.Response.Headers);
+                            PreventSharedCaching(_context.Response);
+                        }
                         else
                         {
-                            // A shared entry selected before downstream authentication
-                            // must not become personalized after that decision. This is
-                            // rare (headerless authentication should normally populate
-                            // User before the startup filter), but fail closed rather
-                            // than serving anonymous bytes into an authenticated request.
-                            if (!_requestSnapshot.IsSafe
-                                || !IsSharedCacheSafeRequest(_context.Request))
-                            {
-                                _context.Response.StatusCode =
-                                    StatusCodes.Status503ServiceUnavailable;
-                                PrepareLateStatusResponse(
-                                    _context,
-                                    preserveSourceBody: false);
-                                return Task.CompletedTask;
-                            }
-
                             var retention = EvaluateRevalidatedRepresentation(
                                 _requestSnapshot,
                                 _context.Response,

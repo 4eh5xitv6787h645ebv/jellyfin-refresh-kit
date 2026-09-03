@@ -453,17 +453,23 @@
  *                        route — Jellyfin focuses the login form for you, so
  *                        without this the refusal was permanent there and
  *                        relaxation 8 could never be reached. Any typed value
- *                        still refuses.
+ *                        still refuses. (2.4.9) Nor for a field the BROWSER
+ *                        autofilled and the user never edited, there.
  *   7. password_entry  — (2.4.0) Any rendered, interactive
  *                        input[type=password] holding a value, focused or not.
  *                        (2.4.2) Retained hidden/disabled/inert forms do not
  *                        block forever after navigation. A pure refusal: it
  *                        only stops a reload the gates above would allow.
+ *                        (2.4.9) On the empty routes only, a browser-autofilled
+ *                        password is ignored while no text field on the page
+ *                        holds typed text — it comes back after the reload by
+ *                        the same mechanism that put it there.
  *   8. not_idle        — idleSeconds (max across pending instances), floored at
  *                        MIN_SETTLE_MS. (2.4.0) Drops to that floor on the
  *                        empty routes (#/login, #/selectserver), under the
  *                        screensaver, and inside the masked post-playback
- *                        window.
+ *                        window. (2.4.9) The interaction settle wait honours
+ *                        the same three relaxations (settleIdleWindowMs).
  *
  * A probe that throws returns 'probe_failed' and refuses: safety unknown is
  * safety refused.
@@ -862,8 +868,60 @@
      *           resolution a `mode: 'off'` instance is entitled to, so an
      *           endpoint that was down during boot no longer leaves that
      *           instance versioning nothing for the life of the tab.
+     *   2.4.9 — A HIDDEN TAB CAN NO LONGER STRAND ITS UPDATE. Every path that
+     *           cancelled the hidden single shot — a discrete interaction
+     *           (which a script can dispatch into a hidden document), the
+     *           engine standing down, a repair-only budget commit, a late
+     *           registration or handoff lengthening the settle grace — left
+     *           the next evaluation reading 'hidden_settling' and re-arming
+     *           nothing, with polling suspended, until the user came back.
+     *           While hidden, a discrete interaction now leaves the shot
+     *           alone (untrusted, script-dispatched events are ignored there
+     *           outright), a 'hidden_settling' verdict with no shot armed
+     *           re-arms it for the remaining grace, and the repair-only commit
+     *           re-arms the shot instead of the 1Hz ladder — all still capped
+     *           at MAX_HIDDEN_RETRIES, and armHiddenRetry finally applies the
+     *           HIDDEN_RETRY_MIN_MS floor its doc promised to gate re-arms.
+     *           THE PER-TAB SAFETY RECORDS ARE DRY-RUN BEFORE THE SLOT IS
+     *           SPENT: the epoch-gap and LEFT claims used to run only after
+     *           the IndexedDB transaction had committed a slot, so a tab whose
+     *           LEFT set was saturated or whose sessionStorage would not take
+     *           a write burned one origin-wide slot per budget window forever
+     *           and starved its sibling tabs. The pre-put pass now rehearses
+     *           the exact writes (and restores them); a rehearsal that fails
+     *           refuses before the append and spends nothing. The interaction
+     *           settle wait honours the empty-route / screensaver relaxation
+     *           blockReasonFor applies (a click on #/login used to impose the
+     *           full idleSeconds and cancel the ladder that would have re-
+     *           tested at the floor). `mode` is trimmed and lower-cased; a
+     *           still-invalid value warns once and falls back to 'notify',
+     *           never 'auto'. `versionUrl` is trimmed. The interceptor never
+     *           versions data:/blob:/javascript:/about: URLs (a data: script
+     *           whose body matched a pattern got `?v=` appended and threw),
+     *           strips the whitespace/C0 controls the URL parser would strip
+     *           before matching or stamping, and matches assetPatterns
+     *           against the RESOLVED URL minus its fragment, so a relative
+     *           `MyPlugin/x.js` is versioned like `/web/MyPlugin/x.js`, a
+     *           CDN pattern that names its host keeps matching, and a
+     *           pattern can never match inside a fragment. A `mode: 'off'` first fetch
+     *           joins the single-flight so checkNow() during boot issues no
+     *           second request; a bootVersion-seeded bootstrap loads its
+     *           entries at ?v=<seed> immediately instead of waiting out
+     *           entryTimeoutMs and warning "UNVERSIONED" while stamping the
+     *           seed. Smaller: per-element src/href accessors are non-
+     *           enumerable; an instance named "__proto__" survives state()
+     *           and keyed-config lookup; the fullscreen gate also reads
+     *           webkitFullscreenElement; the `i`-flag / `:disabled` selectors
+     *           degrade to attribute-based fallbacks on old engines instead
+     *           of a permanent probe_failed; two refusal paths that dropped
+     *           updatePending now stand the engine down; a handoff carries
+     *           the masked window, route samples, hidden re-arm count and the
+     *           srcObject signature map; future-dated budget stamps are
+     *           clamped to now when read; and a browser-AUTOFILLED, never-
+     *           typed login field counts as empty for the empty-route
+     *           relaxation only (typed work still refuses everywhere).
      */
-    var KIT_VERSION = '2.4.8';
+    var KIT_VERSION = '2.4.9';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -1965,7 +2023,7 @@
         // typo'd value) never silently disables it.
         cfg.hiddenReload = cfg.hiddenReload !== false;
         cfg.hiddenSettleSeconds = clampNumber(cfg.hiddenSettleSeconds, 0, 3600, DEFAULTS.hiddenSettleSeconds);
-        if (cfg.mode !== 'auto' && cfg.mode !== 'notify' && cfg.mode !== 'off') cfg.mode = DEFAULTS.mode;
+        cfg.mode = normalizeMode(cfg.mode);
         cfg.entryTimeoutMs = clampNumber(cfg.entryTimeoutMs, 250, 30000, DEFAULTS.entryTimeoutMs);
         if (!Array.isArray(cfg.assetPatterns)) cfg.assetPatterns = [];
         // Entries must be plain non-empty strings: they are appended to the
@@ -1977,7 +2035,10 @@
             : [];
         if (typeof cfg.getVersion !== 'function') cfg.getVersion = null;
         if (typeof cfg.onUpdateAvailable !== 'function') cfg.onUpdateAvailable = null;
-        cfg.versionUrl = typeof cfg.versionUrl === 'string' ? cfg.versionUrl : '';
+        // Trimmed (2.4.9): a trailing space in data-version-url became
+        // `/version%20`, a permanent 404, and polling dead for the life of
+        // the tab with nothing in the console but one silenced warning.
+        cfg.versionUrl = typeof cfg.versionUrl === 'string' ? cfg.versionUrl.trim() : '';
         cfg.versionJsonField = typeof cfg.versionJsonField === 'string' ? cfg.versionJsonField : '';
         cfg.versionEpochJsonField = typeof cfg.versionEpochJsonField === 'string'
             ? cfg.versionEpochJsonField : '';
@@ -1987,6 +2048,37 @@
         // none: it would make every load look like an update.
         if (cfg.bootVersion.length > 200 || cfg.bootVersion.charAt(0) === '<') cfg.bootVersion = '';
         return cfg;
+    }
+
+    /** @type {Object<string, boolean>} Invalid `mode` spellings already warned about. */
+    var warnedInvalidMode = Object.create(null);
+
+    /**
+     * Normalize `mode` (2.4.9): trimmed and lower-cased, so "Auto" and
+     * " notify " mean what their author meant. Absent/empty keeps the default.
+     * Anything ELSE is a typo, and a typo must never switch automatic reloads
+     * ON — so it warns once (per distinct spelling) and falls back to
+     * 'notify', not to DEFAULTS.mode ('auto').
+     * @param {*} value
+     * @returns {'auto'|'notify'|'off'}
+     */
+    function normalizeMode(value) {
+        if (value === undefined || value === null) return DEFAULTS.mode;
+        var text = typeof value === 'string' ? value.trim().toLowerCase() : '';
+        if (text === '') {
+            if (typeof value === 'string') return DEFAULTS.mode;
+        } else if (text === 'auto' || text === 'notify' || text === 'off') {
+            return /** @type {'auto'|'notify'|'off'} */ (text);
+        }
+        var shown = safe(function () { return String(value); }, '[unprintable]');
+        if (!warnedInvalidMode[shown]) {
+            warnedInvalidMode[shown] = true;
+            safe(function () {
+                console.warn(LOG, 'mode "' + shown + '" is not one of auto / notify / off — ' +
+                    "falling back to 'notify' (a mistyped mode must never enable automatic reloads).");
+            });
+        }
+        return 'notify';
     }
 
     /**
@@ -2376,6 +2468,62 @@
     }
 
     /**
+     * Schemes whose "URL" IS the resource (2.4.9). Appending `?v=` to a data:
+     * script makes the query part of the script body — a `data:` script whose
+     * text happened to contain an adopter's pattern came out as
+     * `...;?v=1.2.3` and threw a SyntaxError in the page. blob: URLs are
+     * opaque handles, javascript: is code, about: is nothing. None of them can
+     * be stale in an HTTP cache, so there is nothing to bust.
+     * @type {RegExp}
+     */
+    var UNVERSIONABLE_SCHEME = /^(?:data|blob|javascript|about):/i;
+
+    /** @param {string} url @returns {boolean} */
+    function isUnversionableUrl(url) {
+        return UNVERSIONABLE_SCHEME.test(url);
+    }
+
+    /**
+     * Strip what the URL parser strips (2.4.9): leading and trailing C0
+     * controls and spaces, and ASCII tab/newline anywhere. `'/web/x.js '`
+     * used to be matched and stamped as written, so the browser received
+     * `x.js%20?v=1` — a 404 for a file that exists.
+     * @param {string} url
+     * @returns {string}
+     */
+    function trimUrlValue(url) {
+        return url.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '').replace(/[\t\n\r]/g, '');
+    }
+
+    /**
+     * The string assetPatterns are matched against (2.4.9): the RESOLVED URL's
+     * pathname + search. Resolving against the document base is what lets
+     * `s.src = 'MyPlugin/rel.js'` under /web/ match the same `/MyPlugin/`
+     * pattern `/web/MyPlugin/rel.js` matches, and taking only path+query is
+     * what keeps a pattern from matching inside a fragment (never sent to the
+     * server) or against the host name (a folder pattern "jellyfin" must not
+     * version every asset on jellyfin.example.com). Without a URL parser, or
+     * for a string it cannot resolve, the raw string minus its fragment is
+     * used — the pre-2.4.9 behaviour.
+     * @param {string} url Already trimmed.
+     * @returns {string}
+     */
+    function assetMatchTarget(url) {
+        var hashAt = url.indexOf('#');
+        var base = hashAt === -1 ? url : url.slice(0, hashAt);
+        if (typeof URL === 'function') {
+            var resolved = safe(function () {
+                return new URL(base, safe(function () { return document.baseURI; }, '') || location.href);
+            }, null);
+            if (resolved && typeof resolved.href === 'string') {
+                // `base` carries no fragment, so neither does the href.
+                return resolved.href;
+            }
+        }
+        return base;
+    }
+
+    /**
      * The PAGE-LEVEL versioning decision, used by the single interceptor (and
      * the manager-level versionedUrl API):
      *   • URLs already carrying a version-ish query parameter (see
@@ -2397,7 +2545,6 @@
      */
     function versionUrlForPage(url) {
         if (typeof url !== 'string' || !url) return url;
-        if (hasVersionParam(url)) return url;
         // HANDED OFF: this copy owns no instances any more, but elements it
         // handed out BEFORE the handoff still carry its per-element accessors,
         // and those must not silently stop versioning. Ask the current manager
@@ -2406,9 +2553,16 @@
         if (handedOff && delegate) {
             return safe(function () { return delegate.versionedUrl(url); }, url);
         }
+        // Everything below decides on the TRIMMED string and, when it decides
+        // to version, stamps that; a URL it leaves alone goes back exactly as
+        // it was assigned (2.4.9).
+        var trimmed = trimUrlValue(url);
+        if (!trimmed || isUnversionableUrl(trimmed)) return url;
+        if (hasVersionParam(trimmed)) return url;
+        var target = assetMatchTarget(trimmed);
         var matches = null;
         for (var i = 0; i < registry.length; i++) {
-            if (registry[i].matchesAssetPattern(url)) {
+            if (registry[i].matchesAssetPattern(target)) {
                 if (!matches) matches = [];
                 matches.push(registry[i]);
             }
@@ -2433,7 +2587,7 @@
         }
 
         if (!version) return url;
-        return appendVersion(url, version);
+        return appendVersion(trimmed, version);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2495,9 +2649,12 @@
         // Without a native accessor pair there is nothing to delegate to.
         if (!native || typeof native.get !== 'function' || typeof native.set !== 'function') return;
 
+        // Non-enumerable (2.4.9), like the native accessor it shadows: an
+        // own enumerable `src` showed up in Object.keys(script) / for-in and
+        // in spread copies, where nothing native ever put one.
         Object.defineProperty(el, prop, {
             configurable: true,
-            enumerable: true,
+            enumerable: false,
             get: function () { return native.get.call(this); },
             set: function (value) {
                 var rewritten = safe(function () {
@@ -2875,16 +3032,37 @@
      * being typed into) still cover the ordinary case.
      * @returns {boolean}
      */
-    function hasTypedPassword() {
+    function hasTypedPassword(ignoreAutofilled) {
         var fields = document.querySelectorAll('input[type="password"]');
+        var typedElsewhere = null;
         for (var i = 0; i < fields.length; i++) {
             var value = fields[i].value;
             if (typeof value === 'string' && value.length > 0
                 && !isDisabledFormControl(fields[i]) && isRenderedElement(fields[i])) {
+                // AUTOFILLED, NEVER TYPED (2.4.9), on an empty route only: a
+                // saved password the browser put there comes back after the
+                // reload by the same mechanism. It is only ignored while NO
+                // text field on the page holds typed work — the promise that
+                // anything the user typed refuses is kept whole.
+                if (ignoreAutofilled === true && isAutofilledField(fields[i])) {
+                    if (typedElsewhere === null) typedElsewhere = hasTypedTextField();
+                    if (!typedElsewhere) continue;
+                }
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Is Jellyfin's own screensaver covering the page? `screensaver-noScroll`
+     * goes on <body> only after the application's OWN idle timeout expired
+     * with nothing playing — the application concluding the user is away.
+     * @returns {boolean}
+     */
+    function screensaverActive() {
+        return !!(document.body && document.body.classList &&
+            document.body.classList.contains('screensaver-noScroll'));
     }
 
     /**
@@ -2900,9 +3078,74 @@
     function isDisabledFormControl(element) {
         try {
             if (element.disabled === true) return true;
-            return typeof element.matches === 'function' && element.matches(':disabled');
+            if (typeof element.matches !== 'function') return false;
+            try {
+                return element.matches(':disabled');
+            } catch (_) {
+                // An engine without `:disabled` (2.4.9): the attribute-based
+                // equivalent of the ancestor-fieldset case, so the probe
+                // degrades to the conservative check instead of throwing.
+                return typeof element.closest === 'function' &&
+                    !!element.closest('fieldset[disabled]');
+            }
         } catch (_) {
             return false;
+        }
+    }
+
+    /**
+     * Was this field's value put there by the BROWSER's autofill, and never
+     * touched by the user since (2.4.9)? Chrome, Firefox and Safari all clear
+     * the autofill state the moment the user edits the field, so a match here
+     * means "credentials the browser will fill in again after a reload", not
+     * work in progress. Feature-detected inside try: an engine without the
+     * pseudo-class throws, and a throw reads as "typed" — the safe answer.
+     * @param {Element} element
+     * @returns {boolean}
+     */
+    function isAutofilledField(element) {
+        if (!element || typeof element.matches !== 'function') return false;
+        try { if (element.matches(':autofill')) return true; } catch (_) { /* unsupported */ }
+        try { if (element.matches(':-webkit-autofill')) return true; } catch (_) { /* unsupported */ }
+        return false;
+    }
+
+    /**
+     * Does any rendered, interactive TEXT field on the page hold a value the
+     * user typed (as opposed to one the browser autofilled)? The guard that
+     * keeps the autofill relaxation honest: an autofilled password next to a
+     * username the user typed over is still work in progress.
+     * @returns {boolean}
+     */
+    function hasTypedTextField() {
+        var fields = document.querySelectorAll('input, textarea');
+        for (var i = 0; i < fields.length; i++) {
+            var field = /** @type {HTMLInputElement} */ (fields[i]);
+            var type = String(field.type || 'text').toLowerCase();
+            if (/^(hidden|checkbox|radio|submit|button|reset|image|file|range|color)$/.test(type)) continue;
+            var value = field.value;
+            if (typeof value === 'string' && value.length > 0 && !isAutofilledField(field)
+                && !isDisabledFormControl(field) && isRenderedElement(field)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * querySelectorAll with a fallback selector for engines that throw on the
+     * primary one (2.4.9). A SyntaxError from a selector-list feature the
+     * engine lacks (the `i` attribute flag) used to surface as a permanent
+     * 'probe_failed' refusal.
+     * @param {string} primary
+     * @param {string} fallback
+     * @returns {NodeListOf<Element>|Element[]}
+     */
+    function querySelectorAllCompat(primary, fallback) {
+        try {
+            return document.querySelectorAll(primary);
+        } catch (_) {
+            return document.querySelectorAll(fallback);
         }
     }
 
@@ -2920,7 +3163,15 @@
             // Node.isConnected is absent in some older embedded engines. Its
             // absence is unknown, not evidence that a live element is detached.
             if (typeof element.isConnected === 'boolean' && !element.isConnected) return false;
-            if (element.closest('[hidden], [aria-hidden="true" i], [inert]')) return false;
+            var hiddenAncestor;
+            try {
+                hiddenAncestor = element.closest('[hidden], [aria-hidden="true" i], [inert]');
+            } catch (_) {
+                // No `i` attribute flag on this engine (2.4.9): the two
+                // spellings that matter, spelled out.
+                hiddenAncestor = element.closest('[hidden], [aria-hidden="true"], [aria-hidden="TRUE"], [inert]');
+            }
+            if (hiddenAncestor) return false;
             var style = window.getComputedStyle(element);
             if (style && (style.display === 'none'
                 || style.visibility === 'hidden'
@@ -2979,7 +3230,16 @@
             if (el.isContentEditable) return String(el.textContent || '') === '';
             if (!/^(INPUT|TEXTAREA)$/.test(el.tagName || '')) return false;
             var value = /** @type {HTMLInputElement} */ (el).value;
-            return typeof value === 'string' && value.length === 0;
+            if (typeof value !== 'string') return false;
+            if (value.length === 0) return true;
+            // AUTOFILLED, NEVER TYPED (2.4.9). Jellyfin focuses the username
+            // field and the browser fills the saved credentials into it, so a
+            // user with a saved login never saw the 2.4.1 relaxation: the
+            // field was "non-empty" for the life of the tab. A value the
+            // browser put there and the user has not edited is not work in
+            // progress — it will be put there again after the reload. Any
+            // typed text anywhere on the page still counts as work.
+            return isAutofilledField(el) && !hasTypedTextField();
         } catch (err) {
             return false;
         }
@@ -3109,7 +3369,8 @@
             var hash = String(location.hash || '');
             if (isPlaybackRoute(hash)) return 'playback_route';
 
-            if (document.fullscreenElement || document.pictureInPictureElement) return 'fullscreen_media';
+            if (document.fullscreenElement || document.webkitFullscreenElement ||
+                document.pictureInPictureElement) return 'fullscreen_media';
 
             // PROOF OF ABSENCE (2.4.0). Jellyfin's own screensaver puts
             // `screensaver-noScroll` on <body> when it takes the screen, which
@@ -3130,14 +3391,17 @@
             // screensaver can be up while audio plays in the same tab),
             // 'active_editor' and 'password_entry'. Absent or not, the user's
             // typing is still in that field when they come back.
-            var screensaver = !!(document.body && document.body.classList &&
-                document.body.classList.contains('screensaver-noScroll'));
+            var screensaver = screensaverActive();
 
             // Open modal/dialog: the user is mid-task and probably mid-write.
             if (!screensaver) {
-                var dialogs = document.querySelectorAll(
+                var dialogs = querySelectorAllCompat(
                     '.dialog.opened, .actionSheet.opened, dialog[open], ' +
-                    '[role~="dialog" i], [role~="alertdialog" i], [aria-modal="true" i]'
+                    '[role~="dialog" i], [role~="alertdialog" i], [aria-modal="true" i]',
+                    // Engines without the `i` flag (2.4.9): the case-sensitive
+                    // spellings, which is what every real page uses.
+                    '.dialog.opened, .actionSheet.opened, dialog[open], ' +
+                    '[role~="dialog"], [role~="alertdialog"], [aria-modal="true"]'
                 );
                 for (var i = 0; i < dialogs.length; i++) {
                     // Jellyfin and plugins retain closed dialogs in several
@@ -3188,7 +3452,7 @@
             // A TYPED-BUT-UNFOCUSED PASSWORD (2.4.0). One refusal, never a
             // relaxation: it can only ever stop a reload the other gates were
             // about to allow. See hasTypedPassword().
-            if (hasTypedPassword()) return 'password_entry';
+            if (hasTypedPassword(isEmptyRoute(hash))) return 'password_entry';
 
             // EMPTY ROUTES (2.4.0): the login screen and the server picker hold
             // nothing the user can lose, so the idle requirement — the gate
@@ -3403,8 +3667,13 @@
                 // rolling window. A previously-written stamp in our future is
                 // what a backward wall-clock adjustment looks like; it remains
                 // a spent slot. Dropping it would grant exactly the free reload
-                // this fail-closed budget exists to prevent.
+                // this fail-closed budget exists to prevent. It is CLAMPED to
+                // now (2.4.9) rather than kept verbatim: verbatim, a stamp an
+                // hour ahead held its slot until the wall clock caught up with
+                // it — an hour plus the window — instead of for one window
+                // from the moment it was noticed.
                 if (stamp < now - BUDGET_WINDOW_MS) continue;
+                if (stamp > now) stamp = now;
                 var stampKey = String(stamp);
                 sourceCounts[stampKey] = (sourceCounts[stampKey] || 0) + 1;
                 stampValues[stampKey] = stamp;
@@ -3720,7 +3989,11 @@
                     invalidateBudgetReservation(attempt, false);
                     if (repairRetryWasConsumed && !handedOff && !reloadCommitted &&
                         !reloadRevalidationPending && pendingInstances().length > 0) {
-                        scheduleRetry();
+                        // Visibility may have flipped while the transaction was
+                        // queued (2.4.9): a hidden tab gets its ONE single shot
+                        // back, never the 1Hz ladder that would also have
+                        // cancelled the shot.
+                        scheduleGateRetry();
                     }
                     return;
                 }
@@ -4082,12 +4355,43 @@
     }
 
     /**
+     * REHEARSE a per-tab record write without leaving it behind (2.4.9): write
+     * the exact bytes the real claim would write, verify them, then put the
+     * previous value back and verify THAT. Used by the reload preflight's
+     * dry run, so a store that would refuse the real write (quota, a
+     * read-only or lying Storage) is discovered BEFORE a budget slot is spent
+     * on a navigation that could never be authorized. A restore that fails
+     * leaves the claim in place, which is the conservative direction: the
+     * records only ever make this tab REFUSE more.
+     * @param {Storage} storage
+     * @param {string} key
+     * @param {string} serialized The value the real claim would write.
+     * @returns {boolean} True only when the write AND the restore verified.
+     */
+    function rehearseTabRecordWrite(storage, key, serialized) {
+        try {
+            var previous = storage.getItem(key);
+            storage.setItem(key, serialized);
+            if (storage.getItem(key) !== serialized) return false;
+            if (previous === null) storage.removeItem(key);
+            else storage.setItem(key, previous);
+            return storage.getItem(key) === previous;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
      * Permanently record incomplete epoch coverage for one running generation.
      * The gap is a fact about observation history, not about whether the next
      * navigation succeeds, so watchdog/budget refusal never retracts it.
+     * @param {Array<Array>} gaps
+     * @param {boolean} [dryRun] (2.4.9) Validate, check capacity and rehearse
+     *   the write, but leave the set as it was. Same verdict as the real
+     *   claim would give right now.
      * @returns {boolean}
      */
-    function claimEpochGaps(gaps) {
+    function claimEpochGaps(gaps, dryRun) {
         var current = readEpochGapSet();
         if (!current.ok || !current.storage) return false;
         var next = current.records.slice();
@@ -4107,6 +4411,7 @@
         try {
             var serialized = JSON.stringify(next);
             if (serialized.length > MAX_EPOCH_GAP_STORAGE_CHARS) return false;
+            if (dryRun === true) return rehearseTabRecordWrite(current.storage, EPOCH_GAP_KEY, serialized);
             current.storage.setItem(EPOCH_GAP_KEY, serialized);
             if (current.storage.getItem(EPOCH_GAP_KEY) !== serialized) return false;
             var verified = readEpochGapSet();
@@ -4301,9 +4606,12 @@
      * evicted. The return lists only records newly added by this attempt so a
      * failed-navigation watchdog can retract exactly those.
      * @param {Object[]} instances
+     * @param {boolean} [dryRun] (2.4.9) Validate, check capacity and rehearse
+     *   the write, but leave the set as it was; `added` then lists what the
+     *   real claim WOULD add.
      * @returns {{ok:boolean,added:string[]}}
      */
-    function claimLeftBaselines(instances) {
+    function claimLeftBaselines(instances, dryRun) {
         var current = readLeftSet();
         if (!current.ok || !current.storage) return { ok: false, added: [] };
 
@@ -4326,6 +4634,10 @@
         try {
             var serialized = JSON.stringify(next);
             if (serialized.length > MAX_LEFT_STORAGE_CHARS) return { ok: false, added: [] };
+            if (dryRun === true) {
+                return rehearseTabRecordWrite(current.storage, LEFT_KEY, serialized)
+                    ? { ok: true, added: added } : { ok: false, added: [] };
+            }
             current.storage.setItem(LEFT_KEY, serialized);
             if (current.storage.getItem(LEFT_KEY) !== serialized) {
                 return { ok: false, added: [] };
@@ -4560,6 +4872,26 @@
     }
 
     /**
+     * The idle wait an INTERACTION SETTLE must honour (2.4.9): the effective
+     * window, relaxed to the settle floor by exactly the conditions
+     * blockReasonFor relaxes it for — the masked post-playback window, the
+     * empty routes (#/login, #/selectserver) and Jellyfin's screensaver. The
+     * settle path used to apply only the mask, and since a discrete
+     * interaction also cancels the 1Hz ladder that would have re-tested at
+     * the floor, one click on the login page imposed the full idleSeconds on
+     * the very route 2.4.0 relaxed.
+     * @param {Array<Object>} pending
+     * @returns {number} Milliseconds.
+     */
+    function settleIdleWindowMs(pending) {
+        if (maskedTransitionActive()) return MIN_SETTLE_MS;
+        var hash = safe(function () { return String(location.hash || ''); }, '') || '';
+        if (isEmptyRoute(hash)) return MIN_SETTLE_MS;
+        if (safe(screensaverActive, false)) return MIN_SETTLE_MS;
+        return effectiveIdleWindowMs(pending);
+    }
+
+    /**
      * Which instance IMPOSES the effective idle window — i.e. the one with the
      * largest idleSeconds among those currently wanting a reload. Exposed
      * through state() so a snapshot showing a lax instance held back by a
@@ -4635,18 +4967,22 @@
      * before it (never stacking). It is a single shot: it fires tryReload()
      * once, and only a still-blocked evaluation inside that call re-arms it.
      *
-     * @param {number} delayMs Delay, floored at HIDDEN_RETRY_MIN_MS so a
-     *   hiddenSettleSeconds: 0 adopter cannot turn a gate it keeps failing into
-     *   a busy loop in a background tab. The initial settle arm passes the
-     *   remaining grace, which is allowed to be shorter than the floor only in
-     *   the sense that it is already counted from the hide moment.
+     * @param {number} delayMs Delay, floored at HIDDEN_RETRY_MIN_MS (really,
+     *   since 2.4.9) so a hiddenSettleSeconds: 0 adopter cannot turn a gate it
+     *   keeps failing into a busy loop in a background tab.
+     * @param {boolean} [exact] Skip the floor. Set by the two arms that wait
+     *   for a DEADLINE rather than re-test a gate: the settle arm (its grace is
+     *   counted from the hide moment, and hiddenSettleSeconds: 0 means "at
+     *   once") and the engine-level refusals (budget window, in-flight
+     *   navigation), which cannot change sooner than the deadline they name.
      */
-    function armHiddenRetry(delayMs) {
+    function armHiddenRetry(delayMs, exact) {
         clearHiddenTimer();
         if (handedOff) return;
         if (hiddenRetries >= MAX_HIDDEN_RETRIES) return;
         hiddenRetries++;
         var delay = typeof delayMs === 'number' && isFinite(delayMs) ? Math.max(0, delayMs) : hiddenSettleWindowMs();
+        if (exact !== true) delay = Math.max(delay, HIDDEN_RETRY_MIN_MS);
         hiddenTimer = safe(function () {
             return setTimeout(function () {
                 hiddenTimer = null;
@@ -4661,12 +4997,20 @@
      * IF the feature is enabled. With it disabled a hidden tab holds no timer
      * at all, which is precisely the pre-2.4.0 behaviour the flag restores.
      */
-    function onHidden() {
+    function onHidden(inherited) {
         if (hiddenSince === null) hiddenSince = Date.now();
-        hiddenRetries = 0;
+        // A handoff carries the re-arm count (2.4.9): the cap is per HIDE, and
+        // a newer copy taking over a hidden page did not un-hide it.
+        if (inherited !== true) hiddenRetries = 0;
         clearHiddenTimer();
         if (!hiddenReloadEnabled()) return;
-        armHiddenRetry(Math.max(0, hiddenSince + hiddenSettleWindowMs() - Date.now()));
+        armHiddenRetry(hiddenSettleRemainingMs(), true);
+    }
+
+    /** @returns {number} How much of the hidden-settle grace is still to run. */
+    function hiddenSettleRemainingMs() {
+        var since = hiddenSince === null ? Date.now() : hiddenSince;
+        return Math.max(0, since + hiddenSettleWindowMs() - Date.now());
     }
 
     /**
@@ -4857,10 +5201,26 @@
             // ordinary wake re-tests this refusal. (Reachable only when the tab
             // was hidden while a reservation was already in flight; the gate
             // chain refuses with 'hidden' long before this on any other path.)
-            if (hiddenReloadEnabled()) armHiddenRetry(delayMs);
+            if (hiddenReloadEnabled()) armHiddenRetry(delayMs, true);
             return;
         }
         scheduleRetry(delayMs);
+    }
+
+    /**
+     * Re-arm the ONE re-evaluation a GATE refusal wants, on the timer this
+     * document's visibility allows (2.4.9): the 1Hz ladder while visible, the
+     * single shot at the hidden cadence while hidden — and while hidden, only
+     * if no shot is already ticking, so nothing is ever stacked or pushed out.
+     */
+    function scheduleGateRetry() {
+        if (document.visibilityState === 'hidden') {
+            if (hiddenTimer === null && hiddenReloadEnabled()) {
+                armHiddenRetry(Math.max(hiddenSettleWindowMs(), HIDDEN_RETRY_MIN_MS));
+            }
+            return;
+        }
+        scheduleRetry();
     }
 
     /**
@@ -4874,6 +5234,73 @@
         var left = reloadNavigationSuspectUntil - Date.now();
         if (left <= 0) return 0;
         return Math.min(left, RELOAD_NAVIGATION_SUSPECT_MS);
+    }
+
+    /**
+     * The per-tab safety records a navigation must be able to write, claimed
+     * for real (phase 3) or REHEARSED (phase 2, 2.4.9) — same verdict either
+     * way, so a refusal is known before the budget slot is appended.
+     *
+     * Before this page leaves, every non-null process epoch most recently
+     * observed at each running baseline must be durably present. Earlier
+     * onVersion writes are opportunistic; this is the transaction boundary
+     * that repairs a transient silent-noop store or fails closed before it
+     * can make that old process look fresh on a later historical return.
+     * (Recording an OBSERVED baseline epoch is a fact about history, not about
+     * this navigation, so prepareBaselineEpochCoverage runs for real in both
+     * phases; only the gap and LEFT claims are rehearsed.)
+     *
+     * LEFT is the durable proof that this tab departed each running
+     * generation. A shared page reload departs EVERY registered instance, not
+     * only those whose update triggered it, so all known baselines are
+     * pre-claimed atomically after the IDB slot commits but before navigation.
+     * This also lets endpoint responses be frozen safely throughout unload.
+     *
+     * @param {boolean} dryRun
+     * @returns {{ok:boolean, reason:string|null, added:string[]}} `reason` is
+     *   the lastBlockReason to record on refusal; `added` lists the LEFT
+     *   records newly written (or, in a dry run, those the real claim would
+     *   write).
+     */
+    function claimReloadSafetyRecords(dryRun) {
+        var epochHistoryReliable = true;
+        var epochGaps = [];
+        for (var eh = 0; eh < registry.length; eh++) {
+            var coverage = registry[eh].prepareBaselineEpochCoverage();
+            if (!coverage.ok) {
+                epochHistoryReliable = false;
+                break;
+            }
+            if (coverage.gap) epochGaps.push(coverage.gap);
+        }
+        if (epochHistoryReliable && !claimEpochGaps(epochGaps, dryRun)) epochHistoryReliable = false;
+        if (!epochHistoryReliable) {
+            if (!warnedEpochHistoryRefusal) {
+                warnedEpochHistoryRefusal = true;
+                safe(function () {
+                    console.warn(LOG, 'reload refused because a running baseline process epoch ' +
+                        'could not be durably verified in strict per-tab storage. The pending update ' +
+                        'is kept; storage recovery can safely repair the epoch before a later retry. ' +
+                        '(Warned once.)');
+                });
+            }
+            return { ok: false, reason: 'epoch_history', added: [] };
+        }
+
+        var leftClaim = claimLeftBaselines(registry, dryRun);
+        if (!leftClaim.ok) {
+            if (!warnedSafetyHistoryRefusal) {
+                warnedSafetyHistoryRefusal = true;
+                safe(function () {
+                    console.warn(LOG, 'reload refused because the strict per-tab left-version ' +
+                        'history is unavailable, corrupt, full or not verifiably writable. The ' +
+                        'pending update is kept, but no navigation is safe without durable cycle ' +
+                        'evidence. (Warned once.)');
+                });
+            }
+            return { ok: false, reason: 'safety_history', added: [] };
+        }
+        return { ok: true, reason: null, added: leftClaim.added };
     }
 
     /**
@@ -5072,10 +5499,24 @@
             //     take its reload while hidden, instead of holding the update
             //     until the user comes back and then reloading in their face.
             //     One timer, never stacked, capped at MAX_HIDDEN_RETRIES.
+            //   (2.4.9) ...unless NOTHING is ticking. The shot the settle
+            //     verdict assumes can be gone: a discrete interaction, the
+            //     engine standing down and re-arming, a repair-only budget
+            //     commit, a late registration or a handoff lengthening the
+            //     grace under an armed shot all used to leave this branch
+            //     re-arming nothing — and with polling suspended while
+            //     hidden, the update was stranded until the tab was shown.
+            //     Re-arm for the REMAINING grace (never a fresh one, never
+            //     stacked), still capped at MAX_HIDDEN_RETRIES.
             if (document.visibilityState === 'hidden') {
-                if (reason !== 'hidden' && reason !== 'hidden_settling') {
-                    armHiddenRetry(Math.max(hiddenSettleWindowMs(), HIDDEN_RETRY_MIN_MS));
+                if (reason === 'hidden') return;
+                if (reason === 'hidden_settling') {
+                    if (hiddenTimer === null && hiddenReloadEnabled()) {
+                        armHiddenRetry(hiddenSettleRemainingMs(), true);
+                    }
+                    return;
                 }
+                armHiddenRetry(Math.max(hiddenSettleWindowMs(), HIDDEN_RETRY_MIN_MS));
                 return;
             }
             scheduleRetry();
@@ -5091,6 +5532,20 @@
         if (preCommitBudgetCheck) {
             if (!budgetReservationWithinDeadline(budgetAttempt)) {
                 deferReloadForBudget();
+                return false;
+            }
+            // DRY-RUN THE SAFETY RECORDS BEFORE THE SLOT IS SPENT (2.4.9).
+            // The epoch-gap and LEFT claims below used to run only after the
+            // transaction had committed a slot, so a tab that could never
+            // write them — a saturated LEFT set, sessionStorage that refuses
+            // writes — burned one origin-wide slot per budget window forever
+            // and starved its sibling tabs of their reloads. Rehearse the
+            // exact writes now; a rehearsal that fails is a refusal BEFORE the
+            // append, which spends nothing.
+            var rehearsal = claimReloadSafetyRecords(true);
+            if (!rehearsal.ok) {
+                lastBlockReason = rehearsal.reason;
+                scheduleEngineRetry(BUDGET_WINDOW_MS);
                 return false;
             }
             return true;
@@ -5113,61 +5568,18 @@
             return;
         }
 
-        // Before this page leaves, every non-null process epoch most recently
-        // observed at each running baseline must be durably present. Earlier
-        // onVersion writes are opportunistic; this is the transaction boundary
-        // that repairs a transient silent-noop store or fails closed before it
-        // can make that old process look fresh on a later historical return.
-        var epochHistoryReliable = true;
-        var epochGaps = [];
-        for (var eh = 0; eh < registry.length; eh++) {
-            var coverage = registry[eh].prepareBaselineEpochCoverage();
-            if (!coverage.ok) {
-                epochHistoryReliable = false;
-                break;
-            }
-            if (coverage.gap) epochGaps.push(coverage.gap);
-        }
-        if (epochHistoryReliable && !claimEpochGaps(epochGaps)) epochHistoryReliable = false;
-        if (!epochHistoryReliable) {
-            if (!warnedEpochHistoryRefusal) {
-                warnedEpochHistoryRefusal = true;
-                safe(function () {
-                    console.warn(LOG, 'reload refused because a running baseline process epoch ' +
-                        'could not be durably verified in strict per-tab storage. The pending update ' +
-                        'is kept; storage recovery can safely repair the epoch before a later retry. ' +
-                        '(Warned once.)');
-                });
-            }
-            lastBlockReason = 'epoch_history';
-            scheduleEngineRetry(BUDGET_WINDOW_MS);
-            return;
-        }
-
-        // LEFT is the durable proof that this tab departed each running
-        // generation. A shared page reload departs EVERY registered instance,
-        // not only those whose update triggered it, so atomically pre-claim all
-        // known baselines after the IDB slot commits but before navigation. This
-        // also lets endpoint responses be frozen safely throughout unload.
-        var leftClaim = claimLeftBaselines(registry);
-        if (!leftClaim.ok) {
-            if (!warnedSafetyHistoryRefusal) {
-                warnedSafetyHistoryRefusal = true;
-                safe(function () {
-                    console.warn(LOG, 'reload refused because the strict per-tab left-version ' +
-                        'history is unavailable, corrupt, full or not verifiably writable. The ' +
-                        'pending update is kept, but no navigation is safe without durable cycle ' +
-                        'evidence. (Warned once.)');
-                });
-            }
-            lastBlockReason = 'safety_history';
+        // The slot is spent; this is the ONE place the per-tab safety records
+        // are written for real (the pre-put pass above rehearsed them).
+        var claims = claimReloadSafetyRecords(false);
+        if (!claims.ok) {
+            lastBlockReason = claims.reason;
             scheduleEngineRetry(BUDGET_WINDOW_MS);
             return;
         }
 
         warnedBudgetRefusal = false;
-        for (var c = 0; c < leftClaim.added.length; c++) {
-            reloadRecordsWritten.push([LEFT_KEY, leftClaim.added[c]]);
+        for (var c = 0; c < claims.added.length; c++) {
+            reloadRecordsWritten.push([LEFT_KEY, claims.added[c]]);
         }
 
         safe(function () {
@@ -5437,8 +5849,26 @@
      * but deferred by one task, so the host page's own handler for this event
      * has already run (and, e.g., opened its dialog) before we probe safety.
      */
-    function onDiscreteInteraction() {
+    function onDiscreteInteraction(event) {
         if (handedOff) return;
+        // A HIDDEN DOCUMENT (2.4.9). A user cannot click or type into a tab
+        // they cannot see, so a discrete event arriving here is either
+        // script-dispatched — `element.click()`, a synthetic `change`, a
+        // plugin replaying input — or a trusted event from an exotic host
+        // that reports hidden while focused. Neither may touch the hidden
+        // path: the clearRetry() below cancelled the hidden single shot, the
+        // settle timers it armed are timers a hidden tab promises not to
+        // hold, and the next evaluation read 'hidden_settling' and re-armed
+        // nothing — the update sat stranded until the tab was shown. An
+        // untrusted event is not the user and is ignored outright; a trusted
+        // one stamps the idle clock (the gate still sees it) and leaves the
+        // one hidden timer exactly as it was. Visible tabs keep counting
+        // untrusted events as activity: over-deferring is the safe error.
+        if (document.visibilityState === 'hidden') {
+            if (!event || event.isTrusted !== true) return;
+            lastInteractionAt = Date.now();
+            return;
+        }
         lastInteractionAt = Date.now();
         // Supersede any chain an earlier interaction armed. Typing fires
         // keydown + input per character; without this every keystroke left two
@@ -5460,13 +5890,14 @@
             // could stop the masked window from ever opening.
             safe(sampleRoute);
             // Wait out the remaining idle window from THIS interaction — or,
-            // inside the masked post-playback window, only the settle floor,
-            // which is the same relaxation tryReload() applies. Without it the
-            // interaction that LEFT the player would itself impose the full
-            // idle wait the mask exists to lift.
+            // inside the masked post-playback window, on an empty route or
+            // under the screensaver, only the settle floor, which are the same
+            // relaxations blockReasonFor() applies (see settleIdleWindowMs).
+            // Without them the interaction that LEFT the player would itself
+            // impose the full idle wait the mask exists to lift, and a click
+            // on the login page the full wait 2.4.0 relaxed there.
             var remaining = Math.max(0, lastInteractionAt +
-                (maskedTransitionActive() ? MIN_SETTLE_MS : effectiveIdleWindowMs(pendingInstances())) -
-                Date.now());
+                settleIdleWindowMs(pendingInstances()) - Date.now());
             settleTimer = setTimeout(function () {
                 settleTimer = null;
                 safe(tryReload);
@@ -5690,7 +6121,12 @@
         var confirmTimer = null;
         /** @type {number} Wall-clock deadline for the live confirmation timer. */
         var confirmDueAt = 0;
-        /** @type {boolean} A handoff carried an earned confirmation not yet fired. */
+        /**
+         * A handoff carried an earned confirmation not yet fired. A hidden
+         * successor keeps it as intent (no timer) and wake() issues it as one
+         * forced confirm poll.
+         * @type {boolean}
+         */
         var confirmationPendingFromHandoff = false;
         /** @type {boolean} A discarded in-flight observation needs one replacement. */
         var observationPendingFromHandoff = false;
@@ -5886,7 +6322,10 @@
 
         /**
          * Does this URL belong to an asset THIS instance is supposed to version?
-         * @param {string} url
+         * @param {string} url The match target — since 2.4.9 the resolved
+         *   URL's path+query as produced by assetMatchTarget(), never a raw
+         *   assignment (callers resolve first so every instance is asked the
+         *   same question about the same string).
          * @returns {boolean}
          */
         function matchesAssetPattern(url) {
@@ -5922,9 +6361,11 @@
             return safe(function () {
                 if (typeof url !== 'string' || !url) return url;
                 if (!baselineVersion) return url;
-                if (!force && !matchesAssetPattern(url)) return url;
-                if (hasVersionParam(url)) return url;
-                return appendVersion(url, baselineVersion);
+                var trimmed = trimUrlValue(url);
+                if (!trimmed || isUnversionableUrl(trimmed)) return url;
+                if (!force && !matchesAssetPattern(assetMatchTarget(trimmed))) return url;
+                if (hasVersionParam(trimmed)) return url;
+                return appendVersion(trimmed, baselineVersion);
             }, url);
         }
 
@@ -6220,6 +6661,11 @@
             }
             confirmSpentThisCycle = true;
             confirmDueAt = Date.now() + VERSION_CONFIRM_MS;
+            // This timer is armed even while hidden: a sighting that lands in
+            // a hidden tab (an in-flight fetch resolving after the hide, a
+            // checkNow()) is the "one opportunistic attempt" the hidden-tab
+            // contract allows, and its confirmation is what lets the hidden
+            // reload path proceed without waiting for the tab to be shown.
             confirmTimer = setTimeout(function () {
                 confirmTimer = null;
                 confirmDueAt = 0;
@@ -6607,6 +7053,7 @@
 
             if (bootRecoveryRefused) {
                 inst.updatePending = false;
+                releaseEngineIfIdle();
                 return;
             }
 
@@ -6634,6 +7081,7 @@
                     });
                 }
                 inst.updatePending = false;
+                releaseEngineIfIdle();
                 return;
             }
 
@@ -6825,11 +7273,16 @@
                 return;
             }
             // Hidden handoffs intentionally did not recreate their timer. The
-            // wake poll below is the carried confirmation observation.
+            // wake poll below IS the carried confirmation observation, so it
+            // is issued as one (2.4.9; it used to be a plain poll):
+            // forced (the ordinary poll's spacing floor would otherwise skip
+            // it when the hide was brief) and marked isConfirm (so it neither
+            // opens a new cycle nor spends another confirmation).
+            var carriedConfirmation = confirmationPendingFromHandoff === true;
             confirmationPendingFromHandoff = false;
             confirmDueAt = 0;
             safe(startPolling);
-            safe(function () { poll(); });
+            safe(function () { poll(carriedConfirmation, carriedConfirmation); });
         }
 
         // ── Bootstrap mode: loading this instance's own entry files ──────────
@@ -7021,17 +7474,18 @@
         /**
          * The one version fetch that gates this instance's entries.
          *
-         * mode 'off' disables polling and reloads, but bootstrap mode still needs
-         * a version to build URLs with, so in that combination we do a single
-         * direct fetch instead of going through poll() (which returns early when
-         * off).
+         * mode 'off' disables polling and reloads, but bootstrap (and classic
+         * URL versioning) still needs a version to build URLs with, so in that
+         * combination poll() is asked for the ONE resolution 'off' is entitled
+         * to (2.4.8's resolveWhileOff). Since 2.4.9 that goes through the same
+         * single-flight as every other fetch, so a checkNow() during startup
+         * joins the request already on the wire instead of issuing a second
+         * one — before, the 'off' first attempt bypassed poll() entirely.
          * @returns {Promise<void>}
          */
         function firstVersionAttempt() {
             if (cfg.mode !== 'off') return poll(true);
-            return fetchVersion().then(function (v) {
-                safe(function () { onVersion(v); });
-            }, function () { /* handled by the caller's fallback */ });
+            return poll(true, false, true);
         }
 
         /** Arm this instance's poll loop, unless the caller disabled it. */
@@ -7050,6 +7504,19 @@
          * @returns {Promise<void>}
          */
         function bootstrapEntries() {
+            // A SEEDED BASELINE (2.4.9). `bootVersion` is the identity of the
+            // build that served this document, which is exactly the version
+            // the entries should load at — there is nothing to wait for. The
+            // first fetch still goes out (it is what detects the next
+            // release, and a seed that disagrees with the endpoint is
+            // reconciled by onVersion as before); the entries simply do not
+            // sit behind it. Before, they waited out entryTimeoutMs, and the
+            // timer then warned "loading UNVERSIONED" while loadEntries
+            // stamped the seed anyway.
+            if (baselineVersion) {
+                safe(function () { return firstVersionAttempt(); });
+                return proceed();
+            }
             // Tracked on the closure (not a local) so deactivate() can cancel
             // it: a handoff in the window between "kit tag parsed" and "version
             // resolved" is the NORMAL case, and a retired closure firing this
@@ -7615,10 +8082,16 @@
         safe(function () {
             var all = window.JellyfinRefreshKitConfigs;
             if (!all || typeof all !== 'object') return;
-            var entry = all[name];
+            // OWN properties only (2.4.9): `all["__proto__"]` on a plain
+            // object literal is Object.prototype, and `all["constructor"]` a
+            // function — neither is an adopter's entry.
+            var own = function (key) {
+                return Object.prototype.hasOwnProperty.call(all, key) ? all[key] : undefined;
+            };
+            var entry = own(name);
             var usedKey = name;
             if (!(entry && typeof entry === 'object') && name !== baseName) {
-                entry = all[baseName];
+                entry = own(baseName);
                 usedKey = baseName;
             }
             if (!(entry && typeof entry === 'object')) return;
@@ -7947,6 +8420,22 @@
                 warnedMediaStarvation: warnedMediaStarvation,
                 mediaBlockSince: mediaBlockSince,
                 mediaBlockSignature: mediaBlockSignature,
+                // (2.4.9) The srcObject identity map the signature above was
+                // computed with: without it the new manager mints new ids for
+                // the same streams, the fingerprint changes, and the parked-
+                // media starvation clock restarts at the handoff.
+                mediaObjectSourceIds: mediaObjectSourceIds,
+                nextMediaObjectSourceId: nextMediaObjectSourceId,
+                // (2.4.9) The masked post-playback window and the route
+                // samples that open it, so a handoff landing in the window
+                // neither loses the relaxation nor re-opens it later from a
+                // stale "previous route was video" reading.
+                maskedTransitionUntil: maskedTransitionUntil,
+                lastSeenHash: lastSeenHash,
+                lastSeenHashAt: lastSeenHashAt,
+                // (2.4.9) Hidden re-arms already spent this hide: the cap is
+                // per hide, and the handoff did not un-hide the tab.
+                hiddenRetries: hiddenRetries,
                 // THE HIDDEN-SETTLE CLOCK (2.4.0). A tab can be handed over
                 // while hidden (a plugin injecting a newer kit copy from a
                 // background tab's poll). Without this the new manager would
@@ -8099,6 +8588,30 @@
         warnedMediaStarvation = s.warnedMediaStarvation === true;
         if (typeof s.mediaBlockSince === 'number') mediaBlockSince = s.mediaBlockSince;
         if (typeof s.mediaBlockSignature === 'string') mediaBlockSignature = s.mediaBlockSignature;
+        // Pre-2.4.9 copies send none of the following; absent means "start
+        // fresh", which is exactly what those copies' successors used to do.
+        if (mediaObjectSourceIds && typeof WeakMap === 'function' &&
+            s.mediaObjectSourceIds instanceof WeakMap) {
+            mediaObjectSourceIds = s.mediaObjectSourceIds;
+            if (typeof s.nextMediaObjectSourceId === 'number' && isFinite(s.nextMediaObjectSourceId) &&
+                s.nextMediaObjectSourceId > nextMediaObjectSourceId) {
+                nextMediaObjectSourceId = s.nextMediaObjectSourceId;
+            }
+        }
+        if (typeof s.maskedTransitionUntil === 'number' && isFinite(s.maskedTransitionUntil) &&
+            s.maskedTransitionUntil > 0) {
+            // maskedTransitionRemainingMs() re-validates it against the clock
+            // on first use, so a stale or rolled-back value cannot be banked.
+            maskedTransitionUntil = s.maskedTransitionUntil;
+        }
+        if (typeof s.lastSeenHash === 'string' && typeof s.lastSeenHashAt === 'number' &&
+            isFinite(s.lastSeenHashAt)) {
+            lastSeenHash = s.lastSeenHash;
+            lastSeenHashAt = s.lastSeenHashAt;
+        }
+        if (typeof s.hiddenRetries === 'number' && isFinite(s.hiddenRetries) && s.hiddenRetries > 0) {
+            hiddenRetries = Math.min(MAX_HIDDEN_RETRIES, Math.floor(s.hiddenRetries));
+        }
         // The hidden-settle clock travels: the user left when they left, not
         // when this copy took the page over. The boot section arms the timer.
         if (typeof s.hiddenSince === 'number' && isFinite(s.hiddenSince)) hiddenSince = s.hiddenSince;
@@ -8404,7 +8917,10 @@
                 var out = f ? f.state() : { kitVersion: KIT_VERSION };
                 out.contractVersion = CONTRACT_VERSION;
                 out.instanceCount = registry.length;
-                out.instances = {};
+                // Prototype-less (2.4.9): an instance named "__proto__" used
+                // to vanish from the snapshot (assignment hit the prototype
+                // slot instead of creating a key).
+                out.instances = Object.create(null);
                 for (var i = 0; i < registry.length; i++) {
                     out.instances[registry[i].name] = registry[i].state();
                 }
@@ -8653,6 +9169,6 @@
     // restored hiddenSince, so the grace is measured from when the user
     // actually left this tab.
     safe(function () {
-        if (document.visibilityState === 'hidden') onHidden();
+        if (document.visibilityState === 'hidden') onHidden(handoffTransfer ? true : false);
     });
 })();

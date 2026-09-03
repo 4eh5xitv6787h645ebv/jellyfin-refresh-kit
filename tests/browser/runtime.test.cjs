@@ -417,7 +417,7 @@ async function waitForEpochFetches(page, count) {
 }
 
 function runtimeAtVersion(version) {
-  const marker = "var KIT_VERSION = '2.4.8';";
+  const marker = "var KIT_VERSION = '2.4.9';";
   assert.equal(runtime.split(marker).length, 2, 'runtime must contain one current KIT_VERSION marker');
   return runtime.replace(marker, `var KIT_VERSION = '${version}';`);
 }
@@ -1099,7 +1099,7 @@ test('an unresolved tombstone survives a failed-reload watchdog and newest-manag
   )));
 });
 
-test('epoch-gap storage stays strict and saturating after a committed budget slot', async (t) => {
+test('epoch-gap storage stays strict and saturating and refuses before the budget slot is appended', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
   const full = Array.from({ length: 128 }, (_, index) => [`Gap${index}`, `G${index}`]);
@@ -1203,16 +1203,13 @@ test('epoch-gap storage stays strict and saturating after a committed budget slo
     if (reachedPreflight) assert.equal(outcome.state.lastBlockReason, 'epoch_history');
     assert.equal(outcome.state.authorizedEpoch, null);
     const ledger = await readBudgetLedger(page);
-    if (reachedPreflight) {
-      assert.equal(outcome.sessionBudget.length, 1,
-        'a post-commit epoch refusal conservatively leaves its reservation spent');
-      assert.deepEqual(outcome.localBudget, outcome.sessionBudget);
-      assert.deepEqual(ledger, outcome.sessionBudget);
-    } else {
-      assert.equal(outcome.sessionBudget, null);
-      assert.equal(outcome.localBudget, null);
-      assert.deepEqual(ledger, []);
-    }
+    // 2.4.9: the gap claim is rehearsed in the pre-put pass, so a store that
+    // cannot take it refuses BEFORE the append and the slot is never spent —
+    // the same "spends nothing" outcome every other pre-append refusal has.
+    assert.equal(outcome.sessionBudget, null,
+      `${scenario.name}: an epoch-history refusal spends no budget slot`);
+    assert.equal(outcome.localBudget, null);
+    assert.deepEqual(ledger, []);
     if (scenario.behavior === 'full') {
       assert.deepEqual(await page.evaluate((keys) => (
         JSON.parse(sessionStorage.getItem(keys.gaps))
@@ -1222,7 +1219,7 @@ test('epoch-gap storage stays strict and saturating after a committed budget slo
   }
 });
 
-test('two gap claims fail atomically at one remaining slot after spending one budget slot', async (t) => {
+test('two gap claims fail atomically at one remaining slot without spending a budget slot', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
   const page = await browser.newPage();
@@ -1299,10 +1296,11 @@ test('two gap claims fail atomically at one remaining slot after spending one bu
   assert.deepEqual(outcome.gaps, existing,
     'neither of the two new gaps is partially written when only one slot remains');
   assert.equal(outcome.left, null, 'LEFT preflight is not reached');
-  assert.equal(outcome.sessionBudget.length, 1,
-    'the authoritative reservation remains spent when the post-commit gap claim fails');
-  assert.deepEqual(outcome.localBudget, outcome.sessionBudget);
-  assert.deepEqual(await readBudgetLedger(page), outcome.sessionBudget);
+  // 2.4.9: rehearsed before the append, so the refusal spends nothing.
+  assert.equal(outcome.sessionBudget, null,
+    'a gap claim that cannot fit refuses before any budget slot is appended');
+  assert.equal(outcome.localBudget, null);
+  assert.deepEqual(await readBudgetLedger(page), []);
 });
 
 test('exact epoch evidence accumulates across a finite round robin while volatile epochs never confirm', async (t) => {
@@ -1517,8 +1515,8 @@ test('newest-wins handoffs preserve candidate evidence and claimed epoch authori
     window.__retainedEpochHandle = window.JellyfinRefreshKit.get('EpochHandoff');
   });
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.9'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.9');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.10'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.get('EpochHandoff').state().updatePending === true
   ));
@@ -1582,8 +1580,8 @@ test('handoff replaces one held in-flight confirmation without waiting for pollS
     window.JellyfinRefreshKit.get('EpochHeldHandoff').state().candidateEpochEvidence
   )), [{ epoch: 'held-handoff-epoch', count: 1 }]);
 
-  await injectConfiguredRuntime(page, fastEpochRuntime(runtimeAtVersion('2.4.9')), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.9');
+  await injectConfiguredRuntime(page, fastEpochRuntime(runtimeAtVersion('2.4.10')), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.get('EpochHeldHandoff').state().updatePending === true
   ));
@@ -2212,16 +2210,12 @@ test('strict LEFT history must verify the transition before any reload attempt',
         `${scenario.name} refuses an update while history is unreadable`);
     }
     const ledger = await readBudgetLedger(page);
-    if (reachedPreflight) {
-      assert.equal(outcome.sessionBudget.length, 1,
-        `${scenario.name} leaves its committed reservation spent`);
-      assert.deepEqual(outcome.localBudget, outcome.sessionBudget);
-      assert.deepEqual(ledger, outcome.sessionBudget);
-    } else {
-      assert.equal(outcome.sessionBudget, null);
-      assert.equal(outcome.localBudget, null);
-      assert.deepEqual(ledger, []);
-    }
+    // 2.4.9: the LEFT claim is rehearsed in the pre-put pass; a store that
+    // cannot take it refuses before the append and spends no slot.
+    assert.equal(outcome.sessionBudget, null,
+      `${scenario.name}: a safety-history refusal spends no budget slot`);
+    assert.equal(outcome.localBudget, null);
+    assert.deepEqual(ledger, []);
     if (scenario.behavior === 'full') {
       const persisted = await page.evaluate((keys) => ({
         left: JSON.parse(sessionStorage.getItem(keys.left)),
@@ -2968,9 +2962,9 @@ test('newest-wins handoff invalidates the retired queued token before retrying o
       getVersion: () => Promise.resolve('B'),
     };
   });
-  await injectRuntime(page, fastBudgetRuntime(runtimeAtVersion('2.4.9'), 15_000));
+  await injectRuntime(page, fastBudgetRuntime(runtimeAtVersion('2.4.10'), 15_000));
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit.kitVersion === '2.4.9'
+    window.JellyfinRefreshKit.kitVersion === '2.4.10'
       && window.JellyfinRefreshKit.state().instanceCount === 1
       && window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === true
   ));
@@ -2982,7 +2976,7 @@ test('newest-wins handoff invalidates the retired queued token before retrying o
     reloads: window.__reloadAttempts,
     budget: JSON.parse(localStorage.getItem(keys.budget)),
   }), storageKeys), {
-    version: '2.4.9',
+    version: '2.4.10',
     instances: 1,
     reloads: 1,
     budget: [1_800_000_600_000],
@@ -3055,7 +3049,7 @@ test('a hidden tab answers a budget refusal with its one single-shot timer', asy
   assert.equal(await page.evaluate(() => document.visibilityState), 'hidden');
 });
 
-test('a reload stamp made future-relative by a backward clock adjustment remains spent', async (t) => {
+test('a reload stamp made future-relative by a backward clock adjustment remains spent for one window', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
   const page = await browser.newPage();
@@ -3079,13 +3073,17 @@ test('a reload stamp made future-relative by a backward clock adjustment remains
   }, storageKeys);
   const source = fastEpochRuntime(runtime)
     .replace('var MIN_SETTLE_MS = 1000;', 'var MIN_SETTLE_MS = 0;')
+    .replace('var RETRY_MS = 1000;', 'var RETRY_MS = 25;')
+    .replace('var BUDGET_WINDOW_MS = 60000;', 'var BUDGET_WINDOW_MS = 400;')
     .replace('location.reload();', 'window.__reloadAttempts += 1;');
+  assert.match(source, /var BUDGET_WINDOW_MS = 400;/, 'the rolling window was shortened');
   await injectRuntime(page, source);
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit?.get('BackwardClockBudget')?.state().lastBlockReason
       === 'reload_budget'
   ));
   const result = await page.evaluate((keys) => ({
+    now: Date.now(),
     reloads: window.__reloadAttempts,
     pending: window.JellyfinRefreshKit.get('BackwardClockBudget').state().updatePending,
     sessionBudget: JSON.parse(sessionStorage.getItem(keys.budget)),
@@ -3093,8 +3091,19 @@ test('a reload stamp made future-relative by a backward clock adjustment remains
   }), storageKeys);
   assert.equal(result.reloads, 0);
   assert.equal(result.pending, true);
-  assert.deepEqual(result.sessionBudget, [futureStamp]);
-  assert.deepEqual(result.localBudget, [futureStamp]);
+  // 2.4.9 (was: the verbatim future stamp): the stamp still counts as a spent
+  // slot, but it is CLAMPED to the wall clock when read, so it holds the slot
+  // for one rolling window from now rather than until the clock catches up
+  // with it (a minute here; an hour for an hour-ahead stamp).
+  assert.equal(result.sessionBudget.length, 1);
+  assert.ok(result.sessionBudget[0] <= result.now && result.sessionBudget[0] > futureStamp - 60_000,
+    `future stamp ${futureStamp} was clamped to now, got ${result.sessionBudget[0]}`);
+  assert.deepEqual(result.localBudget, result.sessionBudget);
+  assert.deepEqual(await readBudgetLedger(page), result.sessionBudget);
+  // ...and the reload goes through once that window rolls, with the wall
+  // clock still a minute short of the original stamp.
+  await page.waitForFunction(() => window.__reloadAttempts === 1, { timeout: 5000 });
+  assert.ok(await page.evaluate((stamp) => Date.now() < stamp, futureStamp));
 });
 
 test('a backward clock step cannot bank the post-playback idle relaxation', async (t) => {
@@ -4492,8 +4501,8 @@ test('retained instance handles follow chained newest-wins handoffs', async (t) 
 
   await injectConfiguredRuntime(page, runtime, attributes);
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit?.kitVersion === '2.4.8'
-      && window.JellyfinRefreshKit.get('RetainedHandoffTest')?.state().kitVersion === '2.4.8'
+    window.JellyfinRefreshKit?.kitVersion === '2.4.9'
+      && window.JellyfinRefreshKit.get('RetainedHandoffTest')?.state().kitVersion === '2.4.9'
   ));
 
   const afterHandoffs = await page.evaluate(() => {
@@ -4525,23 +4534,23 @@ test('retained instance handles follow chained newest-wins handoffs', async (t) 
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.8',
+      stateKitVersion: '2.4.9',
     },
     middle: {
       name: 'RetainedHandoffTest',
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.8',
+      stateKitVersion: '2.4.9',
     },
     current: {
       name: 'RetainedHandoffTest',
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.8',
+      stateKitVersion: '2.4.9',
     },
-    lineage: ['2.4.3', '2.4.4', '2.4.8'],
+    lineage: ['2.4.3', '2.4.4', '2.4.9'],
     handoffs: 2,
   });
   assert.equal(requestCount, 2, 'only the replacement may retry the interrupted baseline fetch');
@@ -4625,13 +4634,13 @@ test('a 2.4.6+ createElement wrapper retained before handoff delegates to the ne
 
   await injectConfiguredRuntime(page, runtime, attributes);
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit?.kitVersion === '2.4.8'
+    window.JellyfinRefreshKit?.kitVersion === '2.4.9'
       && window.JellyfinRefreshKit.state().interceptorInstalled === true
   ));
   await page.evaluate(() => { window.__retainedCreateElement = document.createElement; });
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.9'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.9');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.10'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.10');
   await injectConfiguredRuntime(page, runtimeAtVersion('2.5.0'), attributes);
   await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.5.0');
 
@@ -4678,7 +4687,7 @@ test('the exact released 2.4.2 retained wrapper stays inert after a 2.4.6 handof
   });
 
   await injectConfiguredRuntime(page, runtime, attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.8');
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.9');
 
   const observed = await page.evaluate(() => {
     const retained = window.__historicalCreateElement.call(document, 'script');
@@ -4697,7 +4706,7 @@ test('the exact released 2.4.2 retained wrapper stays inert after a 2.4.6 handof
     retained: '/captured-assets/from-retained-2.4.2.js',
     preHandoff: '/captured-assets/from-pre-handoff.js?v=CAPTURED',
     current: '/captured-assets/from-current.js?v=CAPTURED',
-    lineage: ['2.4.2', '2.4.8'],
+    lineage: ['2.4.2', '2.4.9'],
   });
 });
 
@@ -5802,4 +5811,733 @@ test('mjs top-level await may continue after the ordered load chain settles', as
   assert.deepEqual(await page.evaluate(() => window.__entryOrder), [
     'module-start', 'after', 'module-finished',
   ]);
+});
+
+// ─── 2.4.9 regressions ──────────────────────────────────────────────────────
+
+async function fakeVisibility(page, initial = 'visible') {
+  await page.evaluate((state) => {
+    window.__visibility = state;
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get() { return window.__visibility; },
+    });
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get() { return window.__visibility === 'hidden'; },
+    });
+  }, initial);
+}
+
+async function setVisibility(page, state) {
+  await page.evaluate((next) => {
+    window.__visibility = next;
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, state);
+}
+
+function reloadInterceptedRuntime(source = fastEpochRuntime()) {
+  const intercepted = source.replace('location.reload();', 'window.__reloadAttempts += 1;');
+  assert.match(intercepted, /__reloadAttempts \+= 1/, 'test runtime intercepted reload');
+  return intercepted;
+}
+
+test('a script-dispatched click into a hidden tab leaves the hidden single shot armed', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/hidden-click#/home`);
+  await fakeVisibility(page);
+  await page.evaluate(() => {
+    window.__reloadAttempts = 0;
+    window.JellyfinRefreshKitConfig = {
+      name: 'HiddenClick',
+      mode: 'auto',
+      bootVersion: 'A',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      hiddenReload: true,
+      hiddenSettleSeconds: 2,
+      getVersion: () => Promise.resolve('B'),
+    };
+  });
+  await injectRuntime(page, reloadInterceptedRuntime());
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.pendingInstances.length === 1
+  ));
+  // Hide inside the 1s settle floor, before the visible ladder can reload.
+  await setVisibility(page, 'hidden');
+  await page.evaluate(() => document.body.click());
+  const afterClick = await page.evaluate(() => ({
+    hiddenTimerArmed: window.JellyfinRefreshKit.state().shared.hiddenTimerArmed,
+    reloads: window.__reloadAttempts,
+  }));
+  assert.deepEqual(afterClick, { hiddenTimerArmed: true, reloads: 0 },
+    'an untrusted interaction in a hidden document does not cancel the settle shot');
+  // The shot takes the reload once the 2s grace has passed — with no
+  // visibility wake. Before 2.4.9 the click cancelled it, the interaction
+  // settle read hidden_settling, re-armed nothing, and the tab sat stranded.
+  await page.waitForFunction(() => window.__reloadAttempts === 1, { timeout: 8000 });
+  assert.equal(await page.evaluate(() => document.visibilityState), 'hidden');
+});
+
+test('a late registration that lengthens the hidden settle grace re-arms the single shot', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/hidden-late-registration#/home`);
+  await fakeVisibility(page);
+  await page.evaluate(() => {
+    window.__reloadAttempts = 0;
+    window.JellyfinRefreshKitConfig = {
+      name: 'HiddenLateLax',
+      mode: 'auto',
+      bootVersion: 'A',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      hiddenReload: true,
+      hiddenSettleSeconds: 0.5,
+      getVersion: () => Promise.resolve('B'),
+    };
+  });
+  await injectRuntime(page, reloadInterceptedRuntime());
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.pendingInstances.length === 1
+  ));
+  await setVisibility(page, 'hidden');
+  // A stricter adopter registers under the armed 0.5s shot: the page-level
+  // grace is now 2s, so the shot fires into hidden_settling.
+  const registered = await page.evaluate(() => {
+    const handle = window.JellyfinRefreshKit.__registerInstance({
+      name: 'HiddenLateStrict', mode: 'off', bootVersion: 'S', hiddenSettleSeconds: 2,
+    }, '2.4.9');
+    return {
+      name: handle && handle.name,
+      settleWindow: window.JellyfinRefreshKit.state().shared.hiddenSettleWindowMs,
+    };
+  });
+  assert.deepEqual(registered, { name: 'HiddenLateStrict', settleWindow: 2000 });
+  await page.waitForFunction(() => window.__reloadAttempts === 1, { timeout: 8000 });
+  assert.equal(await page.evaluate(() => document.visibilityState), 'hidden',
+    'the shot re-armed for the remaining grace took the reload while hidden');
+});
+
+test('a saturated LEFT set refuses before the budget slot is appended and starves no sibling tab', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const saturated = Array.from({ length: 128 }, (_, index) => `Other|v${index}`);
+
+  const starved = await browser.newPage();
+  await starved.goto(`${origin}/left-saturated-a#/home`);
+  await starved.evaluate(({ keys, left }) => {
+    sessionStorage.setItem(keys.left, JSON.stringify(left));
+    window.__reloadAttempts = 0;
+    window.JellyfinRefreshKitConfig = {
+      name: 'SaturatedA',
+      mode: 'auto',
+      bootVersion: 'A',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      reloadBudget: 1,
+      hiddenReload: true,
+      hiddenSettleSeconds: 0,
+      getVersion: () => Promise.resolve('B'),
+    };
+  }, { keys: storageKeys, left: saturated });
+  await injectRuntime(starved, fastBudgetRuntime());
+  // This tab is a background (hidden) tab once the sibling opens; a forced
+  // check supplies the candidate's second sighting either way.
+  await starved.evaluate(() => window.JellyfinRefreshKit.checkNow());
+  await starved.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.lastBlockReason === 'safety_history'
+  ));
+  const refused = await starved.evaluate((keys) => ({
+    reloads: window.__reloadAttempts,
+    sessionBudget: sessionStorage.getItem(keys.budget),
+    localBudget: localStorage.getItem(keys.budget),
+    left: JSON.parse(sessionStorage.getItem(keys.left)),
+  }), storageKeys);
+  assert.equal(refused.reloads, 0);
+  assert.equal(refused.sessionBudget, null, 'the pre-append refusal spent no slot');
+  assert.equal(refused.localBudget, null);
+  assert.deepEqual(refused.left, saturated, 'the rehearsal left the saturated set untouched');
+  assert.equal(await readBudgetLedger(starved), null);
+
+  // A sibling tab with its own clean history gets the origin's one slot.
+  const sibling = await browser.newPage();
+  await sibling.goto(`${origin}/left-saturated-b#/home`);
+  await sibling.evaluate(() => {
+    window.__reloadAttempts = 0;
+    window.JellyfinRefreshKitConfig = {
+      name: 'FreshB',
+      mode: 'auto',
+      bootVersion: 'A',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      reloadBudget: 1,
+      getVersion: () => Promise.resolve('B'),
+    };
+  });
+  await injectRuntime(sibling, fastBudgetRuntime());
+  await sibling.waitForFunction(() => window.__reloadAttempts === 1, { timeout: 8000 });
+  assert.equal((await readBudgetLedger(sibling)).length, 1);
+});
+
+test('a click on the login route settles at the floor rather than the full idle window', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/login-settle#/login.html?serverid=x`);
+  await page.evaluate(() => {
+    window.__reloadAttempts = 0;
+    window.JellyfinRefreshKitConfig = {
+      name: 'LoginSettle',
+      mode: 'auto',
+      bootVersion: 'A',
+      pollSeconds: 3600,
+      idleSeconds: 30,
+      getVersion: () => Promise.resolve('B'),
+    };
+  });
+  await injectRuntime(page, reloadInterceptedRuntime());
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.pendingInstances.length === 1
+  ));
+  // The interaction cancels the 1Hz ladder and arms the settle wait. Before
+  // 2.4.9 that wait was the full 30s idleSeconds; the login route relaxes the
+  // gate to the 1s floor, and the settle wait now honours the same relaxation.
+  await page.evaluate(() => document.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await page.waitForFunction(() => window.__reloadAttempts === 1, { timeout: 8000 });
+});
+
+test('mode is trimmed and lower-cased, and an unknown mode falls back to notify with one warning', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  const warnings = [];
+  page.on('console', (message) => {
+    if (['warn', 'warning'].includes(message.type()) && /mode "/.test(message.text())) {
+      warnings.push(message.text());
+    }
+  });
+  await page.goto(`${origin}/mode-normalization#/home`);
+  await injectConfiguredRuntime(page, runtime, {
+    'data-name': 'ModeUpper', 'data-mode': ' Auto ', 'data-boot-version': 'A',
+  });
+  await injectConfiguredRuntime(page, runtime, {
+    'data-name': 'ModeTypo', 'data-mode': 'bogus', 'data-boot-version': 'A',
+  });
+  await injectConfiguredRuntime(page, runtime, {
+    'data-name': 'ModeTypoAgain', 'data-mode': 'bogus', 'data-boot-version': 'A',
+  });
+  await injectConfiguredRuntime(page, runtime, {
+    'data-name': 'ModeOff', 'data-mode': 'OFF', 'data-boot-version': 'A',
+  });
+  const modes = await page.evaluate(() => ({
+    upper: window.JellyfinRefreshKit.get('ModeUpper').state().mode,
+    typo: window.JellyfinRefreshKit.get('ModeTypo').state().mode,
+    typoAgain: window.JellyfinRefreshKit.get('ModeTypoAgain').state().mode,
+    off: window.JellyfinRefreshKit.get('ModeOff').state().mode,
+  }));
+  assert.deepEqual(modes, { upper: 'auto', typo: 'notify', typoAgain: 'notify', off: 'off' });
+  assert.equal(warnings.length, 1, 'one warning per distinct invalid spelling');
+  assert.match(warnings[0], /mode "bogus"/);
+  assert.match(warnings[0], /'notify'/);
+});
+
+test('the interceptor never versions data:, blob: or javascript: URLs, strips URL whitespace, resolves relative URLs and ignores fragments', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.goto(`${origin}/web/index.html#/home`);
+  await injectConfiguredRuntime(page, runtime, {
+    'data-name': 'MyPlugin',
+    'data-mode': 'off',
+    'data-boot-version': '1.2.3',
+    'data-asset-patterns': '/MyPlugin/',
+  });
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.state().interceptorInstalled === true);
+  const observed = await page.evaluate(async () => {
+    const out = {};
+    const data = document.createElement('script');
+    data.src = "data:text/javascript,window.__dataRan='/MyPlugin/';";
+    out.dataSrc = data.getAttribute('src');
+    await new Promise((resolve) => {
+      data.onload = resolve;
+      data.onerror = resolve;
+      document.head.appendChild(data);
+    });
+    out.dataRan = window.__dataRan || null;
+
+    const api = window.JellyfinRefreshKit.get('MyPlugin');
+    const blobUrl = URL.createObjectURL(new Blob(['/* MyPlugin */'], { type: 'text/javascript' }));
+    out.blobForced = api.versionedUrl(blobUrl, true) === blobUrl;
+    out.javascriptForced = api.versionedUrl('javascript:void 0', true);
+    out.dataForced = api.versionedUrl('data:text/javascript,/MyPlugin/', true);
+    out.leadingSpaceData = api.versionedUrl('  data:text/javascript,/MyPlugin/', true);
+
+    const trailing = document.createElement('script');
+    trailing.src = '/web/MyPlugin/trail.js ';
+    out.trailing = trailing.getAttribute('src');
+    const controls = document.createElement('script');
+    controls.setAttribute('src', '\t/web/MyPlugin/ctl.js\n');
+    out.controls = controls.getAttribute('src');
+
+    const relative = document.createElement('script');
+    relative.src = 'MyPlugin/rel.js';
+    out.relative = relative.getAttribute('src');
+    out.relativeResolved = relative.src;
+    const absolute = document.createElement('script');
+    absolute.src = '/web/MyPlugin/abs.js';
+    out.absolute = absolute.getAttribute('src');
+
+    const fragmentOnly = document.createElement('script');
+    fragmentOnly.src = '/web/other.js#/MyPlugin/';
+    out.fragmentOnly = fragmentOnly.getAttribute('src');
+    const withFragment = document.createElement('script');
+    withFragment.src = '/web/MyPlugin/q.js?a=%2F#frag';
+    out.withFragment = withFragment.getAttribute('src');
+
+    const untouched = document.createElement('script');
+    untouched.src = '/web/elsewhere/x.js ';
+    out.untouched = untouched.getAttribute('src');
+
+    out.ownKeys = Object.keys(document.createElement('script'));
+    out.ownLinkKeys = Object.keys(document.createElement('link'));
+    return out;
+  });
+  assert.deepEqual(pageErrors, [], 'a versioned data: URL used to throw a SyntaxError in the page');
+  assert.equal(observed.dataSrc, "data:text/javascript,window.__dataRan='/MyPlugin/';");
+  assert.equal(observed.dataRan, '/MyPlugin/');
+  assert.equal(observed.blobForced, true);
+  assert.equal(observed.javascriptForced, 'javascript:void 0');
+  assert.equal(observed.dataForced, 'data:text/javascript,/MyPlugin/');
+  assert.equal(observed.leadingSpaceData, '  data:text/javascript,/MyPlugin/');
+  assert.equal(observed.trailing, '/web/MyPlugin/trail.js?v=1.2.3');
+  assert.equal(observed.controls, '/web/MyPlugin/ctl.js?v=1.2.3');
+  assert.equal(observed.relative, 'MyPlugin/rel.js?v=1.2.3');
+  assert.equal(observed.relativeResolved, `${origin}/web/MyPlugin/rel.js?v=1.2.3`);
+  assert.equal(observed.absolute, '/web/MyPlugin/abs.js?v=1.2.3');
+  assert.equal(observed.fragmentOnly, '/web/other.js#/MyPlugin/');
+  assert.equal(observed.withFragment, '/web/MyPlugin/q.js?a=%2F&v=1.2.3#frag');
+  assert.equal(observed.untouched, '/web/elsewhere/x.js ', 'a URL left alone goes back as assigned');
+  assert.deepEqual(observed.ownKeys, [], 'the src accessor is not enumerable');
+  assert.deepEqual(observed.ownLinkKeys, [], 'the href accessor is not enumerable');
+});
+
+test('a trailing space in versionUrl does not break the version endpoint', async (t) => {
+  const requests = [];
+  const origin = await startServer(t, (req, res) => {
+    const url = new URL(req.url, 'http://runtime.test');
+    requests.push(url.pathname);
+    if (url.pathname === '/version') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ version: '1.2.3' }));
+      return;
+    }
+    serveHtml(res);
+  });
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/version-trim#/home`);
+  await injectConfiguredRuntime(page, runtime, {
+    'data-name': 'TrailingVersionUrl',
+    'data-version-url': `${origin}/version `,
+    'data-version-json-field': 'version',
+    'data-mode': 'notify',
+  });
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit?.get('TrailingVersionUrl')?.version === '1.2.3'
+  ));
+  assert.ok(requests.includes('/version'), `requests seen: ${JSON.stringify(requests)}`);
+  assert.ok(!requests.some((pathName) => /%20/.test(pathName)), 'no request carried the space');
+});
+
+test('a sighting that lands while hidden still earns its confirmation fetch', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/hidden-confirmation#/home`);
+  await fakeVisibility(page);
+  await page.evaluate(() => {
+    window.__fetchCalls = 0;
+    window.__releaseFirst = null;
+    window.fetch = () => {
+      window.__fetchCalls += 1;
+      if (window.__fetchCalls === 1) {
+        return new Promise((resolve) => {
+          window.__releaseFirst = () => resolve(new Response(JSON.stringify({ version: 'B' }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          }));
+        });
+      }
+      return Promise.resolve(new Response(JSON.stringify({ version: 'B' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }));
+    };
+    window.JellyfinRefreshKitConfig = {
+      name: 'HiddenConfirm',
+      mode: 'auto',
+      bootVersion: 'A',
+      versionUrl: '/version',
+      versionJsonField: 'version',
+      pollSeconds: 3600,
+      idleSeconds: 300,
+    };
+  });
+  await injectRuntime(page, fastEpochRuntime());
+  await page.waitForFunction(() => window.__fetchCalls === 1 && typeof window.__releaseFirst === 'function');
+  await setVisibility(page, 'hidden');
+  await page.evaluate(() => window.__releaseFirst());
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.get('HiddenConfirm').state().candidateVersion === 'B'
+  ));
+  // The confirmation is the one opportunistic attempt a hidden tab may make:
+  // without it a tab that first sees the update while hidden could never take
+  // the hidden reload path (2.4.0) until it was shown again.
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.get('HiddenConfirm').state().updatePending === true
+  ));
+  assert.equal(await page.evaluate(() => document.visibilityState), 'hidden');
+  assert.equal(await page.evaluate(() => window.__fetchCalls), 2,
+    'exactly one confirmation request was issued while hidden');
+});
+
+test('a mode off instance makes one startup resolution that checkNow() joins', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/off-single-flight#/home`);
+  await page.evaluate(() => {
+    window.__fetchCalls = 0;
+    window.__releaseFirst = null;
+    window.fetch = () => {
+      window.__fetchCalls += 1;
+      return new Promise((resolve) => {
+        window.__releaseFirst = () => resolve(new Response(JSON.stringify({ version: 'A' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        }));
+      });
+    };
+    window.JellyfinRefreshKitConfig = {
+      name: 'OffSingleFlight',
+      mode: 'off',
+      versionUrl: '/version',
+      versionJsonField: 'version',
+    };
+  });
+  await injectRuntime(page);
+  await page.waitForFunction(() => window.__fetchCalls === 1 && typeof window.__releaseFirst === 'function');
+  const joined = await page.evaluate(async () => {
+    const check = window.JellyfinRefreshKit.get('OffSingleFlight').checkNow();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const during = window.__fetchCalls;
+    window.__releaseFirst();
+    await check;
+    return { during, after: window.__fetchCalls, version: window.JellyfinRefreshKit.get('OffSingleFlight').version };
+  });
+  assert.deepEqual(joined, { during: 1, after: 1, version: 'A' },
+    'checkNow() during the startup fetch joins it instead of issuing a second request');
+});
+
+test('a bootVersion-seeded bootstrap loads its entries at the seed immediately', async (t) => {
+  const requests = [];
+  const origin = await startServer(t, (req, res) => {
+    const url = new URL(req.url, 'http://runtime.test');
+    requests.push(req.url);
+    if (url.pathname === '/deadversion') return; // never answers
+    if (url.pathname.endsWith('.js')) {
+      res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-store' });
+      res.end('window.__loaded = (window.__loaded || []).concat([' + JSON.stringify(req.url) + ']);');
+      return;
+    }
+    serveHtml(res);
+  });
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  const logs = [];
+  page.on('console', (message) => logs.push(message.text()));
+  await page.goto(`${origin}/web/index.html#/home`);
+  await page.evaluate((base) => {
+    window.JellyfinRefreshKitConfig = {
+      name: 'Seeded',
+      mode: 'notify',
+      bootVersion: 'boot-777',
+      versionUrl: `${base}/deadversion`,
+      versionJsonField: 'version',
+      entryScripts: ['/web/Seeded/injector.js'],
+      entryTimeoutMs: 5000,
+    };
+  }, origin);
+  await injectRuntime(page);
+  // Well inside entryTimeoutMs: the seed IS the version, nothing is waited for.
+  await page.waitForFunction(() => Array.isArray(window.__loaded) && window.__loaded.length === 1, { timeout: 2000 });
+  const state = await page.evaluate(() => window.JellyfinRefreshKit.get('Seeded').state());
+  assert.deepEqual(await page.evaluate(() => window.__loaded), ['/web/Seeded/injector.js?v=boot-777']);
+  assert.equal(state.entriesVersioned, true);
+  assert.equal(state.version, 'boot-777');
+  assert.ok(requests.some((url) => url.startsWith('/deadversion')), 'the first version fetch still went out');
+  assert.deepEqual(logs.filter((line) => /UNVERSIONED/.test(line)), [], 'no false unversioned warning');
+});
+
+test('an instance named __proto__ survives the state snapshot and is not configured by Object.prototype', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  const registrations = [];
+  page.on('console', (message) => {
+    if (/instance registered/.test(message.text())) registrations.push(message.text());
+  });
+  await page.goto(`${origin}/proto-instance#/home`);
+  await page.evaluate(() => {
+    window.JellyfinRefreshKitConfigs = { Unrelated: { hiddenSettleSeconds: 7 } };
+    window.JellyfinRefreshKitConfig = { name: '__proto__', mode: 'off', bootVersion: 'P' };
+  });
+  await injectRuntime(page);
+  const observed = await page.evaluate(() => {
+    const state = window.JellyfinRefreshKit.state();
+    return {
+      count: state.instanceCount,
+      hasOwn: Object.prototype.hasOwnProperty.call(state.instances, '__proto__'),
+      snapshotVersion: state.instances['__proto__'] && state.instances['__proto__'].version,
+      handleVersion: window.JellyfinRefreshKit.get('__proto__') && window.JellyfinRefreshKit.get('__proto__').version,
+    };
+  });
+  assert.deepEqual(observed, { count: 1, hasOwn: true, snapshotVersion: 'P', handleVersion: 'P' });
+  assert.equal(registrations.length, 1);
+  assert.doesNotMatch(registrations[0], /configured by JellyfinRefreshKitConfigs/,
+    'Object.prototype is not a keyed-config entry');
+});
+
+test('the fullscreen gate also honours webkitFullscreenElement', async (t) => {
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await loadSafetyRuntime(page);
+  assert.equal(await blockReason(page), null);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'webkitFullscreenElement', {
+      configurable: true,
+      get: () => document.body,
+    });
+  });
+  assert.equal(await blockReason(page), 'fullscreen_media');
+  await page.evaluate(() => { delete document.webkitFullscreenElement; });
+  assert.equal(await blockReason(page), null);
+});
+
+test('selector features an old engine lacks degrade to attribute-based fallbacks instead of probe_failed', async (t) => {
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await loadSafetyRuntime(page);
+  await page.evaluate(() => {
+    const unsupported = (selector) => /" i\]/.test(selector) || selector === ':disabled';
+    const nativeQuerySelectorAll = Document.prototype.querySelectorAll;
+    Document.prototype.querySelectorAll = function querySelectorAll(selector) {
+      if (unsupported(String(selector))) throw new DOMException('unsupported selector', 'SyntaxError');
+      return nativeQuerySelectorAll.call(this, selector);
+    };
+    const nativeClosest = Element.prototype.closest;
+    Element.prototype.closest = function closest(selector) {
+      if (unsupported(String(selector))) throw new DOMException('unsupported selector', 'SyntaxError');
+      return nativeClosest.call(this, selector);
+    };
+    const nativeMatches = Element.prototype.matches;
+    Element.prototype.matches = function matches(selector) {
+      if (unsupported(String(selector))) throw new DOMException('unsupported selector', 'SyntaxError');
+      return nativeMatches.call(this, selector);
+    };
+  });
+  assert.equal(await blockReason(page), null, 'an old engine still evaluates the gates');
+
+  await page.evaluate(() => {
+    const dialog = document.createElement('div');
+    dialog.id = 'old-engine-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.textContent = 'open';
+    document.body.appendChild(dialog);
+  });
+  assert.equal(await blockReason(page), 'dialog', 'the case-sensitive fallback selector finds the dialog');
+  await page.evaluate(() => {
+    document.querySelector('#old-engine-dialog').setAttribute('aria-hidden', 'true');
+  });
+  assert.equal(await blockReason(page), null, 'the closest() fallback sees the retained aria-hidden dialog');
+
+  await page.evaluate(() => {
+    document.querySelector('#old-engine-dialog').remove();
+    const fieldset = document.createElement('fieldset');
+    fieldset.id = 'old-engine-fieldset';
+    fieldset.disabled = true;
+    const password = document.createElement('input');
+    password.type = 'password';
+    password.value = 'typed';
+    fieldset.appendChild(password);
+    document.body.appendChild(fieldset);
+  });
+  assert.equal(await blockReason(page), null, 'the fieldset[disabled] fallback stands in for :disabled');
+  await page.evaluate(() => { document.querySelector('#old-engine-fieldset').disabled = false; });
+  assert.equal(await blockReason(page), 'password_entry');
+});
+
+test('a handoff carries the masked post-playback window and the route samples', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/handoff-mask#/video`);
+  await page.evaluate(() => {
+    window.__reloadAttempts = 0;
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('open', '');
+    dialog.textContent = 'hold the pending reload';
+    document.body.appendChild(dialog);
+    window.JellyfinRefreshKitConfig = {
+      name: 'HandoffMask',
+      mode: 'auto',
+      bootVersion: 'A',
+      pollSeconds: 3600,
+      idleSeconds: 300,
+      getVersion: () => Promise.resolve('B'),
+    };
+  });
+  const source = (version) => reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion(version)))
+    .replace('var RETRY_MS = 1000;', 'var RETRY_MS = 25;');
+  await injectRuntime(page, source('2.4.9'));
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.lastBlockReason === 'playback_route'
+  ));
+  await page.evaluate(() => {
+    location.hash = '#/home';
+    document.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.maskedTransitionMsLeft > 0
+  ));
+  const before = await page.evaluate(() => window.JellyfinRefreshKit.state().shared);
+  await injectRuntime(page, source('2.4.10'));
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  const after = await page.evaluate(() => window.JellyfinRefreshKit.state().shared);
+  assert.equal(after.managerHandoffs, 1);
+  assert.ok(after.maskedTransitionMsLeft > 0 && after.maskedTransitionMsLeft <= before.maskedTransitionMsLeft,
+    `masked window travelled: before ${before.maskedTransitionMsLeft}ms, after ${after.maskedTransitionMsLeft}ms`);
+  assert.equal(after.lastSeenRoute, '#/home');
+  assert.equal(await page.evaluate(() => window.__reloadAttempts), 0, 'the dialog still holds the reload');
+});
+
+test('a handoff carries the hidden re-arm count instead of restarting it', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/handoff-hidden-retries#/home`);
+  await fakeVisibility(page, 'hidden');
+  await page.evaluate(() => {
+    window.__reloadAttempts = 0;
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('open', '');
+    dialog.textContent = 'hold the pending reload';
+    document.body.appendChild(dialog);
+    window.JellyfinRefreshKitConfig = {
+      name: 'HandoffHiddenRetries',
+      mode: 'auto',
+      bootVersion: 'A',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+      hiddenReload: true,
+      hiddenSettleSeconds: 0,
+      getVersion: () => Promise.resolve('B'),
+    };
+  });
+  await injectRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.4.9'))));
+  // Hidden tabs arm no confirmation; the forced check is the second sighting.
+  await page.evaluate(() => window.JellyfinRefreshKit.checkNow());
+  await page.waitForFunction(() => (
+    window.JellyfinRefreshKit.state().shared.lastBlockReason === 'dialog'
+      && window.JellyfinRefreshKit.state().shared.hiddenRetries >= 2
+  ));
+  const before = await page.evaluate(() => window.JellyfinRefreshKit.state().shared.hiddenRetries);
+  await injectRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.4.10'))));
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  const after = await page.evaluate(() => window.JellyfinRefreshKit.state().shared);
+  assert.equal(after.managerHandoffs, 1);
+  assert.ok(after.hiddenRetries > before,
+    `the re-arm count continued across the handoff: before ${before}, after ${after.hiddenRetries}`);
+  assert.equal(after.hiddenTimerArmed, true);
+  assert.equal(await page.evaluate(() => window.__reloadAttempts), 0);
+});
+
+test('a browser-autofilled login field counts as empty on the login route only while nothing was typed', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await page.goto(`${origin}/autofill#/login`);
+  await page.evaluate(() => {
+    window.JellyfinRefreshKitConfig = {
+      name: 'SafetyVisibilityTest',
+      mode: 'auto',
+      pollSeconds: 3600,
+      idleSeconds: 0,
+    };
+    const username = document.createElement('input');
+    username.id = 'txtManualName';
+    username.type = 'text';
+    const password = document.createElement('input');
+    password.id = 'txtManualPassword';
+    password.type = 'password';
+    document.body.appendChild(username);
+    document.body.appendChild(password);
+    // Puppeteer cannot drive the browser's own credential autofill, so the
+    // pseudo-class the runtime feature-detects is answered per element.
+    window.__markAutofilled = (element, autofilled) => {
+      element.value = autofilled ? element.value || 'saved' : element.value;
+      if (autofilled) {
+        element.matches = function matches(selector) {
+          if (selector === ':autofill' || selector === ':-webkit-autofill') return true;
+          return HTMLElement.prototype.matches.call(this, selector);
+        };
+      } else {
+        delete element.matches;
+      }
+    };
+  });
+  await injectRuntime(page);
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.get('SafetyVisibilityTest'));
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+
+  await page.evaluate(() => { document.querySelector('#txtManualName').focus(); });
+  assert.equal(await blockReason(page), null, 'an empty focused login field is not work in progress');
+
+  await page.evaluate(() => {
+    const username = document.querySelector('#txtManualName');
+    username.value = 'saved-user';
+    window.__markAutofilled(username, true);
+  });
+  assert.equal(await blockReason(page), null, 'a focused autofilled username on the login route is not work');
+
+  await page.evaluate(() => {
+    const password = document.querySelector('#txtManualPassword');
+    password.value = 'saved-secret';
+    window.__markAutofilled(password, true);
+  });
+  assert.equal(await blockReason(page), null, 'an autofilled password on the login route is ignored');
+
+  await page.evaluate(() => {
+    // The user overtypes the username: the browser drops the autofill state.
+    const username = document.querySelector('#txtManualName');
+    window.__markAutofilled(username, false);
+    username.value = 'typed-user';
+  });
+  assert.equal(await blockReason(page), 'active_editor', 'typed text in the focused field refuses');
+  await page.evaluate(() => { document.querySelector('#txtManualName').blur(); });
+  assert.equal(await blockReason(page), 'password_entry',
+    'an autofilled password is protected again once any text field holds typed work');
+
+  await page.evaluate(() => {
+    const username = document.querySelector('#txtManualName');
+    username.value = 'saved-user';
+    window.__markAutofilled(username, true);
+    location.hash = '#/home';
+  });
+  assert.equal(await blockReason(page), 'password_entry', 'off the empty routes autofill changes nothing');
+  await page.evaluate(() => { document.querySelector('#txtManualName').focus(); });
+  assert.equal(await blockReason(page), 'active_editor');
 });

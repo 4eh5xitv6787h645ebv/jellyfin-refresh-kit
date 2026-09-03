@@ -25,9 +25,10 @@
                         <span>Serve index.html through the refresh kit</span>
                     </label>
                     <div class="fieldDescription checkboxFieldDescription">
-                        Uses strong ETag / 304 revalidation when Refresh Kit owns the final shell bytes;
-                        nested outer response buffers safely degrade to a full no-store response. Turn off
-                        to pass the shell through unchanged; the configuration and public endpoints remain available.
+                        Serves a correctly revalidating index.html and injects the small client runtime that
+                        detects updates. Turn off to pass the shell through unchanged: the two settings below
+                        then have nothing to act on (no stamping, no automatic reloads), while this page and
+                        the public generation endpoints keep working.
                     </div>
                 </div>
 
@@ -63,8 +64,10 @@
                     <div class="fieldDescription checkboxFieldDescription">
                         A plugin's saved settings can change what the web UI renders (a new tab, a new button),
                         so saving them counts as an update. Bursts are coalesced and each plugin is
-                        rate-limited by the cooldown below. Turn off to exclude configuration content;
-                        loaded host/plugin MVIDs and active loose client assets are still tracked.
+                        rate-limited by the cooldown below. This applies to Refresh Kit too: saving this page
+                        reloads open tabs once (after the 10-second settle), which is how new poll/idle/budget
+                        values reach them. Turn off to exclude configuration content; loaded host/plugin code
+                        identities and active client assets are still tracked.
                     </div>
                 </div>
 
@@ -75,6 +78,7 @@
                         After the provider observes new content, it must remain stable for 10 seconds; a later
                         scan publishes the leading change and opens a window this many minutes long. Further
                         saves inside that window are coalesced and published when it expires — nothing is lost.
+                        0 disables the cooldown (the 10-second settle still applies); the page caps it at 1440 (a day).
                     </div>
                 </div>
 
@@ -84,23 +88,38 @@
                     <div class="fieldDescription">
                         One per line. Plugin name, install folder, GUID or assembly name. Use this if a plugin
                         stores per-user preferences or runtime state in its plugin configuration and keeps
-                        bumping the generation on its own.
+                        bumping the generation on its own. An assembly name matches every assembly a plugin
+                        loads, bundled dependencies included (Newtonsoft.Json would exclude each plugin that
+                        ships it), so prefer the plugin's own name, folder or GUID.
                     </div>
                 </div>
 
                 <div class="inputContainer">
                     <label class="inputLabel inputLabelUnfocused" for="rkPollSeconds">Poll interval (seconds)</label>
                     <input is="emby-input" type="number" id="rkPollSeconds" min="15" max="3600" />
+                    <div class="fieldDescription">
+                        How often a visible tab asks the server for the current generation. 15 to 3600
+                        seconds; hidden tabs do not poll and catch up when shown. Blank restores 60.
+                    </div>
                 </div>
 
                 <div class="inputContainer">
                     <label class="inputLabel inputLabelUnfocused" for="rkIdleSeconds">Required idle time (seconds)</label>
                     <input is="emby-input" type="number" id="rkIdleSeconds" min="0" max="300" />
+                    <div class="fieldDescription">
+                        Minimum time since the user's last click, key or scroll before an automatic reload.
+                        0 to 300 seconds; 0 removes the wait apart from a fixed 1-second settle. Blank restores 5.
+                    </div>
                 </div>
 
                 <div class="inputContainer">
                     <label class="inputLabel inputLabelUnfocused" for="rkReloadBudget">Max reloads per minute</label>
                     <input is="emby-input" type="number" id="rkReloadBudget" min="1" max="100" />
+                    <div class="fieldDescription">
+                        Ceiling on automatic reloads per rolling minute, shared by every Jellyfin tab of the
+                        same origin in one browser. 1 to 100; a reload the budget refuses waits, it is not lost.
+                        Blank restores 3.
+                    </div>
                 </div>
 
                 <div class="checkboxContainer checkboxContainer-withDescription">
@@ -119,6 +138,28 @@
                     </button>
                 </div>
             </form>
+
+            <div class="verticalSection">
+                <div class="sectionTitleContainer flex align-items-center">
+                    <h2 class="sectionTitle">Diagnostics</h2>
+                </div>
+                <p class="fieldDescription">
+                    What the current generation is made of, one row per loaded plugin. Use it when the
+                    generation keeps changing or tags are not stamped. This is the admin-only
+                    <code>/RefreshKit/Diagnostics</code> endpoint; it needs your session token, which is
+                    why it is fetched from here rather than linked.
+                </p>
+                <div>
+                    <button is="emby-button" type="button" id="rkShowDiagnostics" class="raised block">
+                        <span>Show diagnostics</span>
+                    </button>
+                    <button is="emby-button" type="button" id="rkCopyDiagnostics" class="raised block" hidden>
+                        <span>Copy JSON</span>
+                    </button>
+                </div>
+                <div id="rkDiagnosticsSummary" class="fieldDescription" hidden></div>
+                <pre id="rkDiagnosticsJson" hidden style="white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow: auto;"></pre>
+            </div>
         </div>
     </div>
 
@@ -182,6 +223,94 @@
                 });
             });
 
+            // Diagnostics is [Authorize(Policy = "RequiresElevation")]; a plain link
+            // would get a 401 because the browser sends no API token. Fetch it
+            // through ApiClient and render with textContent only (no innerHTML).
+            var diagnosticsJson = '';
+            function el(tag, text) {
+                var node = document.createElement(tag);
+                if (text !== undefined) node.textContent = text;
+                return node;
+            }
+            function field(row, name) {
+                // Field casing follows the host's JSON settings (PascalCase on
+                // Jellyfin's API), so accept either.
+                if (row === null || typeof row !== 'object') return undefined;
+                if (name in row) return row[name];
+                var lower = name.charAt(0).toLowerCase() + name.slice(1);
+                return row[lower];
+            }
+            function renderDiagnostics(page, info) {
+                var summary = page.querySelector('#rkDiagnosticsSummary');
+                while (summary.firstChild) summary.removeChild(summary.firstChild);
+                summary.appendChild(el('div', 'Generation ' + field(info, 'Generation')
+                    + ' · runtime ' + field(info, 'KitVersion') + ' · plugin ' + field(info, 'PluginVersion')));
+                var stamping = field(info, 'Stamping') || {};
+                summary.appendChild(el('div', 'Stamping aborts: noscript ' + (field(stamping, 'NoScriptBoundaryAborts') || 0)
+                    + ', depth ' + (field(stamping, 'OpenElementDepthAborts') || 0)
+                    + ', failures ' + (field(stamping, 'StampFailures') || 0)));
+                var plugins = field(info, 'Plugins') || [];
+                var table = el('table'); table.className = 'detailTable';
+                var head = el('tr');
+                ['Plugin folder', 'Loaded', 'Assets', 'Config', 'Flags'].forEach(function (h) { head.appendChild(el('th', h)); });
+                table.appendChild(head);
+                plugins.forEach(function (row) {
+                    var tr = el('tr');
+                    tr.appendChild(el('td', String(field(row, 'Folder') || field(row, 'Id') || '?')));
+                    tr.appendChild(el('td', field(row, 'IsLoaded') ? 'yes' : 'no'));
+                    tr.appendChild(el('td', (field(row, 'AssetFileCount') || 0) + ' files, ' + (field(row, 'AssetBytesHashed') || 0) + ' B'));
+                    tr.appendChild(el('td', (field(row, 'ConfigurationFileCount') || 0) + ' files, ' + (field(row, 'ConfigurationBytesHashed') || 0) + ' B'));
+                    var flags = [];
+                    if (field(row, 'AssetScanTruncated')) flags.push('assets truncated');
+                    if (field(row, 'AssetScanUnavailable')) flags.push('assets unavailable');
+                    if (field(row, 'ConfigurationScanTruncated')) flags.push('config truncated');
+                    if (field(row, 'ConfigurationScanUnavailable')) flags.push('config unavailable');
+                    if (field(row, 'ConfigurationReparsePointsSkipped')) flags.push((field(row, 'ConfigurationReparsePointsSkipped')) + ' symlinked config skipped');
+                    if (field(row, 'UsingLastGoodAssets') || field(row, 'UsingLastGoodConfiguration')) flags.push('using last good snapshot');
+                    tr.appendChild(el('td', flags.join(', ') || '-'));
+                    table.appendChild(tr);
+                });
+                summary.appendChild(table);
+                summary.hidden = false;
+                var pre = page.querySelector('#rkDiagnosticsJson');
+                diagnosticsJson = JSON.stringify(info, null, 2);
+                pre.textContent = diagnosticsJson;
+                pre.hidden = false;
+                page.querySelector('#rkCopyDiagnostics').hidden = false;
+            }
+
+            document.querySelector('#rkShowDiagnostics').addEventListener('click', function () {
+                var page = document.querySelector('#RefreshKitConfigPage');
+                Dashboard.showLoadingMsg();
+                ApiClient.ajax({
+                    type: 'GET',
+                    url: ApiClient.getUrl('RefreshKit/Diagnostics'),
+                    dataType: 'json'
+                }).then(function (info) {
+                    Dashboard.hideLoadingMsg();
+                    renderDiagnostics(page, info);
+                }).catch(function (error) {
+                    Dashboard.hideLoadingMsg();
+                    var summary = page.querySelector('#rkDiagnosticsSummary');
+                    summary.textContent = 'Could not fetch diagnostics (admin session required).';
+                    summary.hidden = false;
+                    console.error('[RefreshKit] diagnostics request failed', error);
+                });
+            });
+
+            document.querySelector('#rkCopyDiagnostics').addEventListener('click', function () {
+                var button = this;
+                var done = function (ok) {
+                    button.querySelector('span').textContent = ok ? 'Copied' : 'Copy failed';
+                    setTimeout(function () { button.querySelector('span').textContent = 'Copy JSON'; }, 2000);
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(diagnosticsJson).then(function () { done(true); }, function () { done(false); });
+                } else {
+                    done(false);
+                }
+            });
+
             document.querySelector('#RefreshKitConfigForm').addEventListener('submit', function (e) {
                 e.preventDefault();
                 var page = document.querySelector('#RefreshKitConfigPage');
@@ -190,7 +319,7 @@
                     config.EnableInjection = page.querySelector('#rkEnableInjection').checked;
                     config.EnableThirdPartyStamping = page.querySelector('#rkEnableStamping').checked;
                     config.EnableAutoReload = page.querySelector('#rkEnableAutoReload').checked;
-                    config.PollSeconds = readNumber(page, '#rkPollSeconds', 60, 1);
+                    config.PollSeconds = readNumber(page, '#rkPollSeconds', 60, 15);
                     config.IdleSeconds = readNumber(page, '#rkIdleSeconds', 5, 0);
                     config.ReloadBudget = readNumber(page, '#rkReloadBudget', 3, 1);
                     config.DevMode = page.querySelector('#rkDevMode').checked;

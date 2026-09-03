@@ -44,7 +44,7 @@ Install one plugin and Refresh Kit watches the plugin environment for changes. O
 - Jellyfin **10.11.x** or **12.x**
 - Permission to install plugins and restart the Jellyfin server
 
-The standalone plugin is built for both, from one source tree: a `net9.0` build against the Jellyfin `10.11.0` ABI floor, and a `net10.0` build against Jellyfin `12.0.0-rc4` packages. Building the net9 assembly at the declared floor lets later 10.11 hosts bind its shared-library references upward; package verification rejects a DLL whose MediaBrowser assembly references do not equal its `targetAbi`. One plugin-repository URL serves both — the server picks the build matching its own generation.
+The standalone plugin is built for both, from one source tree: a `net9.0` build against the Jellyfin `10.11.0` ABI floor, and a `net10.0` build against Jellyfin `12.0.0-rc4` packages. Building the net9 assembly at the declared floor lets later 10.11 hosts bind its shared-library references upward; package verification rejects a DLL whose MediaBrowser assembly references do not equal its `targetAbi`. One plugin-repository URL serves both — the server picks the build matching its own Jellyfin version.
 
 ## Installation
 
@@ -175,7 +175,7 @@ moves the generation and existing tabs converge. A same-version replacement is
 therefore detected when the replacement module has a new MVID and is loaded;
 arbitrary PE-byte changes that preserve the MVID are not a generation input.
 
-Scanning is deterministic and bounded. Per plugin it admits/charges at most 4,000 file entries, 512 directories, 8 MiB of active asset content, and 2 MiB of configuration content. One complete scan is additionally capped at 16,000 charged files, 2,048 charged directories, 32 MiB of assets, and 8 MiB of configuration. A native enumerator may yield one extra unadmitted entry for a plugin to detect that a file/directory ceiling was crossed. Budget exhaustion contributes a stable truncation sentinel and appears in admin diagnostics. A transient read failure consumes its conservative reserved budget and retains the last coherent active snapshot when one exists, instead of publishing a false lifecycle change.
+Scanning is deterministic and bounded. Per plugin it admits/charges at most 4,000 file entries, 512 directories, 8 MiB of active asset content, and 2 MiB of configuration content. One complete scan is additionally capped at 16,000 charged files, 2,048 charged directories, 32 MiB of assets, and 8 MiB of configuration. A native enumerator may yield one extra unadmitted entry for a plugin to detect that a file/directory ceiling was crossed. Budget exhaustion contributes a stable truncation sentinel and appears in admin diagnostics. A transient read failure reserves the last coherent snapshot's charge (or the ceiling when none exists yet) and retains that snapshot, instead of publishing a false lifecycle change; because it never reserves more than that snapshot cost, the plugins scanned after it keep the capacity they had and do not flip to the truncation sentinel. An entry the server process cannot read at all — a permission-denied subdirectory or asset file — is skipped on its own, counted in diagnostics, and folded as a deterministic per-path sentinel so the rest of that plugin's assets still participate; only a plugin folder that cannot be listed at all is treated as unavailable.
 
 ### Settings changes
 
@@ -183,12 +183,12 @@ Plugin settings can affect UI that is built when the page loads, so configuratio
 
 Refresh Kit watches Jellyfin's plugin configuration XML rather than a plugin's private data directory. This avoids treating per-user preferences and runtime cache churn as server-wide UI changes.
 
-A configuration file that is a symbolic link (or another reparse point) is never followed, because a plugin picks its own configuration filename and following the link would let that choice read a file outside the configuration store. On a deployment that symlinks the store — NixOS, some ansible layouts — that plugin's settings changes are therefore not detected; the admin diagnostics endpoint reports the skipped files per plugin.
+A configuration file that is a symbolic link (or another reparse point) is never followed, because a plugin picks its own configuration filename and following the link would let that choice read a file outside the configuration store. On a deployment that symlinks the store — NixOS, some ansible layouts — that plugin's settings changes are therefore not detected; the admin diagnostics endpoint reports the skipped files per plugin. The same rule applies to loose client assets: a symlinked asset file or asset directory under a plugin folder is not followed, contributes what an absent entry does, and is reported per plugin in diagnostics.
 
 Configuration signals are controlled in three ways:
 
 - **Debounce:** a changed configuration-content identity must remain stable for 10 seconds before publication.
-- **Per-plugin cooldown:** the first change publishes promptly; further changes during the configured window are coalesced into one later update.
+- **Per-plugin cooldown:** the first change publishes promptly; further changes during the configured window are coalesced into one later update. The window's length follows the current setting, so lowering the cooldown releases an already-held change on the next scan and raising it extends the hold.
 - **Exclusions:** individual plugins can be ignored for configuration-change tracking.
 
 Loaded-module and active loose-asset identity changes are not held behind the
@@ -206,9 +206,9 @@ light-DOM safety probes observe an interaction that should not be interrupted.
 | Fullscreen media | media is fullscreen or in picture-in-picture |
 | Dialog | a rendered native, Jellyfin, or ARIA dialog/action sheet is open |
 | Media session | real media playback is active on the page |
-| Active editor | a text-editing field has focus |
-| Password entry | a rendered, enabled, non-inert password field still contains a value |
-| Not idle | the configured user-idle period has not elapsed |
+| Active editor | a text-editing field has focus (on `#/login` and `#/selectserver` only, an empty field — or, since 2.4.9, one the browser autofilled and the user never edited — does not count) |
+| Password entry | a rendered, enabled, non-inert password field still contains a value (on the empty routes only, since 2.4.9, a browser-autofilled password is ignored while no text field on the page holds typed text) |
+| Not idle | the configured user-idle period has not elapsed — never less than the runtime's 1-second settle floor, and relaxed to that floor on the empty routes, under Jellyfin's screensaver and for 2.5 s after leaving playback |
 
 Refresh Kit also uses:
 
@@ -226,7 +226,13 @@ gate pass, and a check against the document's current effective budget. This
 preserves distinct reloads made in the same millisecond and prevents cooperating
 tabs from losing one another's concurrent reservations. A gate that closes
 before the append spends nothing; a gate that closes after commit leaves the
-slot conservatively spent without navigating.
+slot conservatively spent without navigating. Since runtime 2.4.9 the per-tab
+safety records a navigation must write (the LEFT-version set and the
+epoch-coverage gaps in `sessionStorage`) are rehearsed in that same pre-append
+pass — the exact bytes are written, verified and restored — so a tab that could
+never write them (a saturated set, storage that refuses writes) refuses before
+the append and spends nothing, instead of burning one origin-wide slot per
+window and starving its sibling tabs.
 
 `localStorage` and `sessionStorage` hold read-back-verified compatibility
 mirrors. Valid mirror history is max-multiset-merged for migration, but the
@@ -297,16 +303,21 @@ Open **Dashboard → Plugins → Jellyfin Refresh Kit**.
 | Cache-bust other plugins' script tags | On | Adds the current generation to eligible plugin scripts and stylesheets in the shell. |
 | Reload open tabs after a plugin update | On | Performs safe automatic reloads. When off, update detection remains available without automatic reloads. |
 | Treat plugin settings changes as updates | On | Includes plugin configuration XML changes in generation tracking. |
-| Settings-change cooldown | 5 min | Coalesces repeated configuration changes from the same plugin. `0` disables the cooldown; debounce still applies. |
-| Ignore settings changes from these plugins | Empty | One entry per line. Accepts plugin name, install folder, GUID, or assembly name. |
+| Settings-change cooldown | 5 min | Coalesces repeated configuration changes from the same plugin. `0` disables the cooldown; debounce still applies. The settings page caps it at 1440 (a day). |
+| Ignore settings changes from these plugins | Empty | One entry per line. Accepts plugin name, install folder, GUID, or assembly name. An assembly-name entry matches every assembly a plugin loads, including bundled dependencies, so `Newtonsoft.Json` would exclude each plugin that ships that DLL. |
 | Poll interval | 60 sec | How often visible tabs check the generation. Client range: 15–3600 seconds. |
-| Required idle time | 5 sec | Minimum user inactivity before an automatic reload. Client range: 0–300 seconds. |
+| Required idle time | 5 sec | Minimum user inactivity before an automatic reload. Client range: 0–300 seconds; `0` leaves only a fixed 1-second settle. |
 | Max reloads per minute | 3 | Rolling automatic-reload ceiling applied to shared same-origin reservation history. Client range: 1–100. Unavailable coordination defers the reload. |
 | Developer mode | Off | Serves the embedded browser runtime with `no-store` instead of immutable caching. |
 
 Clearing a numeric field saves its default rather than zero. `0` is a real,
 distinct value where the range allows it: `0` in **Settings-change cooldown**
-disables the cooldown, and `0` in **Required idle time** removes the idle wait.
+disables the cooldown, and `0` in **Required idle time** leaves only the fixed
+1-second settle.
+
+Saving this page is itself a plugin settings change: with settings watching on,
+open tabs reload once about 10 seconds later, which is how new poll, idle and
+budget values reach them.
 
 ### Excluding noisy configuration files
 
@@ -321,7 +332,7 @@ The admin diagnostics endpoint shows the loaded identities, content-scan budgets
 | `GET /RefreshKit/Generation` | Anonymous | Returns `{ Version, BuildId, CacheKey, Epoch }`; `CacheKey` contains the current generation and `Epoch` identifies this server process. |
 | `GET /RefreshKit/Generation.txt` | Anonymous | Returns the current generation as plain text. |
 | `GET /RefreshKit/kit.js` | Anonymous | Serves the embedded browser runtime. |
-| `GET /RefreshKit/Diagnostics` | Admin | Returns the current generation and the per-plugin inputs used to build it, read as one atomic snapshot, plus scan budgets, truncation/unavailability flags, skipped reparse-point configuration files, and stamping abort and failure counters. |
+| `GET /RefreshKit/Diagnostics` | Admin | Returns the current generation and the per-plugin inputs used to build it, read as one atomic snapshot, plus scan budgets, truncation/unavailability flags, skipped reparse-point configuration files and asset entries, unreadable asset entries, and stamping abort and failure counters. |
 
 The generation and runtime endpoints are intentionally available before login so a stale Jellyfin login page can also detect a plugin change.
 
@@ -389,7 +400,8 @@ A common case is `password_entry`: Refresh Kit will not automatically reload whi
 
 ### The generation keeps changing
 
-Open the admin-only diagnostics endpoint:
+Open the plugin's settings page and press **Show diagnostics**, or call the
+admin-only endpoint with your API token (a plain browser tab gets a 401):
 
 ```text
 GET /RefreshKit/Diagnostics
@@ -419,11 +431,13 @@ Refresh Kit closes the common stale-plugin path, but it cannot control every way
 - **A quoted legacy `PUBLIC`/`SYSTEM` doctype is a conservative transform boundary.** The bounded tokenizer does not implement the complete HTML doctype state machine, so such a shell is served unchanged. Jellyfin's ordinary `<!doctype html>` remains transformable.
 - **A real document `<base href>` disables runtime injection.** Refresh Kit's own URL is relative so it follows Jellyfin's configured PathBase; any effective base could redirect that URL to another path or origin. Bases inside inert template content do not trigger this boundary.
 - **Outer response owners use safe degradation.** When another middleware owns the final buffered bytes, Refresh Kit serves the complete transformed shell as `no-store` without its strong validator, while preserving the outer owner's final framing. This is freshness without conditional revalidation.
+- **A response that is already started when Refresh Kit runs is passed through.** An outer middleware that commits headers before the kit's turn (early headers, a streamed prelude) gets the host's bytes untouched — the kit never throws into the pipeline for it — and a downstream that starts the response itself without a kit validator is finalized like any other late-started source response.
+- **A request that a downstream handler authenticates is served privately, not shared.** Forward-auth style headers the kit does not recognise (`X-SSO-User` and the like) look anonymous to the shared cache; when the source then confirms with `304` that the cached bytes are exactly what it would serve, that request gets them as `no-store` and the shared entry stays untouched. The shell is never answered with a `503`.
 - **An outer-owned tag can remain unstamped.** In both audited GetAvatar middleware orders, its one eligible tag is added after Refresh Kit's transform and is explicitly reported as a compatibility limitation. Reloading the shell cannot guarantee fresh bytes for that unchanged URL.
 - **Cross-origin assets are not rewritten.** Refresh Kit does not alter third-party CDN URLs or their cache semantics.
 - **Generation is server-wide.** A monitored change to any plugin can make eligible open Jellyfin tabs reload once.
 - **Broken intermediary caching still wins.** A proxy or CDN configured to ignore origin cache directives can serve stale content regardless of the origin's behaviour.
-- **Background tabs are subject to browser timer throttling/freezing.** Detection can be delayed until the browser allows the tab to run again.
+- **Polling is suspended while a tab is hidden.** A hidden tab holds no poll timer at all (only the single hidden-settle shot for a reload that is already pending), so a new generation is detected when the tab is shown again — or by a request that was already in flight when it was hidden — not while it sits in the background. The hidden-settle shot is additionally subject to browser timer throttling and freezing.
 - **Cross-tab budget coordination starts with runtime 2.4.7.** Older tabs still write the legacy numeric-v1 storage history but do not update the authoritative IndexedDB ledger inside its transaction, so they cannot be included in the concurrent-reservation guarantee until they load 2.4.7 or newer. Unavailable or corrupt IndexedDB safely defers automatic reload; unreadable/corrupt legacy stores do the same only while the first authoritative record still needs migration.
 
 ---
@@ -458,7 +472,14 @@ Matching scripts and links created through `document.createElement` after the
 kit starts receive the resolved version in supported string/`URL` assignments,
 and the tab can detect when the version endpoint changes. The interceptor
 deliberately does not rewrite markup created through `innerHTML`,
-`document.write`, or `createElementNS`.
+`document.write`, or `createElementNS`; nor does it see a URL set through
+`setAttributeNS`, `setAttributeNode`, or on an element created by calling
+`Document.prototype.createElement.call(document, …)` directly (only the `src`
+/ `href` property and `setAttribute` on elements handed out by the page's
+`document.createElement` are intercepted). `data:`, `blob:`, `javascript:` and
+`about:` URLs are never versioned, and `assetPatterns` are matched against the
+resolved URL with its fragment removed (relative URLs are resolved against the
+document base; a fragment is never matched).
 
 ### Bootstrap mode — recommended when the kit should load your entry files
 
@@ -483,8 +504,9 @@ Bootstrap mode:
 - treats path-ending `.mjs` entries as ES modules
 - logs and skips an entry element that reports a load failure
 - falls back to unversioned entries if the initial version lookup exceeds `entryTimeoutMs`
+- loads the entries at `?v=<bootVersion>` immediately when a `bootVersion` seed is configured (runtime 2.4.9 and newer); the first version fetch still runs for update detection
 
-That timeout keeps a broken version endpoint from preventing the plugin itself from loading.
+That timeout keeps a broken version endpoint from preventing the plugin itself from loading. Its effective ceiling is the runtime's 10-second version-fetch timeout: the option accepts values up to 30000, but a version request that has not answered after 10 s fails on its own, so the entries never wait longer than that.
 
 For an `.mjs` entry, Refresh Kit versions the root module URL only. Native
 static/dynamic imports do not inherit its query string and do not pass through
@@ -527,10 +549,10 @@ Important options:
 | `bootVersion` | — | Build identity that produced the current document; should represent the same identity as the version endpoint. |
 | `pollSeconds` | 60 | Visible-tab polling interval, clamped to 15–3600 seconds. |
 | `idleSeconds` | 5 | Required idle time before automatic reload, clamped to 0–300 seconds. |
-| `assetPatterns` | None | URL patterns whose dynamically-created assets should receive versioning. A URL that already carries a cache-busting query parameter (`v`, `ver`, `version`, `rev`, `hash`, `build`, `cb`, `nocache`, `_`, or the standalone plugin's own `rkv`, …) is left exactly as its author wrote it. |
+| `assetPatterns` | None | URL patterns (substrings, or `RegExp` objects in JavaScript config) whose dynamically-created assets should receive versioning. Matched against the resolved URL with its fragment removed (scheme, host, path and query), so a relative `MyPlugin/x.js` under `/web/` matches `/MyPlugin/` like `/web/MyPlugin/x.js` does, and a pattern that names a CDN host keeps working. A URL that already carries a cache-busting query parameter (`v`, `ver`, `version`, `rev`, `hash`, `build`, `cb`, `nocache`, `_`, or the standalone plugin's own `rkv`, …) is left exactly as its author wrote it. |
 | `entryScripts` | None | Ordered entry URLs for bootstrap mode. |
-| `entryTimeoutMs` | 3000 | Maximum initial version wait before bootstrap entries fall back to unversioned loading. |
-| `mode` | `auto` | `auto` reloads, `notify` reports updates without reloading, `off` leaves URL versioning active without update polling behaviour. |
+| `entryTimeoutMs` | 3000 | Maximum initial version wait before bootstrap entries fall back to unversioned loading. Clamped to 250–30000, but effectively capped at the 10-second version-fetch timeout. Ignored when `bootVersion` seeds the version. |
+| `mode` | `auto` | `auto` reloads, `notify` reports updates without reloading, `off` leaves URL versioning active without update polling behaviour. The value is trimmed and case-insensitive; any other value logs one warning and falls back to `notify` (a mistyped mode never enables automatic reloads). |
 | `reloadBudget` | 3 | Maximum reloads per rolling 60-second window, applied by this document to the authoritative same-origin IndexedDB ledger. Range 1–100; unavailable or corrupt coordination defers automatic reload. |
 | `hiddenReload` | `true` | Allows an otherwise-safe pending reload while the tab is hidden. |
 | `hiddenSettleSeconds` | 25 | Required hidden period before a hidden-tab reload is considered. |
@@ -603,7 +625,7 @@ public ActionResult GetScript()
 
 Two plugins can each copy `RefreshKit.cs` in. Each gets its own middleware instance, its own representation cache, and its own `plugin="…"` scrub identity, so their tags never scrub each other and the only real collision risk is route names (which is why the version controller is opt-in).
 
-The **innermost** instance owns the shell response. ASP.NET composes startup filters first-registered-outermost and Jellyfin's plugin load order is not something a plugin can choose, so the instance nearest the shell finishes first and commits its own representation — status, framing, and its strong `rk-` ETag. An outer instance recognises that commitment arriving through its own response body feature before it had decided anything and **stands down** for that response: it forwards the owner's bytes, validators, and conditional answers untouched, and it does not inject, rewrite a late status, harden metadata, or evaluate preconditions. Once such an owner has committed a complete shell, the outer instance also steps aside from the start of later shell requests, so the owner keeps seeing the client's own `If-None-Match` and can answer it with a real `304`. It logs the stand-down once.
+The **innermost** instance owns the shell response. ASP.NET composes startup filters first-registered-outermost and Jellyfin's plugin load order is not something a plugin can choose, so the instance nearest the shell finishes first and commits its own representation — status, framing, and its strong `rk-` ETag. An outer instance recognises that commitment arriving through its own response body feature before it had decided anything, **signed with the `rk-` ETag**, and **stands down** for that response: it forwards the owner's bytes, validators, and conditional answers untouched, and it does not inject, rewrite a late status, harden metadata, or evaluate preconditions. The signature is what makes it an owner: a plain downstream that merely starts the response early (`HttpResponse.WriteAsync(string)` does so on every call) is not one, and is finalized like any other late-started source response. Once a signed owner has committed a complete shell, the outer instance also steps aside from the start of later shell requests, so the owner keeps seeing the client's own `If-None-Match` and can answer it with a real `304`. That stand-down is **recoverable**: while stood down the outer instance still watches each shell response, and the first one that arrives without the signature — the inner kit was disabled through its kill switch, or its plugin was unloaded — clears it, so the outer instance injects again from the next request without a restart. It logs once each way (standing down, resuming).
 
 The consequence is the same ownership boundary as the [standalone plugin's ordering caveat](plugin/README.md#ordering-caveat): the outer instance's tag is not on that page. If your plugin's tag must always be present, inject it yourself rather than relying on being outermost; two instances still coexist safely, and a page that already carries the inner owner's tag is a correctly revalidating page.
 
@@ -654,13 +676,13 @@ If `jellyfin-refresh-kit.js` is one of the injected scripts, put it **before** s
 
 - A plugin using non-bootstrap/classic loading can still have an initial race before the version resolves. Bootstrap mode avoids that for its entry files.
 - The kit cannot version its own loader URL from inside itself; serve that file with an appropriate cache policy or through the C# helper.
-- Bootstrap mode adds the initial version lookup before entry files load, bounded by `entryTimeoutMs`.
+- Bootstrap mode adds the initial version lookup before entry files load, bounded by `entryTimeoutMs` (and by the 10-second version-fetch timeout) — unless `bootVersion` seeds the version, in which case the entries load at once.
 - A path-ending `.mjs` bootstrap entry is loaded as a module, but only its root URL is stamped. Native imports must be bundled or self-versioned, and top-level `await` can continue after the next entry starts.
 - Keep `assetPatterns` scoped to your own plugin. Overlapping patterns between independent instances are resolved deterministically but should be avoided.
 - All nodes behind a load balancer should expose one generation for the same deployed build. If epochs are enabled, each epoch must be stable for its process; fresh epochs bound legitimate restarts and finite mixed-node cycles, but a flapping deployment can still delay convergence.
 - A CDN's own `latest`/resolution cache cannot be fixed by client-side versioning if the CDN maps the requested URL to stale content.
 - JavaScript cannot add response `ETag` or `Cache-Control` headers; use the server helper when those guarantees are required.
-- When two plugins embed `RefreshKit.cs`, the innermost instance owns the shell response and the outer one stands down, so the outer plugin's tag is not injected on that page. See [More than one plugin embedding the helper](#more-than-one-plugin-embedding-the-helper).
+- When two plugins embed `RefreshKit.cs`, the innermost instance owns the shell response and the outer one stands down, so the outer plugin's tag is not injected on that page while the inner one keeps committing it; the outer instance resumes on its own once the inner one stops. See [More than one plugin embedding the helper](#more-than-one-plugin-embedding-the-helper).
 
 ---
 
@@ -818,9 +840,7 @@ Refresh Kit or Jellyfin Enhanced work to `n00bcodr/Jellyfin-Enhanced`.
 
 ## Run tests
 
-Use the repository entry point:
-
-Prerequisites are Node.js 22.12 or newer (Puppeteer 25's floor; the repository pins `22.20.0`), `npm ci`
+Use the repository entry point, `test.sh`. Prerequisites are Node.js 22.12 or newer (Puppeteer 25's floor; the repository pins `22.20.0`), `npm ci`
 with the locked Puppeteer/Chromium package, the exact .NET SDK `10.0.302`, and
 installed .NET Core plus ASP.NET Core 9.x and 10.x runtimes for the dual-runtime
 tests. Every `test.sh` mode requires Python 3.10 or newer, and packaging also needs the documented GNU/Linux shell tools
