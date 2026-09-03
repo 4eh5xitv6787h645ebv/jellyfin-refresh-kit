@@ -141,6 +141,7 @@ namespace Jellyfin.Plugin.RefreshKit
         private static long _noScriptBoundaryAborts;
 
         private static long _openElementDepthAborts;
+        private static long _stampFailures;
 
         /// <summary>
         /// Query keys that already make a URL change per release. A tag carrying
@@ -187,6 +188,7 @@ namespace Jellyfin.Plugin.RefreshKit
         public static StampingDiagnostics Diagnostics => new StampingDiagnostics(
             Interlocked.Read(ref _noScriptBoundaryAborts),
             Interlocked.Read(ref _openElementDepthAborts),
+            Interlocked.Read(ref _stampFailures),
             MaxOpenElementDepth);
 
         /// <summary>
@@ -217,6 +219,10 @@ namespace Jellyfin.Plugin.RefreshKit
             }
             catch
             {
+                // Fail-open: the shell is served unstamped rather than not at all.
+                // Counted so an admin reading /RefreshKit/Diagnostics can tell
+                // "nothing was eligible" from "the stamper is throwing".
+                Interlocked.Increment(ref _stampFailures);
                 return html;
             }
         }
@@ -1930,10 +1936,12 @@ namespace Jellyfin.Plugin.RefreshKit
         internal StampingDiagnostics(
             long noScriptBoundaryAborts,
             long openElementDepthAborts,
+            long stampFailures,
             int openElementDepthLimit)
         {
             NoScriptBoundaryAborts = noScriptBoundaryAborts;
             OpenElementDepthAborts = openElementDepthAborts;
+            StampFailures = stampFailures;
             OpenElementDepthLimit = openElementDepthLimit;
         }
 
@@ -1951,6 +1959,13 @@ namespace Jellyfin.Plugin.RefreshKit
         /// <see cref="OpenElementDepthLimit"/> elements open at once.
         /// </summary>
         public long OpenElementDepthAborts { get; }
+
+        /// <summary>
+        /// Passes abandoned because the stamper threw. It is written not to,
+        /// and the shell is served unstamped when it does; a non-zero value is
+        /// a bug report waiting to be filed, with the document that caused it.
+        /// </summary>
+        public long StampFailures { get; }
 
         /// <summary>The open-element ceiling that produced those aborts.</summary>
         public int OpenElementDepthLimit { get; }

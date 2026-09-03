@@ -10,7 +10,7 @@
     "node": ">=20"
   },
   "devDependencies": {
-    "puppeteer": "24.39.0",
+    "puppeteer": "25.9.0",
     "ws": "8.21.3"
   }
 }

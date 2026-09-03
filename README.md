@@ -321,7 +321,7 @@ The admin diagnostics endpoint shows the loaded identities, content-scan budgets
 | `GET /RefreshKit/Generation` | Anonymous | Returns `{ Version, BuildId, CacheKey, Epoch }`; `CacheKey` contains the current generation and `Epoch` identifies this server process. |
 | `GET /RefreshKit/Generation.txt` | Anonymous | Returns the current generation as plain text. |
 | `GET /RefreshKit/kit.js` | Anonymous | Serves the embedded browser runtime. |
-| `GET /RefreshKit/Diagnostics` | Admin | Returns the current generation and the per-plugin inputs used to build it, read as one atomic snapshot, plus scan budgets, truncation/unavailability flags, skipped reparse-point configuration files, and stamping abort counters. |
+| `GET /RefreshKit/Diagnostics` | Admin | Returns the current generation and the per-plugin inputs used to build it, read as one atomic snapshot, plus scan budgets, truncation/unavailability flags, skipped reparse-point configuration files, and stamping abort and failure counters. |
 
 The generation and runtime endpoints are intentionally available before login so a stale Jellyfin login page can also detect a plugin change.
 
@@ -823,23 +823,28 @@ Use the repository entry point:
 Prerequisites are Node.js 20 or newer (the repository pins `22.20.0`), `npm ci`
 with the locked Puppeteer/Chromium package, the exact .NET SDK `10.0.302`, and
 installed .NET Core plus ASP.NET Core 9.x and 10.x runtimes for the dual-runtime
-tests. Packaging also requires Python 3 and the documented GNU/Linux shell tools
+tests. Packaging also requires Python 3.10 or newer and the documented GNU/Linux shell tools
 (`bash`, `curl`, `flock`, `readlink -f`, `sha256sum`, `tar`, and `timeout`).
 Static validation downloads a checksum-pinned `actionlint` archive into a
 temporary user cache on first use and requires Docker CLI with Compose for
 configuration parsing; container suites require a working Docker engine. The
-security audit requires access to the live NuGet advisory feed.
+security audit requires access to the live NuGet and npm advisory feeds.
 
 ```bash
 ./test.sh fast             # packages, both .NET targets, Chromium, static checks
 ./test.sh dotnet           # standalone compile plus xUnit on actual net9 and net10 runtimes
 ./test.sh browser          # Chromium runtime regressions
 ./test.sh reproducibility  # path-isolated byte identity and controlled build locking
-./test.sh security-audit   # current NuGet advisory audit
+./test.sh security-audit   # current NuGet and npm advisory audit (locked graphs, low or higher fails)
 ./test.sh integration      # pinned JF10/JF12 lifecycle/browser lab plus proxy matrix
 ./test.sh compatibility    # all locked third-party/hostile-fixture matrices
 ./test.sh all              # every gate above; intentionally long-running
 ```
+
+Four narrower modes exist for iterating on one piece: `build` (both packages
+only), `static` (the shell/JavaScript/JSON/Compose and release-tooling checks
+only), `package` (verify an existing `plugin/build` snapshot) and `locking`
+(the build-lock proof). `package` needs a prior `build`.
 
 The read-only **Locked ecosystem compatibility** workflow runs all 14 pinned
 matrices weekly and can be manually dispatched for an exact source revision.

@@ -218,14 +218,14 @@ Every browser-convergence checkpoint requires exactly one reload, without a
 reload storm; the deliberately coalesced stress mutations are one catch-up
 checkpoint rather than three forced intermediate reloads.
 
-The plugin-detail page opens Jellyfin Web's actual Uninstall confirmation
-(`role=dialog`) but cancels it. While that dialog is rendered, the runner makes
-a unique monitored loose-asset change and requires the runtime to report the
-new generation without reloading the protected document. A real focused field
-on the Refresh Kit configuration page independently proves the active-editor
-(`active_editor`) gate.
-After Cancel and blur, both documents must converge automatically, and plugin
-inventory must prove that cancellation did not uninstall anything.
+A real focused field on the Refresh Kit configuration page proves the
+active-editor (`active_editor`) gate: while it holds focus, the runner makes a
+unique monitored loose-asset change and requires the runtime to report the new
+generation without reloading the protected document. After blur, both documents
+must converge automatically. The native-uninstall dialog sub-check that this
+leg used to perform was removed (its Jellyfin Web uninstall UI differs across
+web builds); the `dialog` gate is proven by the Chromium runtime regressions in
+`tests/browser/runtime.test.cjs` instead.
 
 The same ten-tab mutation also uses ffmpeg to generate a deterministic 120-second
 H.264/AAC MP4, copies it to `/config/rk-host-upgrade-media`, creates a real Movies

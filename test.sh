@@ -23,6 +23,12 @@ if [ -z "${DOTNET}" ] || [ ! -x "${DOTNET}" ]; then
     echo "FATAL: install the .NET SDK pinned by global.json." >&2
     exit 1
 fi
+# The release tooling uses zip(strict=True) and str.removeprefix, so anything
+# older than 3.10 fails deep inside a gate with an unhelpful TypeError.
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null || {
+    echo "FATAL: the validation tooling requires Python 3.10 or newer." >&2
+    exit 1
+}
 DOTNET_INSTALL_ROOT="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${DOTNET}")"
 
 TEST_PROJECT="plugin/Jellyfin.Plugin.RefreshKit.Tests/Jellyfin.Plugin.RefreshKit.Tests.csproj"
@@ -256,6 +262,16 @@ test_security_audit() {
         -p:TreatWarningsAsErrors=false \
         '-p:WarningsAsErrors=NU1901%3BNU1902%3BNU1903%3BNU1904'
     heading "NuGet security audit passed"
+
+    # The locked npm graph (Puppeteer/Chromium for the browser regressions) is
+    # installed by CI too, so it is part of the audited surface. Same policy as
+    # NuGet: any advisory at or above "low" fails. --package-lock-only audits the
+    # committed lock without needing node_modules, so this gate does not depend
+    # on a prior npm ci.
+    heading "Auditing the locked npm graph against the current advisory feed"
+    command -v npm >/dev/null 2>&1 || { echo "FATAL: npm is required for the npm advisory audit." >&2; return 1; }
+    npm audit --omit=optional --package-lock-only --audit-level=low
+    heading "npm security audit passed"
 }
 
 test_browser() {

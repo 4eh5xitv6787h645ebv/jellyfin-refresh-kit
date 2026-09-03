@@ -459,7 +459,7 @@ and no idle wait.
 | `GET /RefreshKit/Generation` | anonymous | `{ Version, BuildId, CacheKey, Epoch }`; `CacheKey` = generation and `Epoch` = this process incarnation. `no-store`. |
 | `GET /RefreshKit/Generation.txt` | anonymous | The bare generation, `text/plain`. |
 | `GET /RefreshKit/kit.js` | anonymous | The embedded `jellyfin-refresh-kit.js`: immutable for a production generation URL, or `no-store` for developer mode / a `dev=1` URL. |
-| `GET /RefreshKit/Diagnostics` | admin | Loaded host modules plus per-plugin loaded/content identities, diagnostic timestamps, scan counts/budgets, truncation/unavailability, skipped reparse-point configuration files, last-good/retained-record state, and stamping abort counters. All from one provider snapshot. |
+| `GET /RefreshKit/Diagnostics` | admin | Loaded host modules plus per-plugin loaded/content identities, diagnostic timestamps, scan counts/budgets, truncation/unavailability, skipped reparse-point configuration files, last-good/retained-record state, and stamping abort and failure counters (`StampFailures` counts passes the stamper abandoned by throwing; it is designed never to, so a non-zero value is a bug to report with the offending shell). All from one provider snapshot. |
 
 The first three are anonymous **on purpose**: the login screen is a real page of
 the web client, it is where a stale cache most often bites, and a tab can sit on

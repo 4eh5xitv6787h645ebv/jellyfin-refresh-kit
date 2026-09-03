@@ -322,6 +322,17 @@ def source_tree_hash(root: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def project_repository_path(root: pathlib.Path) -> str:
+    """The `/owner/repo` part of the csproj's <RepositoryUrl>: the one place the release host is declared."""
+    project = root / "plugin" / "Jellyfin.Plugin.RefreshKit" / "Jellyfin.Plugin.RefreshKit.csproj"
+    url = ET.fromstring(regular_bytes(root, project)).findtext(".//RepositoryUrl") or ""
+    parsed = urllib.parse.urlparse(url)
+    require(parsed.scheme == "https" and parsed.netloc == "github.com"
+            and re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", parsed.path) is not None,
+            f"<RepositoryUrl> in {project} must be https://github.com/<owner>/<repo>, got {url!r}")
+    return parsed.path
+
+
 def project_identity(root: pathlib.Path) -> tuple[str, str]:
     project = root / "plugin" / "Jellyfin.Plugin.RefreshKit" / "Jellyfin.Plugin.RefreshKit.csproj"
     plugin = root / "plugin" / "Jellyfin.Plugin.RefreshKit" / "Plugin.cs"
@@ -499,6 +510,7 @@ def verify_manifest(
     version: str,
     artifacts: list[dict[str, object]],
     mode: str,
+    repository_path: str,
 ) -> None:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     require(isinstance(manifest, list), "manifest root must be an array")
@@ -524,7 +536,7 @@ def verify_manifest(
         require(isinstance(source_url, str), f"manifest {version}/{abi}: sourceUrl is missing")
         parsed = urllib.parse.urlparse(source_url)
         expected_path = (
-            f"/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v{version}/"
+            f"{repository_path}/releases/download/v{version}/"
             f"{pathlib.Path(artifact['archive']).name}"
         )
         require(parsed.scheme == "https" and parsed.netloc == "github.com" and parsed.path == expected_path,
@@ -687,7 +699,7 @@ def main() -> int:
         require(checkout_status == "",
                 "clean-source verification requires an unchanged, clean checkout")
 
-    verify_manifest(manifest, guid, version, artifacts, args.manifest_mode)
+    verify_manifest(manifest, guid, version, artifacts, args.manifest_mode, project_repository_path(root))
     if args.receipt:
         write_receipt(
             args.receipt,

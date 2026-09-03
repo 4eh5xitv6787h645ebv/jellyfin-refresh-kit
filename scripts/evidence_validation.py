@@ -3,6 +3,11 @@
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 10):  # zip(strict=True), str.removeprefix
+    raise SystemExit("this tool requires Python 3.10 or newer")
+
 import hashlib
 import ipaddress
 import json

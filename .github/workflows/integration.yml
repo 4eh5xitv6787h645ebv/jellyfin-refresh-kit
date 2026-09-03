@@ -16,7 +16,7 @@ jobs:
   real-server-rigs:
     name: Jellyfin 10.11/12 lifecycle, host-upgrade, and proxy rigs
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 355
     steps:
       - name: Check out the exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,9 +36,11 @@ jobs:
           node-version-file: .node-version
           cache: npm
 
-      # The dual-Jellyfin and host-upgrade runners synthesize playback media
-      # on the host (e2e/jellyfin/run.sh and lib/host-upgrade.sh both
-      # rk_require ffmpeg); the hosted runner image does not provide it.
+      # The dual-Jellyfin lab synthesizes playback media on the host
+      # (e2e/jellyfin/run.sh rk_requires ffmpeg); the hosted runner image does
+      # not provide it. The in-place host-upgrade leg, which needs it too, is
+      # not invoked by the integration gate while its harness is being repaired
+      # (see the note in test.sh's test_integration).
       - name: Install ffmpeg for the lab media fixtures
         run: |
           sudo apt-get update
