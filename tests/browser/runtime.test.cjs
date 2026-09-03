@@ -6626,8 +6626,9 @@ test('a newest-wins handoff while hidden re-issues a confirmation fetch orphaned
   assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.managerHandoffs), 1);
 
   // The successor replaces the orphaned confirmation at once, still hidden,
-  // and takes the hidden reload path. Before, it waited for wake().
-  await page.waitForFunction(() => window.__reloadAttempts === 1, { timeout: 10000 });
+  // and takes the hidden reload path. Before, it waited for wake(). The
+  // hidden retry floor is 5 s, so the budget is 20 s for slow runners.
+  await page.waitForFunction(() => window.__reloadAttempts === 1, { timeout: 20000 });
   const final = await page.evaluate(() => ({
     visibility: document.visibilityState,
     fetches: window.__fetchCalls,

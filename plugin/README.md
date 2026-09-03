@@ -193,6 +193,12 @@ order, which no plugin can control:
   down is the only safe answer: rewriting an owner's committed framing would
   strip the media type and length from bytes already on their way to the
   browser.
+- Cold fills of one representation are single-flight per admission stripe.
+  Requests the shared cache cannot serve (cookies, authorization) take no
+  lease, and a cacheable request waits at most 5 seconds at the gate before
+  proceeding on its own, so a downstream that requests the shell itself
+  cannot deadlock behind its own lease; the cost is a duplicate transform
+  when a fill is that slow.
 
 The compatibility matrices preserve one concrete limitation rather than hiding
 it: GetAvatar's single eligible outer-owned tag remains unstamped in both

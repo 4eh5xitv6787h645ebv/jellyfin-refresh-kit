@@ -178,7 +178,8 @@
             // it, never replaced by the default: the browser's own min/max
             // validation already refuses such a submit, so this only matters
             // when that validation is bypassed, and "5 became 15" is what the
-            // help text promises. The server clamps again on read, so a value
+            // help text promises. The client runtime clamps again when it reads
+            // its settings (the server clamps only the cooldown), so a value
             // posted straight to the API is bounded the same way.
             function readNumber(page, selector, fallback, minimum, maximum) {
                 var parsed = parseInt(page.querySelector(selector).value, 10);
