@@ -411,5 +411,5 @@ jobs:
           path: test-results/release-validation
           if-no-files-found: error
           # post-release-assets.yml requires this artifact to be unexpired.
-          # README "Release steps" documents this 90-day publication window.
+          # docs/contributing.md "Release steps" documents this 90-day publication window.
           retention-days: 90

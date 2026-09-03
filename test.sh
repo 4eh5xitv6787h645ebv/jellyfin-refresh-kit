@@ -166,6 +166,7 @@ for path in sorted({*workflow_root.glob("*.yml"), *workflow_root.glob("*.yaml")}
 PY
 
     python3 scripts/verify-vendored-refreshkit.py
+    python3 scripts/check-doc-links.py
     python3 scripts/test-release-tools.py
     bash scripts/check-workflows.sh
     bash e2e/proxy/lib/build-snapshot-negative.sh

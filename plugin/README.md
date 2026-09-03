@@ -31,8 +31,8 @@ browser caches it forever — installing this fixes it, and you stop telling use
 
 It is the packaged form of this repository. The single-file adoption path
 (`jellyfin-refresh-kit.js` + `RefreshKit.cs` copied into your own plugin) is
-unchanged and still supported — see [the root README](../README.md). The two
-coexist on one page by design.
+unchanged and still supported — see [docs/plugin-authors.md](../docs/plugin-authors.md).
+The two coexist on one page by design.
 
 ---
 
@@ -135,8 +135,9 @@ owner stops committing the shell. A plain downstream that merely starts the
 response early is not an owner; its bytes are finalized like any other
 late-started source response. See [the ordering caveat](#ordering-caveat).
 
-This is the same `RefreshKit.cs` machinery documented in the root README,
-vendored into the plugin (see *Repository layout* below).
+This is the same `RefreshKit.cs` machinery documented in
+[docs/plugin-authors.md](../docs/plugin-authors.md), vendored into the plugin
+(see *Repository layout* below).
 
 ### 2. Other plugins' script tags get a cache-busting stamp
 
