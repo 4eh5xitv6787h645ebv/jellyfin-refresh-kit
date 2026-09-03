@@ -820,10 +820,10 @@ Refresh Kit or Jellyfin Enhanced work to `n00bcodr/Jellyfin-Enhanced`.
 
 Use the repository entry point:
 
-Prerequisites are Node.js 20 or newer (the repository pins `22.20.0`), `npm ci`
+Prerequisites are Node.js 22.12 or newer (Puppeteer 25's floor; the repository pins `22.20.0`), `npm ci`
 with the locked Puppeteer/Chromium package, the exact .NET SDK `10.0.302`, and
 installed .NET Core plus ASP.NET Core 9.x and 10.x runtimes for the dual-runtime
-tests. Packaging also requires Python 3.10 or newer and the documented GNU/Linux shell tools
+tests. Every `test.sh` mode requires Python 3.10 or newer, and packaging also needs the documented GNU/Linux shell tools
 (`bash`, `curl`, `flock`, `readlink -f`, `sha256sum`, `tar`, and `timeout`).
 Static validation downloads a checksum-pinned `actionlint` archive into a
 temporary user cache on first use and requires Docker CLI with Compose for

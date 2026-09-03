@@ -207,6 +207,18 @@ namespace Jellyfin.Plugin.RefreshKit
         /// since the kit versions its own URL with <c>?v=</c> already.
         /// </param>
         public static string Stamp(string html, string generation, string? ownTagMarker)
+            => Stamp(html, generation, ownTagMarker, Walk);
+
+        /// <summary>
+        /// Test seam for the fail-open path: the walker is injectable so a
+        /// throwing walker can prove the shell is served unstamped and the
+        /// failure counted. Production always passes <see cref="Walk"/>.
+        /// </summary>
+        internal static string Stamp(
+            string html,
+            string generation,
+            string? ownTagMarker,
+            Func<string, string, string?, string> walker)
         {
             if (string.IsNullOrEmpty(html) || string.IsNullOrWhiteSpace(generation))
             {
@@ -215,7 +227,7 @@ namespace Jellyfin.Plugin.RefreshKit
 
             try
             {
-                return Walk(html, Uri.EscapeDataString(generation), ownTagMarker);
+                return walker(html, Uri.EscapeDataString(generation), ownTagMarker);
             }
             catch
             {

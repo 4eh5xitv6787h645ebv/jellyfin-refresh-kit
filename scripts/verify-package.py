@@ -327,10 +327,11 @@ def project_repository_path(root: pathlib.Path) -> str:
     project = root / "plugin" / "Jellyfin.Plugin.RefreshKit" / "Jellyfin.Plugin.RefreshKit.csproj"
     url = ET.fromstring(regular_bytes(root, project)).findtext(".//RepositoryUrl") or ""
     parsed = urllib.parse.urlparse(url)
+    path = parsed.path.removesuffix(".git")   # SourceLink-style URLs carry it; release URLs never do
     require(parsed.scheme == "https" and parsed.netloc == "github.com"
-            and re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", parsed.path) is not None,
+            and re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", path) is not None,
             f"<RepositoryUrl> in {project} must be https://github.com/<owner>/<repo>, got {url!r}")
-    return parsed.path
+    return path
 
 
 def project_identity(root: pathlib.Path) -> tuple[str, str]:

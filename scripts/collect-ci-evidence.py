@@ -16,7 +16,6 @@ import pathlib
 import re
 import shutil
 import subprocess
-import sys
 from typing import Any
 
 from evidence_validation import (

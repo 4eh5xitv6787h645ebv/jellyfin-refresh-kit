@@ -25,7 +25,8 @@ if [ -z "${DOTNET}" ] || [ ! -x "${DOTNET}" ]; then
 fi
 # The release tooling uses zip(strict=True) and str.removeprefix, so anything
 # older than 3.10 fails deep inside a gate with an unhelpful TypeError.
-python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null || {
+command -v python3 >/dev/null 2>&1 || { echo "FATAL: python3 is required." >&2; exit 1; }
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || {
     echo "FATAL: the validation tooling requires Python 3.10 or newer." >&2
     exit 1
 }
@@ -48,10 +49,11 @@ heading() { printf '\n==> %s\n' "$1"; }
 install_browser_dependencies() {
     heading "Installing the locked browser-test dependencies"
     command -v npm >/dev/null 2>&1 || { echo "FATAL: npm is required." >&2; return 1; }
-    local node_major
-    node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
-    [ "${node_major}" -ge 20 ] || {
-        echo "FATAL: browser tests require Node.js 20 or newer (see .node-version)." >&2
+    # Puppeteer 25 (package.json engines) needs 22.12+; the repository pins
+    # 22.20.0 in .node-version. npm only warns on an engines mismatch, so
+    # enforce it here.
+    node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 12) ? 0 : 1)' || {
+        echo "FATAL: browser tests require Node.js 22.12 or newer (see .node-version)." >&2
         return 1
     }
     if [ "${RK_SKIP_NPM_CI:-0}" != 1 ]; then

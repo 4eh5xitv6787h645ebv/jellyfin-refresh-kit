@@ -24,9 +24,8 @@ command -v node >/dev/null 2>&1 || {
     echo "FATAL: Node.js is required." >&2
     exit 1
 }
-NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
-[ "${NODE_MAJOR}" -ge 20 ] || {
-    echo "FATAL: Node.js 20 or newer is required (see .node-version)." >&2
+node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 12) ? 0 : 1)' || {
+    echo "FATAL: Node.js 22.12 or newer is required (see .node-version)." >&2
     exit 1
 }
 (

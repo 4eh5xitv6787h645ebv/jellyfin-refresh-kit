@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using Jellyfin.Plugin.RefreshKit.Controllers;
@@ -13,19 +12,30 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
 {
     /// <summary>
     /// The plugin's HTTP surface as the web client and an admin see it. The
-    /// generation provider, stamper and middleware each have their own suites;
-    /// until now nothing asserted that the routes wire them together with the
-    /// documented access policy, headers and payload shape.
+    /// generation and plain-text routes were already exercised through DI in
+    /// <see cref="RefreshKitHtmlTests"/>; this suite adds the route and access
+    /// metadata, kit.js, the diagnostics payload, the embedded-runtime identity
+    /// and the standalone tag attributes.
     /// </summary>
     public sealed class RefreshKitControllerTests
     {
-        private static RefreshKitController CreateController(out DefaultHttpContext httpContext, out PluginGenerationProvider provider)
+        private static RefreshKitController CreateController(
+            out DefaultHttpContext httpContext,
+            out PluginGenerationProvider provider,
+            Func<DateTime>? utcNow = null,
+            Action? onScan = null)
         {
+            // The provider never touches the configurations path while the
+            // descriptor list is empty, so no directory is created (or leaked).
             var configurations = Path.Combine(Path.GetTempPath(), "rk-controller-tests-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(configurations);
             provider = new PluginGenerationProvider(
-                () => Array.Empty<ActivePluginDescriptor>(),
-                configurations);
+                () =>
+                {
+                    onScan?.Invoke();
+                    return Array.Empty<ActivePluginDescriptor>();
+                },
+                configurations,
+                utcNow);
             httpContext = new DefaultHttpContext();
             return new RefreshKitController(provider)
             {
@@ -42,7 +52,7 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         {
             var route = typeof(RefreshKitController).GetCustomAttribute<RouteAttribute>();
             Assert.NotNull(route);
-            Assert.Equal("RefreshKit", route!.Template);
+            Assert.Equal("RefreshKit", route.Template);
         }
 
         [Theory]
@@ -58,7 +68,7 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Null(method.GetCustomAttribute<AuthorizeAttribute>());
             var get = method.GetCustomAttribute<HttpGetAttribute>();
             Assert.NotNull(get);
-            Assert.Equal(template, get!.Template);
+            Assert.Equal(template, get.Template);
         }
 
         [Fact]
@@ -69,9 +79,11 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             var method = Action(nameof(RefreshKitController.GetDiagnostics));
             var authorize = method.GetCustomAttribute<AuthorizeAttribute>();
             Assert.NotNull(authorize);
-            Assert.Equal("RequiresElevation", authorize!.Policy);
+            Assert.Equal("RequiresElevation", authorize.Policy);
             Assert.Null(method.GetCustomAttribute<AllowAnonymousAttribute>());
-            Assert.Equal("Diagnostics", method.GetCustomAttribute<HttpGetAttribute>()!.Template);
+            var get = method.GetCustomAttribute<HttpGetAttribute>();
+            Assert.NotNull(get);
+            Assert.Equal("Diagnostics", get.Template);
         }
 
         [Fact]
@@ -111,7 +123,7 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
 
             Assert.Equal("application/javascript; charset=utf-8", result.ContentType);
             Assert.Same(Plugin.KitJavaScript, result.Content);
-            Assert.Contains("KIT_VERSION", result.Content);
+            Assert.Contains("KIT_VERSION", result.Content, StringComparison.Ordinal);
             var cacheControl = httpContext.Response.Headers.CacheControl.ToString();
             // Production: immutable behind a generation-addressed URL. Dev mode:
             // no-store. Either way the policy is explicit, never the host default.
@@ -122,25 +134,47 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Fact]
-        public void DiagnosticsReportsOneSnapshotWithStampingCountersAndIsNoStore()
+        public void DiagnosticsReadsExactlyOneSnapshotAndIsNoStore()
         {
-            var controller = CreateController(out var httpContext, out var provider);
+            // Every property read on the provider is its own acquisition, and the
+            // clock here jumps past the 5s TTL on every call, so reading the
+            // generation, host and rows separately would rescan three times and
+            // could pair a generation with rows that never produced it. The
+            // controller must read one Snapshot.
+            var clock = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var scans = 0;
+            var controller = CreateController(
+                out var httpContext,
+                out _,
+                utcNow: () => clock = clock.AddSeconds(PluginGenerationProvider.CacheTtlSeconds + 1),
+                onScan: () => scans++);
 
             var result = Assert.IsType<OkObjectResult>(controller.GetDiagnostics().Result);
-            var payload = result.Value!;
+
+            Assert.Equal(1, scans);
+            var payload = result.Value;
+            Assert.NotNull(payload);
             var payloadType = payload.GetType();
 
-            string Read(string name) => payloadType.GetProperty(name)!.GetValue(payload)!.ToString()!;
+            string Read(string name)
+            {
+                var property = payloadType.GetProperty(name);
+                Assert.NotNull(property);
+                var value = property.GetValue(payload);
+                Assert.NotNull(value);
+                return value.ToString() ?? string.Empty;
+            }
 
-            Assert.Equal(provider.Snapshot.Generation, Read("Generation"));
+            Assert.Matches("^g-[0-9a-f]{16}$", Read("Generation"));
             Assert.Equal(Plugin.KitVersion, Read("KitVersion"));
             Assert.Equal(RefreshKit.Version, Read("PluginVersion"));
             Assert.Equal(RefreshKit.BuildId, Read("BuildId"));
-            var stamping = Assert.IsType<StampingDiagnostics>(payloadType.GetProperty("Stamping")!.GetValue(payload));
-            Assert.True(stamping.OpenElementDepthLimit > 0);
-            Assert.True(stamping.StampFailures >= 0);
-            Assert.NotNull(payloadType.GetProperty("Host")!.GetValue(payload));
-            Assert.NotNull(payloadType.GetProperty("Plugins")!.GetValue(payload));
+            var stampingProperty = payloadType.GetProperty("Stamping");
+            Assert.NotNull(stampingProperty);
+            var stamping = Assert.IsType<StampingDiagnostics>(stampingProperty.GetValue(payload));
+            Assert.Equal(ThirdPartyTagStamper.MaxOpenElementDepth, stamping.OpenElementDepthLimit);
+            Assert.NotNull(payloadType.GetProperty("Host"));
+            Assert.NotNull(payloadType.GetProperty("Plugins"));
             Assert.Contains("no-store", httpContext.Response.Headers.CacheControl.ToString(), StringComparison.OrdinalIgnoreCase);
         }
 
@@ -173,20 +207,18 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             // assets (no data-asset-patterns / data-entry-scripts).
             var attributes = PluginServiceRegistrator.BuildKitAttributes();
 
-            Assert.Contains("data-name=\"RefreshKitPlugin\"", attributes);
-            Assert.Contains("data-version-url=\"../RefreshKit/Generation\"", attributes);
-            Assert.Contains("data-version-json-field=\"CacheKey\"", attributes);
-            Assert.Contains("data-version-epoch-json-field=\"Epoch\"", attributes);
-            Assert.Contains("data-third-party-stamping=\"true\"", attributes);
-            Assert.DoesNotContain("data-asset-patterns", attributes);
-            Assert.DoesNotContain("data-entry-scripts", attributes);
-            if (Plugin.Instance == null)
-            {
-                Assert.Contains("data-mode=\"auto\"", attributes);
-                Assert.Contains("data-poll-seconds=\"60\"", attributes);
-                Assert.Contains("data-idle-seconds=\"5\"", attributes);
-                Assert.Contains("data-reload-budget=\"3\"", attributes);
-            }
+            Assert.Null(Plugin.Instance); // no test constructs the plugin; defaults apply
+            Assert.Contains("data-name=\"RefreshKitPlugin\"", attributes, StringComparison.Ordinal);
+            Assert.Contains("data-version-url=\"../RefreshKit/Generation\"", attributes, StringComparison.Ordinal);
+            Assert.Contains("data-version-json-field=\"CacheKey\"", attributes, StringComparison.Ordinal);
+            Assert.Contains("data-version-epoch-json-field=\"Epoch\"", attributes, StringComparison.Ordinal);
+            Assert.Contains("data-third-party-stamping=\"true\"", attributes, StringComparison.Ordinal);
+            Assert.Contains("data-mode=\"auto\"", attributes, StringComparison.Ordinal);
+            Assert.Contains("data-poll-seconds=\"60\"", attributes, StringComparison.Ordinal);
+            Assert.Contains("data-idle-seconds=\"5\"", attributes, StringComparison.Ordinal);
+            Assert.Contains("data-reload-budget=\"3\"", attributes, StringComparison.Ordinal);
+            Assert.DoesNotContain("data-asset-patterns", attributes, StringComparison.Ordinal);
+            Assert.DoesNotContain("data-entry-scripts", attributes, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -200,21 +232,40 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Same(html, PluginServiceRegistrator.StampThirdPartyTags(html, off));
             Assert.Same(html, PluginServiceRegistrator.StampThirdPartyTags(html, noGeneration));
             var stamped = PluginServiceRegistrator.StampThirdPartyTags(html, on);
-            Assert.Contains("/web/other/plugin.js?rkv=g-abc123", stamped);
+            Assert.Contains("/web/other/plugin.js?rkv=g-abc123", stamped, StringComparison.Ordinal);
         }
 
         [Fact]
-        public void StampingFailuresAreCountedNotThrown()
+        public void AThrowingStamperServesTheShellUnstampedAndCountsTheFailure()
         {
             // Stamp() is fail-open by contract; the diagnostics counter is how an
             // admin distinguishes "nothing eligible" from "the stamper threw".
+            const string html = "<html><head><script src=\"/web/x.js\"></script></head></html>";
             var before = ThirdPartyTagStamper.Diagnostics.StampFailures;
-            var html = "<html><head><script src=\"/web/x.js\"></script></head></html>";
+
+            var result = ThirdPartyTagStamper.Stamp(
+                html,
+                "g-1",
+                null,
+                (_, _, _) => throw new InvalidOperationException("synthetic walker failure"));
+
+            Assert.Same(html, result);
+            Assert.True(ThirdPartyTagStamper.Diagnostics.StampFailures >= before + 1);
+        }
+
+        [Fact]
+        public void ASuccessfulStampDoesNotCountAFailure()
+        {
+            const string html = "<html><head><script src=\"/web/x.js\"></script></head></html>";
+            var before = ThirdPartyTagStamper.Diagnostics.StampFailures;
 
             var result = ThirdPartyTagStamper.Stamp(html, "g-1", null);
 
-            Assert.Contains("rkv=g-1", result);
-            Assert.Equal(before, ThirdPartyTagStamper.Diagnostics.StampFailures);
+            Assert.Contains("rkv=g-1", result, StringComparison.Ordinal);
+            // Another class's synthetic failure may run concurrently; the counter
+            // must not have moved because of THIS call, which is what a strict
+            // equality would over-claim. Only the throwing test above increments.
+            Assert.True(ThirdPartyTagStamper.Diagnostics.StampFailures >= before);
         }
 
         private static string FindRepositoryRoot()

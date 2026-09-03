@@ -755,7 +755,7 @@ pre-existing tag, and never publishes, tags, or moves a branch itself.
 
 Use the repository entry point from the repository root:
 
-The full local prerequisites are Node.js 20 or newer (`.node-version` pins
+The full local prerequisites are Node.js 22.12 or newer (`.node-version` pins
 `22.20.0`), `npm ci` for locked Puppeteer/Chromium, the exact .NET SDK
 `10.0.302`, installed .NET Core and ASP.NET Core 9.x plus 10.x runtimes, Python
 3, and GNU/Linux shell tools including `curl`, `flock`, `sha256sum`, and `tar`.
