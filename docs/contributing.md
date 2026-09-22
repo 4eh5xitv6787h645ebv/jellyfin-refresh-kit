@@ -240,7 +240,14 @@ Enhanced release, both supported host lines, both middleware orders, duplicate
 runtimes and actual Enhanced review-form behavior. See
 [the lab contract](../e2e/enhanced/README.md).
 
-The active final release version is `1.1.0.1` (runtime `2.5.0`). The fixed
+The active final release version is `1.1.0.2` (runtime `2.5.0`). The fixed
 campaign clock, clean-source/manifest-child binding, exact validation receipts,
 and immutable asset publication checks remain required. Updating the expected
 version does not authorize replacing the existing `v1.0.1.0` assets.
+
+Package builds also pin the compiler host to the runtime bundled with the exact
+SDK and disable shared compiler reuse. A newer runtime installed on the build
+machine otherwise changes Roslyn's portable-PDB `runtime-version` record and
+therefore the DLL/ZIP hashes. The reproducibility gate checks that record for
+both targets while varying the caller's runtime roll-forward setting. This
+build-only pin does not constrain the runtime used by Jellyfin or its plugins.

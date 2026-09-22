@@ -88,6 +88,12 @@ fi
 unset RK_BUILD_TEST_ATTEMPT_FILE RK_BUILD_TEST_BLOCKED_FILE \
     RK_BUILD_TEST_ACQUIRED_FILE RK_BUILD_TEST_RELEASE_FILE
 
+# Pin the compiler host to the runtime shipped with the exact SDK. Roslyn embeds
+# its host runtime identity in portable PDBs; rolling to a newer machine-installed
+# patch changes the PDB, DLL debug identity, and ZIP even with identical source.
+# This affects only the build process, never the deployed Jellyfin runtime.
+export DOTNET_ROLL_FORWARD=Disable
+
 # Prefer an explicitly selected SDK, then the repository owner's user install,
 # then PATH. global.json makes the selected SDK version an exact requirement.
 if [ -n "${DOTNET_ROOT:-}" ] && [ -x "${DOTNET_ROOT}/dotnet" ]; then
@@ -321,8 +327,8 @@ GUID="${PROJECT_IDENTITY[1]}"
 }
 
 TARGETS=(
-    "net9.0|10.11.0.0|stage||Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage."
-    "net10.0|12.0.0.0|stage-jf12|_jf12|Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage."
+    "net9.0|10.11.0.0|stage||Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, current Enhanced adoption coverage, and a pinned compiler host for reproducible package bytes."
+    "net10.0|12.0.0.0|stage-jf12|_jf12|Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, current Enhanced adoption coverage, and a pinned compiler host for reproducible package bytes."
 )
 
 TIMESTAMP="$(python3 - "${BUILD_EPOCH}" <<'PY'
@@ -505,6 +511,7 @@ COMMON_BUILD_PROPERTIES=(
     "-p:DiscoverEditorConfigFiles=false"
     "-p:DiscoverGlobalAnalyzerConfigFiles=false"
     "-p:NuGetAudit=false"
+    "-p:UseSharedCompilation=false"
 )
 
 echo "==> Restoring the locked dependency graph"

@@ -65,6 +65,8 @@ copy_source() {
         --exclude '/e2e/proxy/.je/' \
         --exclude '/e2e/proxy/.rk-token' \
         --exclude '/e2e/proxy/.state/' \
+        --exclude '/e2e/enhanced/.state/' \
+        --exclude '/e2e/enhanced/artifacts/' \
         --exclude '/e2e/jellyfin/.state/' \
         --exclude '/e2e/jellyfin/artifacts/' \
         --exclude '/e2e/compat/.cache/' \
@@ -108,12 +110,13 @@ fi
 echo "    builder and verifier both rejected the out-of-checkout target"
 
 build_copy() {
-    local path="$1" label="$2"
+    local path="$1" label="$2" roll_forward="$3"
     local cli_home="${TEMP_ROOT}/dotnet-${label}" packages="${TEMP_ROOT}/nuget-${label}"
     mkdir -p "${cli_home}" "${packages}"
     (
         cd "${path}"
         DOTNET_ROOT="${REPRO_DOTNET_ROOT}" \
+        DOTNET_ROLL_FORWARD="${roll_forward}" \
         DOTNET_CLI_HOME="${cli_home}" \
         NUGET_PACKAGES="${packages}" \
         ./plugin/build.sh
@@ -121,9 +124,32 @@ build_copy() {
 }
 
 echo "==> Reproducibility build A: ${FIRST}"
-build_copy "${FIRST}" first
+build_copy "${FIRST}" first Disable
 echo "==> Reproducibility build B: ${SECOND}"
-build_copy "${SECOND}" second
+build_copy "${SECOND}" second LatestPatch
+
+# The CI image can have newer runtime patches beside the pinned SDK. Comparing
+# only paths on one machine missed Roslyn recording that ambient compiler host
+# in its PDB. Check the recorded host, and use different caller roll-forward
+# settings for A/B above so neither environment nor a shared compiler may win.
+python3 - "${REPRO_DOTNET_ROOT}" "${FIRST}" "${SECOND}" <<'PYCOMPILER'
+import json
+import pathlib
+import re
+import sys
+
+sdk = json.loads(pathlib.Path("global.json").read_text())["sdk"]["version"]
+config = pathlib.Path(sys.argv[1]) / "sdk" / sdk / "Roslyn/bincore/csc.runtimeconfig.json"
+expected = json.loads(config.read_text())["runtimeOptions"]["framework"]["version"]
+for checkout in sys.argv[2:]:
+    for stage in ("stage", "stage-jf12"):
+        pdb = pathlib.Path(checkout) / "plugin/build" / stage / "Jellyfin.Plugin.RefreshKit.pdb"
+        recorded = re.findall(rb"\x00runtime-version\x00([^\x00]+)", pdb.read_bytes())
+        versions = [value.decode("utf-8").split("-", 1)[0].split("+", 1)[0] for value in recorded]
+        if versions != [expected]:
+            raise SystemExit(f"FATAL: {stage} compiler host {versions!r} differs from SDK runtime {expected}")
+print(f"==> Both package targets use the SDK's exact compiler runtime {expected}")
+PYCOMPILER
 
 VERSION="$(python3 - <<'PY'
 import xml.etree.ElementTree as ET
