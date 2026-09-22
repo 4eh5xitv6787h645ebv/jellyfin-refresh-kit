@@ -13,16 +13,16 @@
                 "changelog": "Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage.",
                 "targetAbi": "12.0.0.0",
                 "sourceUrl": "https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.1.0.1/jellyfin-refresh-kit_1.1.0.1_jf12.zip",
-                "checksum": "00000000000000000000000000000000",
-                "timestamp": "2026-09-22T16:23:17Z"
+                "checksum": "7c7a3f27be74feb78645bda607cc7a5f",
+                "timestamp": "2026-09-22T16:30:37Z"
             },
             {
                 "version": "1.1.0.1",
                 "changelog": "Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage.",
                 "targetAbi": "10.11.0.0",
                 "sourceUrl": "https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.1.0.1/jellyfin-refresh-kit_1.1.0.1.zip",
-                "checksum": "00000000000000000000000000000000",
-                "timestamp": "2026-09-22T16:23:17Z"
+                "checksum": "7b61c1bd87be988f85f4232211f5f52c",
+                "timestamp": "2026-09-22T16:30:37Z"
             },
             {
                 "version": "1.0.1.0",
