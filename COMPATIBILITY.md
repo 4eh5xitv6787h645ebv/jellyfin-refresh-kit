@@ -71,7 +71,7 @@ The net9 build uses the 10.11.0 floor so its shared MediaBrowser assembly
 references match the declared `10.11.0.0` ABI; deterministic package
 verification rejects any staged DLL/metadata disagreement before a live lab.
 
-## Enhanced adoption candidate (1.1.0.0 / runtime 2.5.0)
+## Enhanced adoption candidate (1.1.0.1 / runtime 2.5.0)
 
 The Enhanced adoption lab additionally pins stable Jellyfin **12.1** at
 `sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e`

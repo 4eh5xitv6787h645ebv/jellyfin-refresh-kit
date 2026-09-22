@@ -6854,16 +6854,24 @@ test('Enhanced drafts survive blur, hidden state and pending saves until the for
   await page.waitForFunction(() => __reloadAttempts === 1);
 });
 
-test('Enhanced dirty admin settings block until saved or discarded', async (t) => {
+test('Enhanced admin settings and saves block until saved or discarded', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
   const page = await browser.newPage();
   await configureBudgetReloadPage(page, origin, { name: 'EnhancedAdmin' });
-  await page.evaluate(() => { document.body.innerHTML = '<div class="je-save-dock je-dirty"></div>'; });
+  await page.evaluate(() => { document.body.innerHTML = '<div class="je-save-dock je-dirty"><button class="je-save-dock-btn"></button></div>'; });
   await injectRuntime(page, fastBudgetRuntime());
   await page.waitForFunction(() => JellyfinRefreshKit.state().updatePending);
   assert.equal(await page.evaluate(() => JellyfinRefreshKit.state().blockReason), 'unsaved_work');
-  await page.evaluate(() => document.querySelector('.je-save-dock').classList.remove('je-dirty'));
+  await page.evaluate(() => {
+    document.querySelector('.je-save-dock-btn').disabled = true;
+    document.querySelector('.je-save-dock').classList.remove('je-dirty');
+  });
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(await page.evaluate(() => JellyfinRefreshKit.state().blockReason), 'unsaved_work');
+  assert.equal(await page.evaluate(() => __reloadAttempts), 0,
+    'saving still blocks when the dirty marker is absent');
+  await page.evaluate(() => { document.querySelector('.je-save-dock-btn').disabled = false; });
   await page.waitForFunction(() => __reloadAttempts === 1);
 });
 

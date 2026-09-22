@@ -3413,8 +3413,8 @@
             // in this inline form until save succeeds or Cancel removes it.
             // Do not exempt a disabled Submit button: that is an in-flight save.
             // Keep connected hidden drafts protected too; hiding is not saving.
-            // Its admin page provides an explicit dirty-state indicator.
-            if (document.querySelector('.je-review-form, .je-save-dock.je-dirty')) return 'unsaved_work';
+            // Its admin page provides explicit dirty and save-in-progress indicators.
+            if (document.querySelector('.je-review-form, .je-save-dock.je-dirty, .je-save-dock-btn[disabled]')) return 'unsaved_work';
             return null;
         } finally {
             checkingReloadGuards = false;

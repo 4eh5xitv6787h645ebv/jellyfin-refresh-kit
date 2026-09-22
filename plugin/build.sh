@@ -321,8 +321,8 @@ GUID="${PROJECT_IDENTITY[1]}"
 }
 
 TARGETS=(
-    "net9.0|10.11.0.0|stage||Application reload guards, Enhanced draft protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage."
-    "net10.0|12.0.0.0|stage-jf12|_jf12|Application reload guards, Enhanced draft protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage."
+    "net9.0|10.11.0.0|stage||Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage."
+    "net10.0|12.0.0.0|stage-jf12|_jf12|Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage."
 )
 
 TIMESTAMP="$(python3 - "${BUILD_EPOCH}" <<'PY'

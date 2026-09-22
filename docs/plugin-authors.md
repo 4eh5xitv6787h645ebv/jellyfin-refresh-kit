@@ -294,3 +294,7 @@ Screensavers and hidden-tab reloads do not override application work. Other
 plugins must register a guard for state not covered by the standard DOM probes.
 See [the Enhanced adoption example](../examples/enhanced/README.md) and
 [its real-server lab](../e2e/enhanced/README.md).
+
+Enhanced admin saves also block while `.je-save-dock-btn[disabled]` is present,
+including saves started without a dirty marker. Re-enabling the button releases
+that save-state protection; a remaining dirty marker continues to protect edits.

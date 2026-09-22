@@ -9,19 +9,19 @@
         "imageUrl": "",
         "versions": [
             {
-                "version": "1.1.0.0",
-                "changelog": "Application reload guards, Enhanced draft protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage.",
+                "version": "1.1.0.1",
+                "changelog": "Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage.",
                 "targetAbi": "12.0.0.0",
-                "sourceUrl": "https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.1.0.0/jellyfin-refresh-kit_1.1.0.0_jf12.zip",
-                "checksum": "2428c51fb9aca754d5d4a4197e0ce744",
+                "sourceUrl": "https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.1.0.1/jellyfin-refresh-kit_1.1.0.1_jf12.zip",
+                "checksum": "00000000000000000000000000000000",
                 "timestamp": "2026-09-22T16:23:17Z"
             },
             {
-                "version": "1.1.0.0",
-                "changelog": "Application reload guards, Enhanced draft protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage.",
+                "version": "1.1.0.1",
+                "changelog": "Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, and current Enhanced adoption coverage.",
                 "targetAbi": "10.11.0.0",
-                "sourceUrl": "https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.1.0.0/jellyfin-refresh-kit_1.1.0.0.zip",
-                "checksum": "d7ef191d6a4f8874d34aeeac2dcb8622",
+                "sourceUrl": "https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases/download/v1.1.0.1/jellyfin-refresh-kit_1.1.0.1.zip",
+                "checksum": "00000000000000000000000000000000",
                 "timestamp": "2026-09-22T16:23:17Z"
             },
             {

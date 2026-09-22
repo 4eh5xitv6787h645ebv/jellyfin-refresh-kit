@@ -77,3 +77,7 @@ ownership: two registrations with the same name remain independent.
 `e2e/enhanced` validates this injection arrangement against the locked official
 Enhanced binaries, in both runtime plugin orders, with another independent
 C# helper and the standalone kit present. No upstream Enhanced files are edited.
+
+Enhanced admin saves also block while `.je-save-dock-btn[disabled]` is present,
+including saves started without a dirty marker. Re-enabling the button releases
+that save-state protection; a remaining dirty marker continues to protect edits.
