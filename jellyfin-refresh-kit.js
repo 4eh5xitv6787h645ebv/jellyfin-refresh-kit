@@ -939,8 +939,16 @@
      *           picker, Firefox's multi-login menu) is not refilled
      *           unprompted after the reload (typed work still refuses
      *           everywhere).
+     *   2.4.10 — Preserve distinct reload-budget timestamps across storage
+     *            mirrors before clamping future stamps after a clock rollback.
+     *            The disabled-control selector fallback respects the first
+     *            legend exemption, including nested fieldsets, so editable
+     *            passwords and focused fields remain protected from reloads.
+     *   2.5.0 — Page-wide application reload guards survive runtime handoffs.
+     *           Enhanced inline review forms and dirty admin settings remain
+     *           protected after blur and throughout asynchronous saves.
      */
-    var KIT_VERSION = '2.4.9';
+    var KIT_VERSION = '2.5.0';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -3124,11 +3132,18 @@
             try {
                 return element.matches(':disabled');
             } catch (_) {
-                // An engine without `:disabled` (2.4.9): the attribute-based
-                // equivalent of the ancestor-fieldset case, so the probe
-                // degrades to the conservative check instead of throwing.
-                return typeof element.closest === 'function' &&
-                    !!element.closest('fieldset[disabled]');
+                // The first legend of each disabled fieldset stays editable.
+                // Check every ancestor: exemption from an inner fieldset does
+                // not imply exemption from an outer one. A plain closest()
+                // check would discard typed work in those editable legends.
+                if (!/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(element.tagName || '')) return false;
+                for (var parent = element.parentElement; parent; parent = parent.parentElement) {
+                    if (parent.tagName !== 'FIELDSET' || parent.disabled !== true) continue;
+                    var legend = parent.firstElementChild;
+                    while (legend && legend.tagName !== 'LEGEND') legend = legend.nextElementSibling;
+                    if (!legend || !legend.contains(element)) return true;
+                }
+                return false;
             }
         } catch (_) {
             return false;
@@ -3365,6 +3380,66 @@
         return maskedTransitionRemainingMs() > 0;
     }
 
+    // Guards describe application state that DOM heuristics cannot establish.
+    // Records (including their closures and release state) transfer by reference
+    // during a manager handoff. Never serialize them or expose form values.
+    var reloadGuards = [];
+    var checkingReloadGuards = false;
+    var reloadGuardRevision = 0;
+
+    function applicationReloadBlock() {
+        if (checkingReloadGuards) return 'reload_guard';
+        checkingReloadGuards = true;
+        try {
+            reloadGuards = reloadGuards.filter(function (g) { return !g.released; });
+            var revision = reloadGuardRevision;
+            for (var i = 0; i < reloadGuards.length; i++) {
+                var guard = reloadGuards[i];
+                // Only an explicit synchronous true permits a reload. A thrown
+                // error, Promise, missing return or unknown value fails closed.
+                guard.allowed = false;
+                try {
+                    var result = guard.canReload();
+                    guard.allowed = result === true;
+                    // A mistakenly async guard still refuses. Observe rejection
+                    // so the fail-closed path does not create an unhandled error.
+                    if (result && typeof result.then === 'function') {
+                        Promise.resolve(result).catch(function () {});
+                    }
+                } catch (_) { /* unknown */ }
+                if (!guard.allowed || revision !== reloadGuardRevision) return 'reload_guard';
+            }
+            // Enhanced 12.8 keeps review drafts (including rating-only edits)
+            // in this inline form until save succeeds or Cancel removes it.
+            // Do not exempt a disabled Submit button: that is an in-flight save.
+            // Keep connected hidden drafts protected too; hiding is not saving.
+            // Its admin page provides an explicit dirty-state indicator.
+            if (document.querySelector('.je-review-form, .je-save-dock.je-dirty')) return 'unsaved_work';
+            return null;
+        } finally {
+            checkingReloadGuards = false;
+        }
+    }
+
+    function registerReloadGuard(name, canReload) {
+        if (typeof name !== 'string' || !name.trim() || name.length > 100 || typeof canReload !== 'function') {
+            throw new TypeError('registerReloadGuard requires a name (1–100 characters) and a synchronous callback');
+        }
+        var record = { name: name.trim(), canReload: canReload, allowed: false, released: false };
+        reloadGuards.push(record);
+        api.__reloadGuardsChanged();
+        // Duplicate names are independent guards. An old owner's release must
+        // never remove a replacement's protection, even across runtime copies.
+        return Object.freeze({
+            release: function () {
+                if (record.released) return;
+                record.released = true;
+                api.__reloadGuardsChanged();
+            },
+            changed: function () { if (!record.released) api.__reloadGuardsChanged(); }
+        });
+    }
+
     /**
      * @param {number} idleMs The idle window that must have elapsed (already
      *   floored at MIN_SETTLE_MS by the caller).
@@ -3377,6 +3452,10 @@
      */
     function blockReasonFor(idleMs, skipMediaGate) {
         try {
+            // Application work is never overridden by a screensaver, hidden
+            // reload, relaxed idle window, or the stalled-media escape.
+            var applicationBlock = applicationReloadBlock();
+            if (applicationBlock) return applicationBlock;
             // HIDDEN IS A PERMISSION MODE, NOT A REFUSAL (2.4.0).
             //
             // A hidden tab is the single best moment this kit will ever get: no
@@ -3719,10 +3798,12 @@
                 // it — an hour plus the window — instead of for one window
                 // from the moment it was noticed.
                 if (stamp < now - BUDGET_WINDOW_MS) continue;
-                if (stamp > now) stamp = now;
                 var stampKey = String(stamp);
                 sourceCounts[stampKey] = (sourceCounts[stampKey] || 0) + 1;
-                stampValues[stampKey] = stamp;
+                // Merge by the ORIGINAL timestamp. Clamping before forming
+                // the key aliases distinct future slots (and a slot at now)
+                // across mirrors, so their max-union can undercount reloads.
+                stampValues[stampKey] = Math.min(stamp, now);
             }
             for (var key in sourceCounts) {
                 if (!Object.prototype.hasOwnProperty.call(sourceCounts, key)) continue;
@@ -8475,6 +8556,7 @@
                 return out;
             })(),
             shared: {
+                reloadGuards: reloadGuards,
                 lastInteractionAt: lastInteractionAt,
                 trustedInteractionSeen: trustedInteractionSeen,
                 blockedRetries: blockedRetries,
@@ -8618,6 +8700,7 @@
         if (!t || typeof t !== 'object') return false;
 
         var s = (t.shared && typeof t.shared === 'object') ? t.shared : {};
+        if (Array.isArray(s.reloadGuards)) reloadGuards = s.reloadGuards;
         // Freeze adopted starts before creating any replacement closure. The
         // old manager may already have committed navigation; starting a poll
         // during adoption would recreate the unload-window ride-along race.
@@ -8962,6 +9045,28 @@
             }, null) || null;
         },
 
+        /**
+         * Protect application-owned drafts and saves. Every live guard must
+         * return true synchronously before ANY instance may reload the page.
+         * The returned handle survives manager handoffs; release is idempotent.
+         */
+        registerReloadGuard: function (name, canReload) {
+            var d = forwardTo();
+            if (d) return d.registerReloadGuard(name, canReload);
+            return registerReloadGuard(name, canReload);
+        },
+
+        __reloadGuardsChanged: function () {
+            var d = forwardTo();
+            if (d) return d.__reloadGuardsChanged();
+            reloadGuardRevision += 1;
+            reloadGuards = reloadGuards.filter(function (g) { return !g.released; });
+            cancelBudgetReservation();
+            if (pendingInstances().length === 0) return;
+            if (document.visibilityState === 'hidden') onHidden();
+            else scheduleRetry();
+        },
+
         /** @returns {string[]} Registered instance names, in registration order. */
         instances: function () {
             var d = forwardTo();
@@ -8986,6 +9091,8 @@
                 var f = firstInstance();
                 var out = f ? f.state() : { kitVersion: KIT_VERSION };
                 out.contractVersion = CONTRACT_VERSION;
+                out.reloadGuards = reloadGuards.filter(function (g) { return !g.released; })
+                    .map(function (g) { return { name: g.name, allowed: g.allowed }; });
                 out.instanceCount = registry.length;
                 // Prototype-less (2.4.9): an instance named "__proto__" used
                 // to vanish from the snapshot (assignment hit the prototype

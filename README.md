@@ -199,6 +199,8 @@ In the browser console, run:
 JellyfinRefreshKit.state()
 ```
 
+Runtime 2.5.0 also protects Enhanced review drafts and unsaved admin settings after focus moves away (`unsaved_work`). Adopting plugins can register application reload guards for other drafts and saves (`reload_guard`); see [the integration guide](docs/plugin-authors.md#protect-application-work-runtime-250).
+
 The returned object includes the current reload `blockReason`, naming the safety gate that is holding the reload (the gates are listed in [docs/how-it-works.md](docs/how-it-works.md#safe-automatic-reloads)).
 
 A common case is `password_entry`: Refresh Kit will not automatically reload while a rendered, enabled, non-inert password field still contains a value. Two exceptions: a populated login field that Jellyfin keeps in its hidden login page after you sign in is ignored, and (since runtime 2.4.9) a password the browser autofilled on the login or select-server page is ignored while nobody has typed into a text field and no trusted click or keypress has happened since the runtime booted, because the browser will fill it again after the reload.

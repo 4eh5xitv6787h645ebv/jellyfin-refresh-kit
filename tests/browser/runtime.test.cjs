@@ -417,7 +417,7 @@ async function waitForEpochFetches(page, count) {
 }
 
 function runtimeAtVersion(version) {
-  const marker = "var KIT_VERSION = '2.4.9';";
+  const marker = "var KIT_VERSION = '2.5.0';";
   assert.equal(runtime.split(marker).length, 2, 'runtime must contain one current KIT_VERSION marker');
   return runtime.replace(marker, `var KIT_VERSION = '${version}';`);
 }
@@ -1515,8 +1515,8 @@ test('newest-wins handoffs preserve candidate evidence and claimed epoch authori
     window.__retainedEpochHandle = window.JellyfinRefreshKit.get('EpochHandoff');
   });
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.10'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.5.1'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.1');
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.get('EpochHandoff').state().updatePending === true
   ));
@@ -1527,10 +1527,10 @@ test('newest-wins handoffs preserve candidate evidence and claimed epoch authori
   assert.equal(state.authorizedEpoch, 'handoff-epoch');
   assert.deepEqual(state.candidateEpochEvidence, [{ epoch: 'handoff-epoch', count: 2 }]);
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.5.0'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.0');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.5.2'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.2');
   state = await page.evaluate(() => window.__retainedEpochHandle.state());
-  assert.equal(state.kitVersion, '2.5.0');
+  assert.equal(state.kitVersion, '2.5.2');
   assert.equal(state.restoredByHandoff, true);
   assert.equal(state.updatePending, true);
   assert.equal(state.authorizedEpoch, 'handoff-epoch');
@@ -1580,8 +1580,8 @@ test('handoff replaces one held in-flight confirmation without waiting for pollS
     window.JellyfinRefreshKit.get('EpochHeldHandoff').state().candidateEpochEvidence
   )), [{ epoch: 'held-handoff-epoch', count: 1 }]);
 
-  await injectConfiguredRuntime(page, fastEpochRuntime(runtimeAtVersion('2.4.10')), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  await injectConfiguredRuntime(page, fastEpochRuntime(runtimeAtVersion('2.5.1')), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.1');
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.get('EpochHeldHandoff').state().updatePending === true
   ));
@@ -2306,6 +2306,30 @@ test('equal-millisecond multiplicity, mirror max-union, and mixed-budget history
     'a later higher-budget document sees every slot retained by the lower-budget reader');
 });
 
+test('clock rollback preserves distinct spent slots across budget mirrors before clamping', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  const now = 1_800_000_000_000;
+  await configureBudgetReloadPage(page, origin, {
+    name: 'RollbackMirrorUnion', budget: 4, now,
+  });
+  await setBudgetLedger(page, [now, now + 1000]);
+  await page.evaluate(({ keys, stamp }) => {
+    localStorage.setItem(keys.budget, JSON.stringify([stamp + 1000, stamp + 2000]));
+    sessionStorage.setItem(keys.budget, JSON.stringify([stamp + 2000, stamp + 2000]));
+  }, { keys: storageKeys, stamp: now });
+  await injectRuntime(page, fastBudgetRuntime());
+  await page.waitForFunction(() => (
+    window.__reloadAttempts > 0 ||
+    window.JellyfinRefreshKit?.state().shared.lastBlockReason === 'reload_budget'
+  ));
+  assert.equal(await page.evaluate(() => window.__reloadAttempts), 0,
+    'one current slot and three distinct/multiple future slots exhaust the four-slot budget');
+  assert.deepEqual(await readBudgetLedger(page), [now, now, now, now],
+    'identical original stamps are max-unioned before future stamps are clamped');
+});
+
 test('overlapping tabs serialize behind the actual readwrite request and admit only one', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
@@ -2962,9 +2986,9 @@ test('newest-wins handoff invalidates the retired queued token before retrying o
       getVersion: () => Promise.resolve('B'),
     };
   });
-  await injectRuntime(page, fastBudgetRuntime(runtimeAtVersion('2.4.10'), 15_000));
+  await injectRuntime(page, fastBudgetRuntime(runtimeAtVersion('2.5.1'), 15_000));
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit.kitVersion === '2.4.10'
+    window.JellyfinRefreshKit.kitVersion === '2.5.1'
       && window.JellyfinRefreshKit.state().instanceCount === 1
       && window.JellyfinRefreshKit.state().shared.reloadBudgetReservationPending === true
   ));
@@ -2976,7 +3000,7 @@ test('newest-wins handoff invalidates the retired queued token before retrying o
     reloads: window.__reloadAttempts,
     budget: JSON.parse(localStorage.getItem(keys.budget)),
   }), storageKeys), {
-    version: '2.4.10',
+    version: '2.5.1',
     instances: 1,
     reloads: 1,
     budget: [1_800_000_600_000],
@@ -4501,8 +4525,8 @@ test('retained instance handles follow chained newest-wins handoffs', async (t) 
 
   await injectConfiguredRuntime(page, runtime, attributes);
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit?.kitVersion === '2.4.9'
-      && window.JellyfinRefreshKit.get('RetainedHandoffTest')?.state().kitVersion === '2.4.9'
+    window.JellyfinRefreshKit?.kitVersion === '2.5.0'
+      && window.JellyfinRefreshKit.get('RetainedHandoffTest')?.state().kitVersion === '2.5.0'
   ));
 
   const afterHandoffs = await page.evaluate(() => {
@@ -4534,23 +4558,23 @@ test('retained instance handles follow chained newest-wins handoffs', async (t) 
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.9',
+      stateKitVersion: '2.5.0',
     },
     middle: {
       name: 'RetainedHandoffTest',
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.9',
+      stateKitVersion: '2.5.0',
     },
     current: {
       name: 'RetainedHandoffTest',
       version: 'A',
       latestVersion: 'A',
       versionedUrl: '/adopter/plugin.js?v=A',
-      stateKitVersion: '2.4.9',
+      stateKitVersion: '2.5.0',
     },
-    lineage: ['2.4.3', '2.4.4', '2.4.9'],
+    lineage: ['2.4.3', '2.4.4', '2.5.0'],
     handoffs: 2,
   });
   assert.equal(requestCount, 2, 'only the replacement may retry the interrupted baseline fetch');
@@ -4634,15 +4658,15 @@ test('a 2.4.6+ createElement wrapper retained before handoff delegates to the ne
 
   await injectConfiguredRuntime(page, runtime, attributes);
   await page.waitForFunction(() => (
-    window.JellyfinRefreshKit?.kitVersion === '2.4.9'
+    window.JellyfinRefreshKit?.kitVersion === '2.5.0'
       && window.JellyfinRefreshKit.state().interceptorInstalled === true
   ));
   await page.evaluate(() => { window.__retainedCreateElement = document.createElement; });
 
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.4.10'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.10');
-  await injectConfiguredRuntime(page, runtimeAtVersion('2.5.0'), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.5.0');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.5.1'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.5.1');
+  await injectConfiguredRuntime(page, runtimeAtVersion('2.5.2'), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.5.2');
 
   const urls = await page.evaluate(() => {
     const retainedScript = window.__retainedCreateElement.call(document, 'script');
@@ -4687,7 +4711,7 @@ test('the exact released 2.4.2 retained wrapper stays inert after a 2.4.6 handof
   });
 
   await injectConfiguredRuntime(page, runtime, attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.4.9');
+  await page.waitForFunction(() => window.JellyfinRefreshKit?.kitVersion === '2.5.0');
 
   const observed = await page.evaluate(() => {
     const retained = window.__historicalCreateElement.call(document, 'script');
@@ -4706,7 +4730,7 @@ test('the exact released 2.4.2 retained wrapper stays inert after a 2.4.6 handof
     retained: '/captured-assets/from-retained-2.4.2.js',
     preHandoff: '/captured-assets/from-pre-handoff.js?v=CAPTURED',
     current: '/captured-assets/from-current.js?v=CAPTURED',
-    lineage: ['2.4.2', '2.4.9'],
+    lineage: ['2.4.2', '2.5.0'],
   });
 });
 
@@ -5910,7 +5934,7 @@ test('a late registration that lengthens the hidden settle grace re-arms the sin
   const registered = await page.evaluate(() => {
     const handle = window.JellyfinRefreshKit.__registerInstance({
       name: 'HiddenLateStrict', mode: 'off', bootVersion: 'S', hiddenSettleSeconds: 2,
-    }, '2.4.9');
+    }, '2.5.0');
     return {
       name: handle && handle.name,
       settleWindow: window.JellyfinRefreshKit.state().shared.hiddenSettleWindowMs,
@@ -6380,6 +6404,39 @@ test('selector features an old engine lacks degrade to attribute-based fallbacks
   assert.equal(await blockReason(page), 'password_entry');
 });
 
+test('disabled-selector fallback protects editable passwords in the first fieldset legend', async (t) => {
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await loadSafetyRuntime(page);
+  const nativelyDisabled = await page.evaluate(() => {
+    const outer = document.createElement('fieldset');
+    outer.id = 'legend-outer';
+    outer.disabled = true;
+    outer.innerHTML = '<legend><fieldset id="legend-inner" disabled>' +
+      '<legend><input id="legend-password" type="password" value="unfinished"></legend>' +
+      '</fieldset></legend><legend id="second-legend"></legend>';
+    document.body.appendChild(outer);
+    const field = document.querySelector('#legend-password');
+    const disabled = field.matches(':disabled');
+    field.matches = () => { throw new DOMException('unsupported selector', 'SyntaxError'); };
+    return disabled;
+  });
+  assert.equal(nativelyDisabled, false, 'the first legend is exempt even for nested disabled fieldsets');
+  assert.equal(await blockReason(page), 'password_entry', 'an editable password still blocks reload');
+  await page.evaluate(() => document.querySelector('#legend-password').focus());
+  assert.equal(await blockReason(page), 'active_editor');
+
+  await page.evaluate(() => {
+    document.querySelector('#legend-password').blur();
+    document.querySelector('#legend-outer').appendChild(document.querySelector('#legend-inner'));
+  });
+  assert.equal(await blockReason(page), null, 'an outer disabled fieldset can still disable the inner legend');
+  await page.evaluate(() => {
+    document.querySelector('#second-legend').appendChild(document.querySelector('#legend-password'));
+  });
+  assert.equal(await blockReason(page), null, 'the second legend is not exempt');
+});
+
 test('a handoff carries the masked post-playback window and the route samples', async (t) => {
   const origin = await startServer(t, (_req, res) => serveHtml(res));
   const browser = await openBrowser(t);
@@ -6402,7 +6459,7 @@ test('a handoff carries the masked post-playback window and the route samples', 
   });
   const source = (version) => reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion(version)))
     .replace('var RETRY_MS = 1000;', 'var RETRY_MS = 25;');
-  await injectRuntime(page, source('2.4.9'));
+  await injectRuntime(page, source('2.5.0'));
   await page.waitForFunction(() => (
     window.JellyfinRefreshKit.state().shared.lastBlockReason === 'playback_route'
   ));
@@ -6414,8 +6471,8 @@ test('a handoff carries the masked post-playback window and the route samples', 
     window.JellyfinRefreshKit.state().shared.maskedTransitionMsLeft > 0
   ));
   const before = await page.evaluate(() => window.JellyfinRefreshKit.state().shared);
-  await injectRuntime(page, source('2.4.10'));
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  await injectRuntime(page, source('2.5.1'));
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.1');
   const after = await page.evaluate(() => window.JellyfinRefreshKit.state().shared);
   assert.equal(after.managerHandoffs, 1);
   assert.ok(after.maskedTransitionMsLeft > 0 && after.maskedTransitionMsLeft <= before.maskedTransitionMsLeft,
@@ -6447,7 +6504,7 @@ test('a handoff carries the hidden re-arm count instead of restarting it', async
       getVersion: () => Promise.resolve('B'),
     };
   });
-  await injectRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.4.9'))));
+  await injectRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.5.0'))));
   // Hidden tabs arm no confirmation; the forced check is the second sighting.
   await page.evaluate(() => window.JellyfinRefreshKit.checkNow());
   await page.waitForFunction(() => (
@@ -6455,8 +6512,8 @@ test('a handoff carries the hidden re-arm count instead of restarting it', async
       && window.JellyfinRefreshKit.state().shared.hiddenRetries >= 2
   ));
   const before = await page.evaluate(() => window.JellyfinRefreshKit.state().shared.hiddenRetries);
-  await injectRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.4.10'))));
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  await injectRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.5.1'))));
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.1');
   const after = await page.evaluate(() => window.JellyfinRefreshKit.state().shared);
   assert.equal(after.managerHandoffs, 1);
   assert.ok(after.hiddenRetries > before,
@@ -6549,8 +6606,8 @@ test('a browser-autofilled login field counts as empty on the login route only w
   // A handoff BEFORE any interaction must carry `false` explicitly: a record
   // without the field is read as "seen" (the conservative direction), so an
   // untouched page would otherwise lose its relaxation at every handoff.
-  await injectRuntime(page, runtimeAtVersion('2.4.10'));
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  await injectRuntime(page, runtimeAtVersion('2.5.1'));
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.1');
   assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.managerHandoffs), 1);
   assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.trustedInteractionSeen), false,
     'the shared record carries an explicit false across the handoff');
@@ -6569,8 +6626,8 @@ test('a browser-autofilled login field counts as empty on the login route only w
 
   // The flag is carried across a newest-wins handoff like the other gates'
   // state: the successor does not start believing the page was never touched.
-  await injectRuntime(page, runtimeAtVersion('2.4.11'));
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.11');
+  await injectRuntime(page, runtimeAtVersion('2.5.2'));
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.2');
   assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.managerHandoffs), 2);
   assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.trustedInteractionSeen), true);
   assert.equal(await blockReason(page), 'password_entry', 'the successor keeps the gates closed');
@@ -6613,7 +6670,7 @@ test('a newest-wins handoff while hidden re-issues a confirmation fetch orphaned
     'data-hidden-reload': 'true',
     'data-hidden-settle-seconds': '0',
   };
-  await injectConfiguredRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.4.9'))), attributes);
+  await injectConfiguredRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.5.0'))), attributes);
   await page.waitForFunction(() => window.__fetchCalls === 1 && typeof window.__releaseFirst === 'function');
   await setVisibility(page, 'hidden');
   await page.evaluate(() => window.__releaseFirst());
@@ -6621,8 +6678,8 @@ test('a newest-wins handoff while hidden re-issues a confirmation fetch orphaned
   // now in flight.
   await page.waitForFunction(() => window.__fetchCalls === 2 && typeof window.__releaseSecond === 'function');
 
-  await injectConfiguredRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.4.10'))), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  await injectConfiguredRuntime(page, reloadInterceptedRuntime(fastEpochRuntime(runtimeAtVersion('2.5.1'))), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.1');
   assert.equal(await page.evaluate(() => window.JellyfinRefreshKit.state().shared.managerHandoffs), 1);
 
   // The successor replaces the orphaned confirmation at once, still hidden,
@@ -6735,7 +6792,7 @@ test('a newest-wins handoff while hidden re-arms the inherited confirmation and 
   };
   // The real VERSION_CONFIRM_MS: the confirmation must still be owed when the
   // handoff lands.
-  await injectConfiguredRuntime(page, reloadInterceptedRuntime(runtimeAtVersion('2.4.9')), attributes);
+  await injectConfiguredRuntime(page, reloadInterceptedRuntime(runtimeAtVersion('2.5.0')), attributes);
   await page.waitForFunction(() => window.__fetchCalls === 1 && typeof window.__releaseFirst === 'function');
   await setVisibility(page, 'hidden');
   await page.evaluate(() => window.__releaseFirst());
@@ -6746,8 +6803,8 @@ test('a newest-wins handoff while hidden re-arms the inherited confirmation and 
     window.JellyfinRefreshKit.get('HiddenHandoff').state().confirmationPending
   )), true, 'the hidden sighting earned its confirmation');
 
-  await injectConfiguredRuntime(page, reloadInterceptedRuntime(runtimeAtVersion('2.4.10')), attributes);
-  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.4.10');
+  await injectConfiguredRuntime(page, reloadInterceptedRuntime(runtimeAtVersion('2.5.1')), attributes);
+  await page.waitForFunction(() => window.JellyfinRefreshKit.kitVersion === '2.5.1');
   const after = await page.evaluate(() => ({
     shared: window.JellyfinRefreshKit.state().shared,
     instance: window.JellyfinRefreshKit.get('HiddenHandoff').state(),
@@ -6770,4 +6827,95 @@ test('a newest-wins handoff while hidden re-arms the inherited confirmation and 
   assert.equal(final.visibility, 'hidden');
   assert.equal(final.fetches, 2, 'exactly one confirmation request, issued by the successor');
   assert.equal(final.reloadCommitted, true, 'the reload was taken on the hidden path');
+});
+
+test('Enhanced drafts survive blur, hidden state and pending saves until the form is removed', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await configureBudgetReloadPage(page, origin, { name: 'EnhancedDraft' });
+  await page.evaluate(() => {
+    document.body.innerHTML = '<div class="je-review-form"><textarea></textarea><button id="rating">4 stars</button><button id="save">Save</button></div>';
+  });
+  await injectRuntime(page, fastBudgetRuntime());
+  await page.type('textarea', 'Keep my review');
+  await page.click('#rating');
+  await page.waitForFunction(() => JellyfinRefreshKit.state().updatePending);
+  assert.equal(await page.evaluate(() => JellyfinRefreshKit.state().blockReason), 'unsaved_work');
+  await page.evaluate(() => {
+    document.querySelector('#save').disabled = true;
+    document.querySelector('.je-review-form').hidden = true;
+    document.body.classList.add('screensaver-noScroll');
+  });
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.deepEqual(await page.evaluate(() => ({ text: document.querySelector('textarea').value, attempts: __reloadAttempts, reason: JellyfinRefreshKit.state().blockReason })),
+    { text: 'Keep my review', attempts: 0, reason: 'unsaved_work' });
+  await page.evaluate(() => document.querySelector('.je-review-form').remove());
+  await page.waitForFunction(() => __reloadAttempts === 1);
+});
+
+test('Enhanced dirty admin settings block until saved or discarded', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await configureBudgetReloadPage(page, origin, { name: 'EnhancedAdmin' });
+  await page.evaluate(() => { document.body.innerHTML = '<div class="je-save-dock je-dirty"></div>'; });
+  await injectRuntime(page, fastBudgetRuntime());
+  await page.waitForFunction(() => JellyfinRefreshKit.state().updatePending);
+  assert.equal(await page.evaluate(() => JellyfinRefreshKit.state().blockReason), 'unsaved_work');
+  await page.evaluate(() => document.querySelector('.je-save-dock').classList.remove('je-dirty'));
+  await page.waitForFunction(() => __reloadAttempts === 1);
+});
+
+test('application guards fail closed and independent owners survive duplicate runtimes and handoffs', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await configureBudgetReloadPage(page, origin, { name: 'GuardHandoff' });
+  // Prevent the first poll from requesting an update before guards register.
+  await page.evaluate(() => { window.__target = 'A'; JellyfinRefreshKitConfig.getVersion = () => Promise.resolve(__target); });
+  await injectRuntime(page, fastBudgetRuntime());
+  await page.evaluate(() => {
+    window.__allow = false;
+    window.__draft = JellyfinRefreshKit.registerReloadGuard('same-name', () => __allow);
+    window.__save = JellyfinRefreshKit.registerReloadGuard('same-name', () => false);
+    window.__manager = JellyfinRefreshKit;
+    __target = 'B';
+    JellyfinRefreshKit.checkNow();
+  });
+  await page.waitForFunction(() => JellyfinRefreshKit.state().updatePending);
+  await injectRuntime(page, fastBudgetRuntime());
+  await injectRuntime(page, fastBudgetRuntime(runtimeAtVersion('2.5.1')));
+  await page.evaluate(() => { __allow = true; __draft.changed(); __draft.release(); __draft.release(); });
+  assert.equal(await page.evaluate(() => JellyfinRefreshKit.state().blockReason), 'reload_guard');
+  assert.equal(await page.evaluate(() => JellyfinRefreshKit.state().reloadGuards.length), 1);
+  await page.evaluate(() => {
+    // Retained pre-handoff API can register a new owner's protection.
+    window.__broken = __manager.registerReloadGuard('broken', () => { throw Error('save status unavailable'); });
+    __save.release();
+  });
+  assert.equal(await page.evaluate(() => JellyfinRefreshKit.state().blockReason), 'reload_guard');
+  await page.evaluate(() => {
+    window.__promise = JellyfinRefreshKit.registerReloadGuard('async', () => Promise.resolve(true));
+    __broken.release();
+  });
+  assert.equal(await page.evaluate(() => JellyfinRefreshKit.state().blockReason), 'reload_guard');
+  await page.evaluate(() => __promise.release());
+  await page.waitForFunction(() => __reloadAttempts === 1);
+});
+
+test('an application save beginning during budget acquisition prevents navigation', async (t) => {
+  const origin = await startServer(t, (_req, res) => serveHtml(res));
+  const browser = await openBrowser(t);
+  const page = await browser.newPage();
+  await configureBudgetReloadPage(page, origin, { name: 'GuardBudgetRace' });
+  await holdBudgetMutex(page);
+  await injectRuntime(page, fastBudgetRuntime());
+  await page.waitForFunction(() => JellyfinRefreshKit.state().shared.reloadBudgetReservationPending);
+  await page.evaluate(() => { window.__save = JellyfinRefreshKit.registerReloadGuard('saving', () => false); });
+  await releaseBudgetMutex(page);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(await page.evaluate(() => __reloadAttempts), 0);
+  await page.evaluate(() => __save.release());
+  await page.waitForFunction(() => __reloadAttempts === 1);
 });

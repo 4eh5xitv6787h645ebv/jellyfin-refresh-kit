@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
+    <Adopter Condition="'$(Adopter)' == ''">true</Adopter>
+    <AssemblyName Condition="'$(Adopter)' == 'true'">EnhancedAdoptionFixture</AssemblyName>
+    <AssemblyName Condition="'$(Adopter)' != 'true'">SiblingRefreshFixture</AssemblyName>
+    <DefineConstants Condition="'$(Adopter)' == 'true'">$(DefineConstants);ADOPTER</DefineConstants>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <NuGetAudit>false</NuGetAudit>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
+    <PackageReference Include="Jellyfin.Controller" Version="[10.11.0]" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Jellyfin.Controller" Version="[12.0.0-rc4]" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Compile Include="Plugin.cs" />
+    <Compile Include="../../../RefreshKit.cs" Link="RefreshKit.cs" />
+    <EmbeddedResource Include="../../../jellyfin-refresh-kit.js" LogicalName="kit.js" />
+  </ItemGroup>
+</Project>

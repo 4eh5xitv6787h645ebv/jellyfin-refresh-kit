@@ -1310,13 +1310,20 @@ namespace Jellyfin.Plugin.RefreshKit
                 try
                 {
                     var file = Path.Combine(configurationsPath, fileName);
-                    if (!File.Exists(file))
+                    FileAttributes attributes;
+                    try
+                    {
+                        // File.Exists also returns false on access and I/O
+                        // failures. Only a positively missing file is a deletion;
+                        // other failures must retain the last coherent snapshot.
+                        attributes = File.GetAttributes(file);
+                    }
+                    catch (FileNotFoundException)
                     {
                         continue;
                     }
 
-                    var info = new FileInfo(file);
-                    if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
+                    if ((attributes & FileAttributes.ReparsePoint) != 0)
                     {
                         // Do not let a plugin-selected filename turn generation
                         // polling into a content oracle outside the configuration
@@ -1332,6 +1339,12 @@ namespace Jellyfin.Plugin.RefreshKit
                         continue;
                     }
 
+                    if ((attributes & FileAttributes.Directory) != 0)
+                    {
+                        continue;
+                    }
+
+                    var info = new FileInfo(file);
                     var length = info.Length;
                     if (length < 0
                         || length > _scanLimits.MaxConfigurationBytesPerPlugin - bytesReserved

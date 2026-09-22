@@ -294,6 +294,43 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
         }
 
         [Fact]
+        public void InaccessibleConfigurationDirectoryRetainsLastGoodInsteadOfPublishingDeletion()
+        {
+            if (!CanTestPermissionDenied())
+            {
+                return;
+            }
+
+            const string configName = "Jellyfin.Plugin.Demo.xml";
+            var configFile = Path.Combine(_configurations, configName);
+            File.WriteAllText(configFile, "<settings/>");
+            var plugin = Plugin("ConfigPermissions", AaaId, "body", configNames: new[] { configName });
+            var now = FixedTimestamp;
+            var provider = new PluginGenerationProvider(
+                () => new[] { plugin },
+                _configurations,
+                utcNow: () => now,
+                configurationProvider: () => new Configuration.PluginConfiguration { ConfigCooldownMinutes = 0 });
+            var before = provider.Snapshot;
+
+            Lock(_configurations);
+            Assert.Equal(before.Generation, Settle(provider, ref now));
+            var unavailable = Assert.Single(provider.Details);
+            Assert.True(unavailable.ConfigurationScanUnavailable);
+            Assert.True(unavailable.UsingLastGoodConfiguration);
+            Assert.Equal(1, unavailable.ConfigurationFileCount);
+
+            Unlock(_configurations);
+            Assert.Equal(before.Generation, Settle(provider, ref now));
+            Assert.False(Assert.Single(provider.Details).ConfigurationScanUnavailable);
+
+            // A real deletion remains observable once access is restored.
+            File.Delete(configFile);
+            Assert.NotEqual(before.Generation, Settle(provider, ref now));
+            Assert.Equal(0, Assert.Single(provider.Details).ConfigurationFileCount);
+        }
+
+        [Fact]
         public void RootThatCannotBeListedIsStillUnavailable()
         {
             if (!CanTestPermissionDenied())

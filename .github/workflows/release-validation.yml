@@ -212,7 +212,17 @@ jobs:
           RK_RESULTS_DIR: test-results/integration
         run: ./test.sh integration
 
+      - name: Retain Enhanced adoption evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: enhanced-adoption-${{ github.sha }}-${{ github.run_attempt }}
+          path: e2e/enhanced/artifacts/*.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Retain the integration worker evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-worker-integration-${{ inputs.source_revision }}-${{ github.run_attempt }}
@@ -252,6 +262,7 @@ jobs:
         run: ./test.sh compatibility
 
       - name: Retain the compatibility worker evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-worker-compatibility-${{ inputs.source_revision }}-${{ github.run_attempt }}

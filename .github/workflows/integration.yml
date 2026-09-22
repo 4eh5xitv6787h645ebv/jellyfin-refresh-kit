@@ -51,7 +51,36 @@ jobs:
           RK_RESULTS_DIR: test-results/integration
         run: ./test.sh integration
 
+      - name: Preserve browser failure diagnostics
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          output = Path('test-results/integration/failure-diagnostics')
+          output.mkdir(parents=True, exist_ok=True)
+          for target in ('jf10', 'jf12'):
+              source = Path('e2e/jellyfin/artifacts') / target / 'browser/result.json'
+              if source.exists():
+                  result = json.loads(source.read_text())
+                  # browser.cjs already redacts these records. Deliberately
+                  # retain only the error audit, not raw network captures.
+                  diagnostic = {key: result.get(key) for key in
+                                ('target', 'failures', 'errorAudit', 'restartWindow')}
+                  (output / (target + '.json')).write_text(json.dumps(diagnostic, indent=2))
+          PY
+
+      - name: Retain Enhanced adoption evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: enhanced-adoption-${{ github.sha }}-${{ github.run_attempt }}
+          path: e2e/enhanced/artifacts/*.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Retain test evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: real-jellyfin-${{ github.sha }}-${{ github.run_attempt }}

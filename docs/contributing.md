@@ -230,3 +230,17 @@ A few constraints are intentional and should be preserved when changing the proj
 - **Add or update tests for generation/stamping changes.** These behaviours contain the subtle cache and filesystem rules.
 - **Run the proxy E2E suite for middleware, response-header, injection, or proxy-sensitive changes.**
 - **Keep documentation aligned with current behaviour.** User-visible behaviour belongs in the root `README.md`; the mechanism description belongs in `docs/how-it-works.md`; the drop-in integration belongs in `docs/plugin-authors.md`; deeper standalone details belong in `plugin/README.md`; compatibility evidence belongs in `COMPATIBILITY.md`.
+
+## Enhanced adoption validation
+
+For runtime reload-safety or embedding changes, run
+`python3 e2e/enhanced/run.py --snapshot "$(readlink -f plugin/build)"` after
+building. This supplements the general integration gate with the current
+Enhanced release, both supported host lines, both middleware orders, duplicate
+runtimes and actual Enhanced review-form behavior. See
+[the lab contract](../e2e/enhanced/README.md).
+
+The active final release version is `1.1.0.0` (runtime `2.5.0`). The fixed
+campaign clock, clean-source/manifest-child binding, exact validation receipts,
+and immutable asset publication checks remain required. Updating the expected
+version does not authorize replacing the existing `v1.0.1.0` assets.

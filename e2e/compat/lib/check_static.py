@@ -234,9 +234,9 @@ def main() -> int:
             "Actor Plus lock name must match the exact upstream Plugin.PluginName",
         )
         require(
-            locked_artifacts["jellyfin-enhanced-jf10"]["plugin"]["version"] == "12.2.0.0"
+            locked_artifacts["jellyfin-enhanced-jf10"]["plugin"]["version"] == "12.8.0.0"
             and locked_artifacts["jellyfin-enhanced-jf12"]["plugin"]["version"]
-            == "12.2.0.0"
+            == "12.8.0.0"
             and locked_artifacts["ratings-jf10"]["plugin"]["version"] == "1.0.374.0",
             "the three superseded Jellyfin Enhanced/Ratings artifacts were not refreshed",
         )

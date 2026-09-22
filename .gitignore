@@ -21,3 +21,7 @@ e2e/proxy/.je/
 e2e/proxy/.state/
 e2e/jellyfin/.state/
 e2e/jellyfin/artifacts/
+e2e/enhanced/.state/
+e2e/enhanced/artifacts/
+e2e/enhanced/fixture/bin/
+e2e/enhanced/fixture/obj/

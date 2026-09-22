@@ -86,6 +86,8 @@ validate_static_inputs() {
         -path './plugin/.builds' -prune -o \
         -path './plugin/.build-work' -prune -o \
         -path './test-results' -prune -o \
+        -path './e2e/enhanced/.state' -prune -o \
+        -path './e2e/enhanced/artifacts' -prune -o \
         -path './e2e/jellyfin/.state' -prune -o \
         -path './e2e/jellyfin/artifacts' -prune -o \
         -path './e2e/compat/.cache' -prune -o \
@@ -106,6 +108,8 @@ validate_static_inputs() {
         -path './plugin/.builds' -prune -o \
         -path './plugin/.build-work' -prune -o \
         -path './test-results' -prune -o \
+        -path './e2e/enhanced/.state' -prune -o \
+        -path './e2e/enhanced/artifacts' -prune -o \
         -path './e2e/jellyfin/.state' -prune -o \
         -path './e2e/jellyfin/artifacts' -prune -o \
         -path './e2e/proxy/.je' -prune -o \
@@ -258,8 +262,10 @@ test_dotnet() {
 }
 
 test_security_audit() {
-    heading "Auditing the locked NuGet graph against the current advisory feed"
-    "${DOTNET}" restore "${TEST_PROJECT}" \
+    heading "Auditing the locked NuGet graphs against the current advisory feed"
+    local audit_project
+    for audit_project in "${TEST_PROJECT}" e2e/enhanced/fixture/Fixture.csproj; do
+    "${DOTNET}" restore "${audit_project}" \
         -noAutoResponse \
         --locked-mode \
         --force-evaluate \
@@ -273,6 +279,7 @@ test_security_audit() {
         -p:NuGetAuditLevel=low \
         -p:TreatWarningsAsErrors=false \
         '-p:WarningsAsErrors=NU1901%3BNU1902%3BNU1903%3BNU1904'
+    done
     heading "NuGet security audit passed"
 
     # The locked npm graph (Puppeteer/Chromium for the browser regressions) is
@@ -371,6 +378,9 @@ test_integration() {
 
     heading "NOTE: in-place host-upgrade browser leg is temporarily non-gating for 1.0.1.0 (pending harness repair: MUI-web uninstall UI removed + multi-browser-context tab visibility); in-place restart+convergence stays covered by the dual-Jellyfin lab"
     bash e2e/jellyfin/run.sh down >/dev/null 2>&1 || result=1
+
+    heading "Running Enhanced 12.8 adoption on both stable host lines and middleware orders"
+    python3 e2e/enhanced/run.py --snapshot "${build_snapshot}" || result=1
 
     heading "Running the Jellyfin 10.11 reverse-proxy/browser matrix"
     set +e

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce the fixed 1.0 release-campaign clock and publication policy."""
+"""Enforce the fixed campaign clock and current publication version."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sys
 import time
 
 
-FINAL_VERSION = "1.0.1.0"
+FINAL_VERSION = "1.1.0.0"
 MILESTONE = re.compile(r"^1\.0\.0\.([1-9][0-9]*)$")
 BOUNDARY_WINDOW_SECONDS = 24 * 60 * 60
 # The persistent goal's authoritative createdAt value.  Milestone callers must

@@ -143,16 +143,16 @@
       "runtime": "jf10",
       "repository": "https://github.com/n00bcodr/Jellyfin-Enhanced",
       "repositoryAccess": "strictly-read-only",
-      "sourceRevision": "ea06d91f398d68b0cb98732cc5781b9d0bcc5013",
+      "sourceRevision": "08af10885d96c895fbf367e7f485985f0206f009",
       "archive": {
         "name": "Jellyfin.Plugin.JellyfinEnhanced_10.11.0.zip",
-        "url": "https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.2.0.0/Jellyfin.Plugin.JellyfinEnhanced_10.11.0.zip",
-        "sha256": "24278bd5ad6c53150aa12023677767301af8c7ef44e072eee869658869fdfff4"
+        "url": "https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.8.0.0/Jellyfin.Plugin.JellyfinEnhanced_10.11.0.zip",
+        "sha256": "9156521f4061a08f10a810606311fd54055c146e041542e8f1c50d2548bddc67"
       },
       "plugin": {
         "guid": "f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b",
         "name": "Jellyfin Enhanced",
-        "version": "12.2.0.0",
+        "version": "12.8.0.0",
         "targetAbi": "10.11.0.0",
         "framework": "net9.0",
         "assembly": "Jellyfin.Plugin.JellyfinEnhanced.dll",
@@ -169,16 +169,16 @@
       "runtime": "jf12",
       "repository": "https://github.com/n00bcodr/Jellyfin-Enhanced",
       "repositoryAccess": "strictly-read-only",
-      "sourceRevision": "ea06d91f398d68b0cb98732cc5781b9d0bcc5013",
+      "sourceRevision": "08af10885d96c895fbf367e7f485985f0206f009",
       "archive": {
         "name": "Jellyfin.Plugin.JellyfinEnhanced_12.0.0.zip",
-        "url": "https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.2.0.0/Jellyfin.Plugin.JellyfinEnhanced_12.0.0.zip",
-        "sha256": "0a2e077aaf99d89b2975510eba3c65cc31484c8074df8bce269ea1f2699689b3"
+        "url": "https://github.com/n00bcodr/Jellyfin-Enhanced/releases/download/12.8.0.0/Jellyfin.Plugin.JellyfinEnhanced_12.0.0.zip",
+        "sha256": "040693196f8805a3eaac8c6a6705e303900eed585e55c50b725c3213ebc6c15f"
       },
       "plugin": {
         "guid": "f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b",
         "name": "Jellyfin Enhanced",
-        "version": "12.2.0.0",
+        "version": "12.8.0.0",
         "targetAbi": "12.0.0.0",
         "framework": "net10.0",
         "assembly": "Jellyfin.Plugin.JellyfinEnhanced.dll",

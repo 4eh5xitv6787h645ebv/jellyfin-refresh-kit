@@ -244,3 +244,53 @@ If `jellyfin-refresh-kit.js` is one of the injected scripts, put it **before** s
 - A CDN's own `latest`/resolution cache cannot be fixed by client-side versioning if the CDN maps the requested URL to stale content.
 - JavaScript cannot add response `ETag` or `Cache-Control` headers; use the server helper when those guarantees are required.
 - When two plugins embed `RefreshKit.cs`, the innermost instance owns the shell response and the outer one stands down, so the outer plugin's tag is not injected on that page while the inner one keeps committing it; the outer instance resumes on its own once the inner one stops. See [More than one plugin embedding the helper](#more-than-one-plugin-embedding-the-helper).
+
+## Protect application work (runtime 2.5.0)
+
+`JellyfinRefreshKit.registerReloadGuard(name, canReload)` adds page-wide
+protection independent of a particular version source or instance mode. Every
+live callback must return **exactly `true`, synchronously** to permit an
+automatic reload. False, missing/unknown returns, Promises and exceptions block
+with `reload_guard`. Async callbacks are not awaited. Do not perform I/O, mutate
+guards, or call the manager's diagnostic methods from a callback; read already
+maintained application state. Names are nonempty strings of at most 100
+characters and need not be unique.
+
+The returned frozen handle provides:
+
+- `changed()`: notify the engine after dirty/save state changes; it rechecks
+  pending work while retaining all normal idle, playback and budget checks.
+- `release()`: idempotently remove only this registration after successful
+  completion or explicit discard. Same-name registrations remain independent.
+
+Callbacks are reevaluated before a budget reservation, inside its final safety
+check and again before navigation. Registration/state notification cancels a
+reservation in flight. Guard closures and retained handles survive a newer
+runtime taking over; no callback or draft text is persisted to browser storage.
+`state().reloadGuards` reports names and the last evaluated permission only.
+
+Use a guard for draft editors, custom/shadow-DOM forms and asynchronous saves:
+
+```js
+const guard = JellyfinRefreshKit.registerReloadGuard(
+    'My editor', () => !editor.isDirty && editor.pendingSaves === 0
+);
+// Notify after updates to those values:
+guard.changed();
+// On an intentional, safe teardown:
+guard.release();
+```
+
+Do not release at submit time. Wait for a confirmed successful save and account
+for edits made while that save was pending. A failed save still holds work.
+A populated settings field alone does not establish dirty state; the owning
+application must distinguish saved values from unsaved edits.
+
+Enhanced 12.8's connected `.je-review-form` and `.je-save-dock.je-dirty` are
+protected automatically with `unsaved_work`. Review forms remain protected
+when blurred, hidden, or saving; removing a successfully saved/cancelled form
+releases that protection. Empty open review forms also block conservatively.
+Screensavers and hidden-tab reloads do not override application work. Other
+plugins must register a guard for state not covered by the standard DOM probes.
+See [the Enhanced adoption example](../examples/enhanced/README.md) and
+[its real-server lab](../e2e/enhanced/README.md).

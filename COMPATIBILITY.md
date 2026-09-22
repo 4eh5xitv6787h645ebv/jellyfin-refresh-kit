@@ -71,6 +71,39 @@ The net9 build uses the 10.11.0 floor so its shared MediaBrowser assembly
 references match the declared `10.11.0.0` ABI; deterministic package
 verification rejects any staged DLL/metadata disagreement before a live lab.
 
+## Enhanced adoption candidate (1.1.0.0 / runtime 2.5.0)
+
+The Enhanced adoption lab additionally pins stable Jellyfin **12.1** at
+`sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e`
+and **10.11.11** at the digest above. Enhanced is now locked to the official
+[12.8.0.0 release](https://github.com/n00bcodr/Jellyfin-Enhanced/releases/tag/12.8.0.0)
+(source `08af10885d96c895fbf367e7f485985f0206f009`) for both host lines. The
+older catalog snapshot remains historical provenance, not the active Enhanced
+artifact pin.
+
+`./test.sh integration` requires four adoption cases: both stable hosts in both
+middleware orders. The `enhanced-adoption-*` CI artifact records the candidate
+and harness identities, official archive hashes, runtime identity, observed
+middleware order, real Enhanced review-form safety, duplicate runtimes and
+injection disable/reenable. The general lifecycle/ecosystem lab still uses the
+12 RC4 pin above; its receipt must not be described as a 12.1 lifecycle pass.
+No browser engine beyond Chromium is certified by these automated results.
+
+The prior review's lost-draft reproduction is covered by the actual Enhanced
+form builder fetched from the verified installed archive. Save completion is
+controlled in that reproduction; it does not certify Enhanced's review database
+API. Connected empty review forms conservatively block reloads until closed.
+Other application-owned drafts and saves require the documented
+`registerReloadGuard` API. Per-user settings synchronization remains separate.
+
+The older scheduled integration failure at
+[run 35586602775](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/actions/runs/35586602775)
+reported one unexpected browser/network error on superseded source `202799e`.
+Its upload was skipped after failure and no diagnostic artifact remains, so its
+specific request cannot be retrospectively classified. Current browser error
+logging and failure uploads preserve that evidence; fresh candidate validation
+is required and the old run is not counted as a pass.
+
 ## Locked ecosystem coverage
 
 The current compatibility inventory classifies all **101 Awesome Jellyfin

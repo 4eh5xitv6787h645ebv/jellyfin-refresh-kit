@@ -207,3 +207,13 @@ opportunity appears. These probes cannot inspect closed shadow roots or prove
 the state of DRM/external-player integrations, so “safe” means the documented
 light-DOM gates observed no blocker, not that every third-party playback or
 editing surface is knowable from JavaScript.
+
+## Application-owned unfinished work
+
+Runtime 2.5.0 evaluates page-wide synchronous reload guards at every safety
+decision, including the final checks around shared-budget acquisition. Unknown
+guard state refuses a reload. Guard registrations and release handles transfer
+with a newer runtime. Enhanced 12.8 review forms and its dirty admin-settings
+indicator are also checked directly, protecting drafts after blur and while
+saving. These checks are not bypassed by hidden tabs or screensavers. See
+[the author API](plugin-authors.md#protect-application-work-runtime-250).

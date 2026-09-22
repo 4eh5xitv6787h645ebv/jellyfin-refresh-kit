@@ -186,7 +186,7 @@ weak validators and shared identity/gzip/Brotli validators fail the matrix.
 The Jellyfin Enhanced jf10 fixture has no independent proxy-suite version,
 URL, ABI, framework or digest default. `run.sh` and provisioning load the
 `jellyfin-enhanced-jf10` row from `../compat/ecosystem.lock.json`, currently
-version `12.2.0.0`, and reject a conflicting `RK_JE_VERSION`. The locked archive
+version `12.8.0.0`, and reject a conflicting `RK_JE_VERSION`. The locked archive
 is downloaded to a temporary file, SHA-256 verified, atomically promoted into
 the local cache, extracted into an isolated staging directory, and only then
 installed. Provisioning replaces every older Jellyfin Enhanced plugin directory
@@ -241,6 +241,6 @@ available, `./run.sh down` removes the project-scoped fixture either way.
 | `RK_PROXY_CACHE_FIX2_PORT` | `8127` | second-remedy loopback port |
 | `RK_USER` / `RK_PASS` | `rk_admin` / `Test669Pw!x` | admin credentials |
 | `RK_BUMP_FILE` | `rk-e2e-generation.js` in the Jellyfin Enhanced plugin folder | the loose client asset whose contents are changed to move the generation |
-| `RK_JE_VERSION` | lock-derived (`12.2.0.0` currently) | normally unset; if supplied it must exactly match `../compat/ecosystem.lock.json` |
+| `RK_JE_VERSION` | lock-derived (`12.8.0.0` currently) | normally unset; if supplied it must exactly match `../compat/ecosystem.lock.json` |
 | `RK_SKIP_BUILD` | `0` | set to `1` only to reuse an explicitly selected immutable snapshot |
 | `RK_BUILD_SNAPSHOT` | unset | canonical directory directly under `plugin/.builds`; required with `RK_SKIP_BUILD=1`, verified again at the provisioning boundary |
