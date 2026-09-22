@@ -33,6 +33,7 @@ Both approaches can coexist on the same Jellyfin page. A plugin can use its own 
 
 - **License:** [MIT](LICENSE)
 - **Compatibility evidence:** [COMPATIBILITY.md](COMPATIBILITY.md)
+- **Enhanced adoption readiness:** [validated integration, release receipts, and limits](docs/enhanced-readiness.md)
 - **Detailed standalone-plugin reference** (mechanism internals, the anonymous-endpoint security statement, the proxy test matrix, diagnostics fields, and the full limitation list): [plugin/README.md](plugin/README.md)
 - **How the standalone plugin works:** [docs/how-it-works.md](docs/how-it-works.md)
 

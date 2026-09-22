@@ -34,11 +34,18 @@ are rejected by the harnesses.
 
 | Evidence family | Current status | What may be claimed |
 | --- | --- | --- |
-| Fast/static, dual-runtime xUnit, and Chromium suites | Consult the CI/release-validation receipt for the candidate revision | The commands and assertions are documented below; no unbound local count is a release result. |
-| Jellyfin 10.11.11 and 12.0.0-rc4 self lifecycle | **Pending** exact post-epoch candidate receipt | The lab covers real install/update/disable/enable/uninstall/reinstall APIs, restarts, playback gating, and open-tab convergence; that coverage is not itself a pass. |
-| Genuine third-party v1/v2 lifecycle | **Pending** exact post-epoch candidate receipt | The lab requires automatic `G0 → G1 → G2 → G0 → G2 → G0` convergence, exact process epochs, real assemblies/assets, and no manual-reload fallback. |
-| Reverse-proxy/browser matrix | Consult the retained integration receipt for the candidate revision | The harness covers the ordinary strong-validator path, common proxies, subpaths, websockets, a real loose-asset content change, and adversarial caching. |
-| Locked nine-matrix ecosystem campaign | **Diagnostic only** for the retained `e7fd…` run; replacement candidate receipt pending | Seven full passes and two `PASS WITH LIMITATION` results were recorded, but the snapshot predates the process-epoch rollback fix and is not release evidence. |
+| Fast/static, dual-runtime xUnit, and Chromium suites | **PASS** for 1.1.0.3 | 399 tests per .NET target and 101 Chromium regressions; package, reproducibility, locking, and security gates passed. |
+| Jellyfin 10.11.11 and 12.0.0-rc4 self lifecycle | **PASS** for the exact release candidate | Real install/update/disable/enable/uninstall/reinstall APIs, restarts, playback gating, and open-tab convergence passed. |
+| Genuine third-party v1/v2 lifecycle | **PASS** for the exact release candidate | Automatic `G0 → G1 → G2 → G0 → G2 → G0` convergence with exact process epochs and real assemblies/assets passed. |
+| Reverse-proxy/browser matrix | **PASS** for the exact release candidate | Strong validators, ordinary proxies, subpaths, websockets, loose-asset changes, and adversarial-cache controls/remedies passed. |
+| Locked fourteen-matrix ecosystem campaign | **PASS WITH LIMITATION** for the exact release candidate | All 44 locked archives verified; 12 runtime matrices passed and two retained the expected GetAvatar outer-owner stamping limitation. |
+| Enhanced 12.8 adoption | **PASS** on 10.11.11 and stable 12.1, both middleware orders | All four cases verified entry preservation, duplicate runtimes, draft/save protection, resumed reloads, and injection disable/reenable. |
+
+The [1.1.0.3 readiness report](docs/enhanced-readiness.md) binds these results to
+source `4a09fc3`, manifest child `25da87f`, exact package hashes, the successful
+release-validation run, and the successful published-asset correspondence check.
+The historical diagnostic below is kept as provenance and is superseded by
+those exact release receipts.
 
 The retained nine-matrix diagnostic ran on 2026-08-09 from source tree
 `e7fd674aa36c38996316c52581c477116f6009e16516b23b5269e9771469937a`
@@ -71,7 +78,7 @@ The net9 build uses the 10.11.0 floor so its shared MediaBrowser assembly
 references match the declared `10.11.0.0` ABI; deterministic package
 verification rejects any staged DLL/metadata disagreement before a live lab.
 
-## Enhanced adoption candidate (1.1.0.3 / runtime 2.5.0)
+## Enhanced adoption (1.1.0.3 / runtime 2.5.0)
 
 The Enhanced adoption lab additionally pins stable Jellyfin **12.1** at
 `sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e`
@@ -101,19 +108,17 @@ The older scheduled integration failure at
 reported one unexpected browser/network error on superseded source `202799e`.
 Its upload was skipped after failure and no diagnostic artifact remains, so its
 specific request cannot be retrospectively classified. Current browser error
-logging and failure uploads preserve that evidence; fresh candidate validation
-is required and the old run is not counted as a pass.
+logging and failure uploads preserve that evidence. The old run is not counted
+as a pass; the current exact-release receipts above provide replacement validation.
 
-A focused follow-up on superseded source `6ffb563` reproduced an intermittent
-pre-restart `net::ERR_ABORTED` after HTTP 200 on the runner's system
-`Chrome/152.0.7977.0`, without a navigation or JavaScript AbortController call
-([diagnostic run 35760341846](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/actions/runs/35760341846)).
-The lab previously selected that unpinned browser and did not await Puppeteer
-25's asynchronous executable lookup. It now defaults to the locked Puppeteer
-browser and records its version. The request-error audit remains unchanged;
-HTTP 200 alone does not establish complete response consumption. Opt-in parsing
-diagnostics are reproducible through `RK_BROWSER_DIAGNOSTICS=1` and are rejected
-as release evidence. See the lab README for the comparison procedure.
+Follow-up diagnostics on superseded source `6ffb563` found the system
+`Chrome/152.0.7977.0` reporting pre-restart `ERR_ABORTED` after successful parsing
+of complete generation responses in five of ten trials. Locked Chrome
+`152.0.7977.54` passed all ten. The lab now awaits Puppeteer 25's asynchronous
+executable lookup, defaults to its locked browser, and records its version.
+The request-error audit remains unchanged. The [readiness report](docs/enhanced-readiness.md)
+retains the comparison, scoped conclusion, and reproduction procedure; opt-in
+parsing diagnostics are rejected as release evidence.
 
 ## Locked ecosystem coverage
 
@@ -279,7 +284,7 @@ Background timer throttling or freezing can delay detection.
 - In-place Jellyfin restart and generation convergence are covered by the
   dual-Jellyfin lifecycle lab, which restarts the pinned servers and reconnects
   the browser. The separate in-place host-upgrade BROWSER leg
-  (`e2e/jellyfin/lib/host-upgrade.sh`) is temporarily **non-gating for 1.0.1.0**
+  (`e2e/jellyfin/lib/host-upgrade.sh`) remains **non-gating** (a quarantine introduced for 1.0.1.0)
   pending harness repair: it drove the old Jellyfin web uninstall dialog that the
   pinned MUI web build removed, and its poll-stress phase asserts tab visibility
   across multiple Puppeteer browser contexts where `bringToFront()` only hides
