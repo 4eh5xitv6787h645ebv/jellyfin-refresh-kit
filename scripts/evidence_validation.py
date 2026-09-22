@@ -1565,6 +1565,10 @@ def validate_browser(
     expected_generation: str,
 ) -> None:
     label = f"{target}/browser"
+    require(isinstance(result.get("browserVersion"), str) and bool(result["browserVersion"]),
+            f"{label}: actual browser version is missing")
+    require(result.get("browserDiagnostics") is False,
+            f"{label}: instrumented diagnostics are not release evidence")
     require(result.get("target") == target, f"{label}: target differs")
     require(result.get("failures") == [], f"{label}: failures are present")
     before, after = result.get("generationBefore"), result.get("generationAfter")

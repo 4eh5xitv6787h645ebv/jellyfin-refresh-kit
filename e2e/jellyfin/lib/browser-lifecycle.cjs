@@ -65,20 +65,14 @@ const configuredImage = execFileSync('docker', [
   'inspect', '--format', '{{.Config.Image}}', container,
 ], { encoding: 'utf8' }).trim();
 
-function browserExecutable() {
-  const candidates = [
-    process.env.RK_BROWSER_EXECUTABLE,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  const bundled = puppeteer.executablePath();
-  if (bundled && fs.existsSync(bundled)) return bundled;
-  throw new Error('No Chromium executable found; set RK_BROWSER_EXECUTABLE');
+async function browserExecutable() {
+  // Use the browser selected by the locked Puppeteer dependency. A runner's
+  // unrelated system Chrome can differ between otherwise identical lab runs.
+  // Puppeteer 25 resolves this path asynchronously.
+  const executable = process.env.RK_BROWSER_EXECUTABLE || await puppeteer.executablePath();
+  assert.ok(typeof executable === 'string' && fs.existsSync(executable),
+    'Browser executable is missing; run npm ci or set RK_BROWSER_EXECUTABLE explicitly');
+  return executable;
 }
 
 function sleep(ms) {
@@ -841,11 +835,12 @@ let browser;
     phaseRecord(result, 'playback-fixture-indexed', { fixture: playbackFixture });
 
     browser = await puppeteer.launch({
-      executablePath: browserExecutable(),
+      executablePath: await browserExecutable(),
       headless: true,
       defaultViewport: { width: 1440, height: 1000 },
       args: ['--no-sandbox', '--disable-dev-shm-usage'],
     });
+    result.browserVersion = await browser.version();
     const pages = [];
     for (const name of ['primary', 'secondary', 'background']) {
       const page = await browser.newPage();

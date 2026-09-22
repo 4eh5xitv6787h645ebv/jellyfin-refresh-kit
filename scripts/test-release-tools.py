@@ -48,21 +48,21 @@ class ReleasePolicyTests(unittest.TestCase):
     def test_final_is_exact(self) -> None:
         boundary = policy.CAMPAIGN_START_EPOCH + policy.BOUNDARY_WINDOW_SECONDS
         source = boundary + 10
-        result = policy.validate_policy("final", "1.1.0.2", source, source + 1)
+        result = policy.validate_policy("final", "1.1.0.3", source, source + 1)
         self.assertEqual(result["kind"], "final")
         self.assertEqual(result["campaignStartEpoch"], 1786193837)
         self.assertEqual(result["boundaryEpoch"], boundary)
         self.assertNotIn("validatedAtEpoch", result)
         self.assertEqual(
             result,
-            policy.validate_policy("final", "1.1.0.2", source, source + 10_000),
+            policy.validate_policy("final", "1.1.0.3", source, source + 10_000),
         )
         with self.assertRaises(policy.PolicyError):
             policy.validate_policy("final", "1.0.1.1", source, source + 1)
         with self.assertRaises(policy.PolicyError):
-            policy.validate_policy("final", "1.1.0.2", boundary, boundary - 1)
+            policy.validate_policy("final", "1.1.0.3", boundary, boundary - 1)
         with self.assertRaises(policy.PolicyError):
-            policy.validate_policy("final", "1.1.0.2", boundary - 1, boundary)
+            policy.validate_policy("final", "1.1.0.3", boundary - 1, boundary)
 
     def test_milestone_is_derived_from_fixed_campaign_clock(self) -> None:
         start = policy.CAMPAIGN_START_EPOCH
@@ -83,7 +83,7 @@ class ReleasePolicyTests(unittest.TestCase):
 
     def test_validation_dispatch_requires_candidate_manifest_child_and_absent_tag(self) -> None:
         manifest = "b" * 40
-        version = "1.1.0.2"
+        version = "1.1.0.3"
         candidate = f"refs/heads/release-candidate/v{version}"
         policy.validate_validation_dispatch(version, candidate, manifest, manifest, "")
         for event_ref, event_revision, tag_commit in (
@@ -304,7 +304,7 @@ class ValidationRunTests(unittest.TestCase):
         repository = "owner/project"
         source = "a" * 40
         manifest_revision = "b" * 40
-        candidate_ref = "refs/heads/release-candidate/v1.1.0.2"
+        candidate_ref = "refs/heads/release-candidate/v1.1.0.3"
         run_id = 1234
         published_epoch = validation_run.github_epoch(
             "2026-08-09T01:02:03Z", "published_at"
@@ -315,7 +315,7 @@ class ValidationRunTests(unittest.TestCase):
             "status": "completed",
             "conclusion": "success",
             "head_sha": manifest_revision,
-            "head_branch": "release-candidate/v1.1.0.2",
+            "head_branch": "release-candidate/v1.1.0.3",
             "path": validation_run.WORKFLOW_PATH,
             "run_attempt": 2,
             "created_at": "2026-08-09T00:59:00Z",
@@ -471,7 +471,7 @@ class ValidationRunTests(unittest.TestCase):
             (evidence / "SHA256SUMS").write_text("", encoding="utf-8")
             source = "a" * 40
             manifest_revision = "b" * 40
-            version = "1.1.0.2"
+            version = "1.1.0.3"
             repository = "owner/project"
             candidate_ref = f"refs/heads/release-candidate/v{version}"
             manifest = root / "manifest.json"
@@ -674,7 +674,7 @@ class RetentionReceiptTests(unittest.TestCase):
             build.mkdir()
             manifest = root / "manifest.json"
             manifest.write_text("[]\n", encoding="utf-8")
-            names = ("jellyfin-refresh-kit_1.1.0.2.zip", "jellyfin-refresh-kit_1.1.0.2_jf12.zip")
+            names = ("jellyfin-refresh-kit_1.1.0.3.zip", "jellyfin-refresh-kit_1.1.0.3_jf12.zip")
             rows = []
             for index, name in enumerate(names):
                 data = f"package-{index}".encode()
@@ -685,19 +685,19 @@ class RetentionReceiptTests(unittest.TestCase):
                 "snapshotName": build.name,
                 "manifestMode": "exact",
                 "manifestSha256": retainer.sha256(manifest),
-                "version": "1.1.0.2",
+                "version": "1.1.0.3",
                 "sourceRevision": "a" * 40,
                 "sourceDirty": False,
                 "packages": rows,
             }
             result = retainer.require_receipt_identity(
-                receipt, build, manifest, "a" * 40, "1.1.0.2", names
+                receipt, build, manifest, "a" * 40, "1.1.0.3", names
             )
             self.assertEqual(set(result), set(names))
             (build / names[0]).write_bytes(b"changed")
             with self.assertRaises(ValueError):
                 retainer.require_receipt_identity(
-                    receipt, build, manifest, "a" * 40, "1.1.0.2", names
+                    receipt, build, manifest, "a" * 40, "1.1.0.3", names
                 )
 
 
@@ -714,7 +714,7 @@ class IntegrationEvidenceTests(unittest.TestCase):
             stage.mkdir()
             (stage / "meta.json").write_text(
                 json.dumps({
-                    "version": "1.1.0.2",
+                    "version": "1.1.0.3",
                     "guid": "515255fe-3332-49b0-b471-0be58c8221d8",
                     "framework": framework,
                     "targetAbi": abi,
@@ -728,7 +728,7 @@ class IntegrationEvidenceTests(unittest.TestCase):
             (stage / "Jellyfin.Plugin.RefreshKit.dll").write_bytes(
                 f"dll-{target}".encode()
             )
-            (build / f"jellyfin-refresh-kit_1.1.0.2{suffix}.zip").write_bytes(
+            (build / f"jellyfin-refresh-kit_1.1.0.3{suffix}.zip").write_bytes(
                 f"package-{target}".encode()
             )
         return build
@@ -738,7 +738,7 @@ class IntegrationEvidenceTests(unittest.TestCase):
         stage_name = "stage" if target == "jf10" else "stage-jf12"
         suffix = "" if target == "jf10" else "_jf12"
         stage = json.loads((build / stage_name / "meta.json").read_text(encoding="utf-8"))
-        package = build / f"jellyfin-refresh-kit_1.1.0.2{suffix}.zip"
+        package = build / f"jellyfin-refresh-kit_1.1.0.3{suffix}.zip"
         return {
             "target": target,
             "completed": True,
@@ -862,6 +862,8 @@ class CanonicalEvidenceSemanticTests(unittest.TestCase):
             }
 
         browser = {
+            "browserVersion": "Chrome/152.0.7977.54",
+            "browserDiagnostics": False,
             "target": "jf10",
             "failures": [],
             "generationBefore": generation,
@@ -896,6 +898,12 @@ class CanonicalEvidenceSemanticTests(unittest.TestCase):
             },
         }
         evidence_validation.validate_browser("jf10", browser, generation)
+        for field, value in (("browserVersion", ""), ("browserDiagnostics", True),
+                             ("browserDiagnostics", None)):
+            changed = copy.deepcopy(browser)
+            changed[field] = value
+            with self.assertRaises(evidence_validation.EvidenceValidationError):
+                evidence_validation.validate_browser("jf10", changed, generation)
         with self.assertRaisesRegex(
             evidence_validation.EvidenceValidationError,
             "browser/server generation differs",
@@ -922,10 +930,10 @@ class CanonicalEvidenceSemanticTests(unittest.TestCase):
             diagnostics = {
                 "Generation": server["generation"],
                 "KitVersion": server["kitVersion"],
-                "PluginVersion": "1.1.0.2",
+                "PluginVersion": "1.1.0.3",
                 "Plugins": [{
                     "Id": evidence_validation.PLUGIN_GUID,
-                    "Version": "1.1.0.2",
+                    "Version": "1.1.0.3",
                     "Status": "Active",
                     "IsLoaded": True,
                 }],
@@ -949,14 +957,14 @@ class CanonicalEvidenceSemanticTests(unittest.TestCase):
                 "pluginInventoryStatus": "Active",
             }
             generation_result = {
-                "Version": "1.1.0.2",
+                "Version": "1.1.0.3",
                 "BuildId": "build-id",
                 "CacheKey": generation,
                 "Epoch": "process-epoch",
             }
             plugin_record = {
                 "Id": evidence_validation.PLUGIN_GUID,
-                "Version": "1.1.0.2",
+                "Version": "1.1.0.3",
                 "Status": "Active",
             }
             public = {"Version": "12.0.0"}

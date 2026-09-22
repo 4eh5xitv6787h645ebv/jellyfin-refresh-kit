@@ -327,8 +327,8 @@ GUID="${PROJECT_IDENTITY[1]}"
 }
 
 TARGETS=(
-    "net9.0|10.11.0.0|stage||Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, current Enhanced adoption coverage, and a pinned compiler host for reproducible package bytes."
-    "net10.0|12.0.0.0|stage-jf12|_jf12|Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, current Enhanced adoption coverage, and a pinned compiler host for reproducible package bytes."
+    "net9.0|10.11.0.0|stage||Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, current Enhanced adoption coverage, reproducible compiler hosting, and pinned asynchronous lab-browser selection."
+    "net10.0|12.0.0.0|stage-jf12|_jf12|Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, current Enhanced adoption coverage, reproducible compiler hosting, and pinned asynchronous lab-browser selection."
 )
 
 TIMESTAMP="$(python3 - "${BUILD_EPOCH}" <<'PY'

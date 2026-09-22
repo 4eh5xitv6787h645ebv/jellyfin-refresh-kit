@@ -23,7 +23,20 @@ The lifecycle-only repository helper image is digest-pinned as well.
 - the repository-pinned .NET SDK from `global.json`
 - Bash, curl, Python 3, SHA-256 utilities, and GNU `timeout`
 - ffmpeg and MD5 utilities (for the generated playback fixture and Jellyfin package checksums)
-- Chromium, either from Puppeteer or selected with `RK_BROWSER_EXECUTABLE`
+- the browser installed by the locked Puppeteer dependency (`npm ci`);
+  `RK_BROWSER_EXECUTABLE` selects an explicit diagnostic override
+
+Browser results record the actual browser version. The lab awaits Puppeteer's
+executable lookup and does not silently select a different system Chrome.
+Request-failure diagnostics retain any HTTP status received before cancellation;
+a 200 response alone does not excuse a failed or incomplete request.
+For a focused cancellation investigation, run `RK_BROWSER_DIAGNOSTICS=1
+./run.sh browser jf12` against a provisioned lab. This opt-in observer records
+successful parsing of public generation identities in the redacted console
+capture, alongside `network.json` and `result.json`. It neither reads/clones
+response bodies nor changes the error audit. Use an explicit
+`RK_BROWSER_EXECUTABLE` to compare browser builds; diagnostic instrumentation is
+not enabled by the release gate.
 
 Run commands from this directory, or use the repository-level `./test.sh integration` entry point.
 

@@ -49,20 +49,14 @@ const labels = execFileSync('docker', [
 ], { encoding: 'utf8' }).trim();
 assert.equal(labels, `${project}|${target}`, 'refusing to restart a container outside this lab project/service');
 
-function browserExecutable() {
-  const candidates = [
-    process.env.RK_BROWSER_EXECUTABLE,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  const bundled = puppeteer.executablePath();
-  if (bundled && fs.existsSync(bundled)) return bundled;
-  throw new Error('No Chromium executable found; set RK_BROWSER_EXECUTABLE');
+async function browserExecutable() {
+  // Use the browser selected by the locked Puppeteer dependency. A runner's
+  // unrelated system Chrome can differ between otherwise identical lab runs.
+  // Puppeteer 25 resolves this path asynchronously.
+  const executable = process.env.RK_BROWSER_EXECUTABLE || await puppeteer.executablePath();
+  assert.ok(typeof executable === 'string' && fs.existsSync(executable),
+    'Browser executable is missing; run npm ci or set RK_BROWSER_EXECUTABLE explicitly');
+  return executable;
 }
 
 function sleep(ms) {
@@ -216,7 +210,8 @@ async function capturePage(page, name, suiteStarted) {
   page.on('requestfailed', (request) => {
     pushBounded(capture.network, {
       ...stamp(), kind: 'requestfailed', method: request.method(), url: redactUrl(request.url()),
-      resourceType: request.resourceType(), error: request.failure()?.errorText || 'unknown',
+      resourceType: request.resourceType(), status: request.response()?.status() || 0,
+      error: request.failure()?.errorText || 'unknown',
     }, capture);
   });
 
@@ -251,9 +246,22 @@ async function capturePage(page, name, suiteStarted) {
     }, capture);
   });
 
-  await page.evaluateOnNewDocument(() => {
+  await page.evaluateOnNewDocument((diagnostics) => {
     window.__rkLabDocumentId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  });
+    if (diagnostics) {
+      // Optional transport investigation: observe the runtime's successful JSON
+      // parse without cloning/retaining Response objects or consuming its body.
+      // Record only the public generation identity, never unrelated JSON data.
+      const originalParse = JSON.parse;
+      JSON.parse = function (...args) {
+        const value = originalParse.apply(this, args);
+        if (value && typeof value.CacheKey === 'string' && typeof value.Epoch === 'string') {
+          console.debug('RK diagnostic parsed generation', value.CacheKey, value.Epoch, Date.now());
+        }
+        return value;
+      };
+    }
+  }, process.env.RK_BROWSER_DIAGNOSTICS === '1');
   return capture;
 }
 
@@ -587,6 +595,7 @@ const suiteStarted = Date.now();
 const failures = [];
 const result = {
   target,
+  browserDiagnostics: process.env.RK_BROWSER_DIAGNOSTICS === '1',
   origin,
   startedUtc: new Date(suiteStarted).toISOString(),
   login: null,
@@ -612,11 +621,12 @@ function recordFailure(message) {
 (async () => {
   try {
     browser = await puppeteer.launch({
-      executablePath: browserExecutable(),
+      executablePath: await browserExecutable(),
       headless: true,
       defaultViewport: { width: 1440, height: 1000 },
       args: ['--no-sandbox', '--disable-dev-shm-usage'],
     });
+    result.browserVersion = await browser.version();
 
     const primary = await browser.newPage();
     const primaryCapture = await capturePage(primary, 'primary', suiteStarted);

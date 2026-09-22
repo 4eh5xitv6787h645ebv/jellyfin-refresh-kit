@@ -71,7 +71,7 @@ The net9 build uses the 10.11.0 floor so its shared MediaBrowser assembly
 references match the declared `10.11.0.0` ABI; deterministic package
 verification rejects any staged DLL/metadata disagreement before a live lab.
 
-## Enhanced adoption candidate (1.1.0.2 / runtime 2.5.0)
+## Enhanced adoption candidate (1.1.0.3 / runtime 2.5.0)
 
 The Enhanced adoption lab additionally pins stable Jellyfin **12.1** at
 `sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e`
@@ -103,6 +103,17 @@ Its upload was skipped after failure and no diagnostic artifact remains, so its
 specific request cannot be retrospectively classified. Current browser error
 logging and failure uploads preserve that evidence; fresh candidate validation
 is required and the old run is not counted as a pass.
+
+A focused follow-up on superseded source `6ffb563` reproduced an intermittent
+pre-restart `net::ERR_ABORTED` after HTTP 200 on the runner's system
+`Chrome/152.0.7977.0`, without a navigation or JavaScript AbortController call
+([diagnostic run 35760341846](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/actions/runs/35760341846)).
+The lab previously selected that unpinned browser and did not await Puppeteer
+25's asynchronous executable lookup. It now defaults to the locked Puppeteer
+browser and records its version. The request-error audit remains unchanged;
+HTTP 200 alone does not establish complete response consumption. Opt-in parsing
+diagnostics are reproducible through `RK_BROWSER_DIAGNOSTICS=1` and are rejected
+as release evidence. See the lab README for the comparison procedure.
 
 ## Locked ecosystem coverage
 

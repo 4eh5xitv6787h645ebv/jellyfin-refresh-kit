@@ -481,20 +481,14 @@ for (const [stageName, stageDirectory] of [['net9', net9Stage], ['net10', net10S
   }, `${stageName} local package differs from metadata`);
 }
 
-function browserExecutable() {
-  const candidates = [
-    process.env.RK_BROWSER_EXECUTABLE,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  const bundled = puppeteer.executablePath();
-  if (bundled && fs.existsSync(bundled)) return bundled;
-  throw new Error('No Chromium executable found; set RK_BROWSER_EXECUTABLE');
+async function browserExecutable() {
+  // Use the browser selected by the locked Puppeteer dependency. A runner's
+  // unrelated system Chrome can differ between otherwise identical lab runs.
+  // Puppeteer 25 resolves this path asynchronously.
+  const executable = process.env.RK_BROWSER_EXECUTABLE || await puppeteer.executablePath();
+  assert.ok(typeof executable === 'string' && fs.existsSync(executable),
+    'Browser executable is missing; run npm ci or set RK_BROWSER_EXECUTABLE explicitly');
+  return executable;
 }
 
 function redactUrl(raw) {
@@ -1607,11 +1601,12 @@ let probeInstalled = false;
     generationsSeen.add(sourceServer.generation);
 
     browser = await puppeteer.launch({
-      executablePath: browserExecutable(),
+      executablePath: await browserExecutable(),
       headless: true,
       defaultViewport: { width: 1440, height: 1000 },
       args: ['--no-sandbox', '--disable-dev-shm-usage'],
     });
+    result.browserVersion = await browser.version();
     const adminContext = browser.defaultBrowserContext();
     const viewerContext = await browser.createBrowserContext();
     const anonymousContext = await browser.createBrowserContext();
