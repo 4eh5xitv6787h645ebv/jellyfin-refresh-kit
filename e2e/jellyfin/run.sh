@@ -80,11 +80,25 @@ invalidate_lifecycle_completion() {
 }
 
 provision_both() {
-    local p10 p12 rc10 rc12
-    bash "${HERE}/lib/provision.sh" jf10 jf10 & p10=$!
-    bash "${HERE}/lib/provision.sh" jf12 jf12 & p12=$!
+    local p10 p12 rc10 rc12 previous_traps
+    # Each provisioner gets its own process group (setsid does not fork when
+    # the child is not already a group leader, so $! is the group id) so the
+    # trap below can stop its docker/curl/sleep descendants too: background
+    # jobs of a non-interactive shell inherit SIGINT-ignore, and the
+    # terminal's Ctrl-C reaches neither them nor what they run.
+    setsid bash "${HERE}/lib/provision.sh" jf10 jf10 & p10=$!
+    setsid bash "${HERE}/lib/provision.sh" jf12 jf12 & p12=$!
+    previous_traps="$(trap -p INT TERM)"
+    # errexit applies inside trap handlers and a killed child makes `wait`
+    # return non-zero, so every step is guarded or exit 130 is never reached.
+    # shellcheck disable=SC2064  # the PIDs are expanded now, on purpose
+    trap "kill -- -${p10} -${p12} 2>/dev/null || true; wait ${p10} ${p12} 2>/dev/null || true; exit 130" INT TERM
     if wait "${p10}"; then rc10=0; else rc10=$?; fi
     if wait "${p12}"; then rc12=0; else rc12=$?; fi
+    trap - INT TERM
+    if [ -n "${previous_traps}" ]; then
+        eval "${previous_traps}"
+    fi
     if [ "${rc10}" -ne 0 ] || [ "${rc12}" -ne 0 ]; then
         rk_compose ps >&2 || true
         rk_die "provisioning failed (jf10=${rc10}, jf12=${rc12})"
@@ -389,7 +403,7 @@ cmd_restart() {
 }
 
 cmd_status() {
-    rk_compose --profile abi-floor --profile host-upgrade ps
+    rk_compose --profile lifecycle --profile abi-floor --profile host-upgrade ps
     printf 'jf10: %s/System/Info/Public -> %s\n' "${RK_JF10_ORIGIN}" \
         "$(rk_http_code "${RK_JF10_ORIGIN}/System/Info/Public")"
     printf 'jf12: %s/System/Info/Public -> %s\n' "${RK_JF12_ORIGIN}" \

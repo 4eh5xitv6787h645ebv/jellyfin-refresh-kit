@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import re
 import sys
@@ -156,6 +157,7 @@ class BuildIsolationTests(unittest.TestCase):
         self.assertIn("sha256sum -c", checker)
         self.assertIn('workflow_root.glob("*.yml")', gate)
         self.assertIn('workflow_root.glob("*.yaml")', gate)
+        self.assertIn(r"(?:-\s+)?uses:", gate)
         self.assertIn("bash e2e/jellyfin/run.sh runner-negative", gate)
 
     def test_reproducibility_copy_excludes_generated_runner_state(self) -> None:
@@ -3826,6 +3828,28 @@ class EvidenceRedactionTests(unittest.TestCase):
             ), self.assertRaises(SystemExit) as raised:
                 collector.main()
             self.assertIn("must be fresh", str(raised.exception))
+
+    def test_collector_fails_closed_when_git_status_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            shim = pathlib.Path(temporary) / "bin"
+            shim.mkdir()
+            git = shim / "git"
+            git.write_text(
+                "#!/bin/sh\necho 'fatal: not a git repository' >&2\nexit 128\n",
+                encoding="utf-8",
+            )
+            git.chmod(0o755)
+            output = pathlib.Path(temporary) / "evidence"
+            with mock.patch.dict(os.environ, {"PATH": str(shim)}):
+                self.assertIsNone(collector.run("git", "status", "--porcelain"))
+                with mock.patch.object(
+                    sys,
+                    "argv",
+                    ["collect-ci-evidence.py", "--output", str(output)],
+                ), self.assertRaises(SystemExit) as raised:
+                    collector.main()
+            self.assertIn("git status is unavailable", str(raised.exception))
+            self.assertFalse((output / "run.json").exists())
 
 
 if __name__ == "__main__":

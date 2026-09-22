@@ -44,15 +44,20 @@ REQUIRED_ROLES = {
     "viewer-playback",
     "anonymous-login",
 }
+# Every route pattern is anchored at the start of the location hash so a
+# query string such as `#/login?redirect=/dashboard` cannot pass as a route.
+LOGIN_ROUTE = r"^#/login(?:\.html)?(?:[?]|$)"
+HOME_ROUTE = r"^#/home(?:\.html)?(?:[/?]|$)"
+DETAILS_ROUTE = r"^#/details(?:\.html)?(?:[?]|$)"
 ROLE_ROUTES = {
-    "admin-dashboard": r"/dashboard(?:\.html)?(?:[/?]|$)",
-    "admin-background": r"/dashboard(?:\.html)?(?:[/?]|$)",
-    "admin-config-editor": r"/configurationpage(?:[?]|$)",
-    "admin-plugin-dialog": r"/dashboard/plugins(?:[/?]|$)",
-    "viewer-home": r"/home(?:\.html)?(?:[/?]|$)",
-    "viewer-background": r"/home(?:\.html)?(?:[/?]|$)",
-    "viewer-playback": r"/(?:home|details|video)(?:\.html)?(?:[/?]|$)",
-    "anonymous-login": r"/login(?:\.html)?(?:[?]|$)",
+    "admin-dashboard": r"^#/dashboard(?:\.html)?(?:[/?]|$)",
+    "admin-background": r"^#/dashboard(?:\.html)?(?:[/?]|$)",
+    "admin-config-editor": r"^#/configurationpage(?:[?]|$)",
+    "admin-plugin-dialog": r"^#/dashboard/plugins(?:[/?]|$)",
+    "viewer-home": HOME_ROUTE,
+    "viewer-background": HOME_ROUTE,
+    "viewer-playback": r"^#/(?:home|details|video)(?:\.html)?(?:[/?]|$)",
+    "anonymous-login": LOGIN_ROUTE,
 }
 GENERATION = re.compile(r"^g-[0-9a-f]{16}$")
 EPOCH = re.compile(r"^[0-9a-f]{32}$")
@@ -85,7 +90,14 @@ def require(condition: bool, message: str) -> None:
         raise EvidenceError(message)
 
 
+def dict_rows(value: Any, label: str) -> list[dict[str, Any]]:
+    require(isinstance(value, list) and all(isinstance(row, dict) for row in value),
+            f"{label}: expected a list of objects")
+    return value
+
+
 def load(path: pathlib.Path) -> dict[str, Any]:
+    require(not path.is_symlink(), f"result must not be a symlink: {path}")
     require(path.is_file(), f"result is missing: {path}")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -202,7 +214,7 @@ def validate_page(page: Any, server: dict[str, Any], users: dict[str, Any], labe
     if expected is None:
         require(page.get("authenticated") is False and page.get("user") is None,
                 f"{label}: anonymous page resolved an authenticated identity")
-        require(re.search(r"/login(?:\.html)?(?:[?]|$)", str(page.get("hash", "")), re.I),
+        require(re.search(LOGIN_ROUTE, str(page.get("hash", "")), re.I),
                 f"{label}: anonymous page is not on a Jellyfin login route")
     else:
         actual = page.get("user")
@@ -389,7 +401,7 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
     multi = data.get("multiTab")
     require(isinstance(multi, dict) and multi.get("tabCounts") == [1, 2, 10],
             f"{scenario}: tab checkpoints differ")
-    require(re.search(r"/login(?:\.html)?(?:[?]|$)", str(multi.get("anonymousLoginRoute", "")), re.I),
+    require(re.search(LOGIN_ROUTE, str(multi.get("anonymousLoginRoute", "")), re.I),
             f"{scenario}: anonymous tab was not retained on a real login route")
     roles = multi.get("finalRoles")
     require(isinstance(roles, list) and len(roles) == 10, f"{scenario}: final role inventory is not ten tabs")
@@ -448,7 +460,7 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
     for route_key in ("detailsRoute", "playbackDetails"):
         route = playback.get(route_key)
         require(isinstance(route, dict)
-                and re.search(r"/details(?:\.html)?(?:[?]|$)", str(route.get("hash", "")), re.I)
+                and re.search(DETAILS_ROUTE, str(route.get("hash", "")), re.I)
                 and normalized_item_id(route.get("itemId")) == fixture_item_id
                 and normalized_item_id(route.get("expectedId")) == fixture_item_id,
                 f"{scenario}/playback: {route_key} is not the exact real item details route")
@@ -500,7 +512,7 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
                 and kit.get("baselineEpoch") == ten_before_server["epoch"]
                 and kit.get("latestEpoch") == ten_after_server["epoch"],
                 f"{scenario}/playback/{state_name}: gated document/runtime identity differs")
-    require(re.search(r"/home(?:\.html)?(?:[/?]|$)", str(left_playback.get("hash", "")), re.I)
+    require(re.search(HOME_ROUTE, str(left_playback.get("hash", "")), re.I)
             and playback.get("documentIdPreservedWhilePlaying") is True
             and playback.get("loadCountDeltaWhilePlaying") == 0
             and playback.get("currentGenerationHeldWhileLatestAdvanced") is True
@@ -510,8 +522,8 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
             and left_playback.get("documentId") != playing.get("documentId"),
             f"{scenario}/playback: pause/leave exact convergence evidence differs")
 
-    waves = data.get("pollStress")
-    require(isinstance(waves, list) and [wave.get("clients") for wave in waves] == [10, 50, 100],
+    waves = dict_rows(data.get("pollStress"), f"{scenario}: stress waves")
+    require([wave.get("clients") for wave in waves] == [10, 50, 100],
             f"{scenario}: stress client counts differ")
     wave_generations: set[str] = set()
     wave_epoch = None
@@ -564,8 +576,8 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
         require(all(isinstance(timing.get(key), (int, float)) for key in ("min", "p50", "p95", "max"))
                 and 0 <= timing["min"] <= timing["p50"] <= timing["p95"] <= timing["max"],
                 f"{scenario}/{clients}: latency distribution is invalid")
-        responses = wave.get("responses")
-        require(isinstance(responses, list) and len(responses) == clients
+        responses = dict_rows(wave.get("responses"), f"{scenario}/{clients}: responses")
+        require(len(responses) == clients
                 and {response.get("client") for response in responses} == set(range(clients)),
                 f"{scenario}/{clients}: per-client response inventory differs")
         for response in responses:
@@ -637,19 +649,18 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
             f"{scenario}: container transition identities differ")
     require(transition.get("sourceLogRetained") is True,
             f"{scenario}: source server log was not retained before replacement")
-    windows = transition.get("windows")
+    windows = dict_rows(transition.get("windows"), f"{scenario}: transition windows")
     expected_window_kinds = (["disable-source-plugin", "host-image-replacement"]
                              if scenario == "jf12" else ["host-image-replacement"])
-    require(isinstance(windows, list)
-            and [window.get("kind") for window in windows] == expected_window_kinds
+    require([window.get("kind") for window in windows] == expected_window_kinds
             and data.get("transitionWindows") == windows
             and all(isinstance(window.get("startElapsedMs"), (int, float))
                     and isinstance(window.get("healthyElapsedMs"), (int, float))
                     and 0 <= window["startElapsedMs"] <= window["healthyElapsedMs"]
                     for window in windows),
             f"{scenario}: transition-window evidence differs")
-    final_inventory = transition.get("finalInventory")
-    require(isinstance(final_inventory, list) and len(final_inventory) == 1
+    final_inventory = dict_rows(transition.get("finalInventory"), f"{scenario}: final inventory")
+    require(len(final_inventory) == 1
             and str(final_inventory[0].get("id", "")).replace("-", "").lower()
             == "515255fe333249b0b4710be58c8221d8"
             and final_inventory[0].get("name") == "Jellyfin Refresh Kit"
@@ -659,17 +670,17 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
             f"{scenario}: final active plugin inventory differs")
     if scenario == "jf12":
         disable = transition.get("disable")
-        require(isinstance(disable, dict)
-                and disable.get("apiStatus") == 204
+        require(isinstance(disable, dict), "jf12: net9 disable evidence is missing")
+        for key in ("inventoryBefore", "pendingInventory", "disabledInventory"):
+            dict_rows(disable.get(key, []), f"jf12: disable {key}")
+        require(disable.get("apiStatus") == 204
                 and disable.get("generationStatusAfterRestart") == 404
-                and isinstance(disable.get("inventoryBefore"), list)
-                and len(disable["inventoryBefore"]) == 1
+                and len(disable.get("inventoryBefore", [])) == 1
                 and disable["inventoryBefore"][0].get("status") == "Active"
                 and disable["inventoryBefore"][0].get("version") == version
                 and any(item.get("status") == "Restart"
                         for item in disable.get("pendingInventory", []))
-                and isinstance(disable.get("disabledInventory"), list)
-                and len(disable["disabledInventory"]) == 1
+                and len(disable.get("disabledInventory", [])) == 1
                 and disable["disabledInventory"][0].get("status") == "Disabled",
                 "jf12: net9 disable evidence is missing")
         replacement = transition.get("replacement")
@@ -680,11 +691,12 @@ def validate_result(data: dict[str, Any], scenario: str, snapshot: str) -> None:
                 and replacement["fromSha256"] != replacement["toSha256"],
                 "jf12: net9-to-net10 replacement evidence differs")
         enable = transition.get("enable")
-        require(isinstance(enable, dict)
-                and enable.get("apiStatus") == 204
+        require(isinstance(enable, dict), "jf12: net10 enable evidence is missing")
+        for key in ("migratedDisabledInventory", "pendingInventory"):
+            dict_rows(enable.get(key, []), f"jf12: enable {key}")
+        require(enable.get("apiStatus") == 204
                 and enable.get("generationStatusBeforeEnable") == 404
-                and isinstance(enable.get("migratedDisabledInventory"), list)
-                and len(enable["migratedDisabledInventory"]) == 1
+                and len(enable.get("migratedDisabledInventory", [])) == 1
                 and enable["migratedDisabledInventory"][0].get("status") == "Disabled"
                 and any(item.get("status") == "Restart"
                         for item in enable.get("pendingInventory", []))
@@ -710,7 +722,8 @@ def validate_aggregate(root: pathlib.Path, snapshot: str) -> None:
             == results["jf12"]["metadata"]["sourceIdentity"],
             "aggregate/source scenario identities differ")
     scenarios = aggregate.get("scenarios")
-    require(isinstance(scenarios, dict) and set(scenarios) == {"jf10", "jf12"},
+    require(isinstance(scenarios, dict) and set(scenarios) == {"jf10", "jf12"}
+            and all(isinstance(record, dict) for record in scenarios.values()),
             "aggregate scenario set differs")
     require(all(record.get("completed") is True for record in scenarios.values()),
             "aggregate scenario completion differs")
@@ -1101,6 +1114,36 @@ def self_test() -> None:
     mutations.append(changed)
     changed = copy.deepcopy(valid10)
     changed["schemaVersion"] = 1
+    mutations.append(changed)
+    # Route patterns are anchored: a login page carrying an admin route in its
+    # query string is not an admin page, and vice versa.
+    changed = copy.deepcopy(valid10)
+    changed["hostUpgrade"]["openDocumentsAfter"][0]["hash"] = "#/login?redirect=/dashboard"
+    mutations.append(changed)
+    changed = copy.deepcopy(valid10)
+    changed["multiTab"]["anonymousLoginRoute"] = "#/home?next=/login"
+    mutations.append(changed)
+    changed = copy.deepcopy(valid10)
+    changed["playbackSafety"]["leftPlayback"]["hash"] = "#/details?id=/home"
+    mutations.append(changed)
+    # Non-object list elements are rejected as evidence errors, never crashes.
+    changed = copy.deepcopy(valid10)
+    changed["pollStress"][1] = "not-an-object"
+    mutations.append(changed)
+    changed = copy.deepcopy(valid10)
+    changed["pollStress"][0]["responses"][3] = None
+    mutations.append(changed)
+    changed = copy.deepcopy(valid10)
+    changed["hostUpgrade"]["transition"]["windows"] = ["host-image-replacement"]
+    mutations.append(changed)
+    changed = copy.deepcopy(valid10)
+    changed["hostUpgrade"]["transition"]["finalInventory"] = ["Jellyfin Refresh Kit"]
+    mutations.append(changed)
+    changed = copy.deepcopy(valid12)
+    changed["hostUpgrade"]["transition"]["disable"]["pendingInventory"] = ["Restart"]
+    mutations.append(changed)
+    changed = copy.deepcopy(valid12)
+    changed["hostUpgrade"]["transition"]["enable"]["migratedDisabledInventory"] = [1]
     mutations.append(changed)
 
     failures = 0

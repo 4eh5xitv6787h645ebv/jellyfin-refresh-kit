@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  nuget:
-    name: Current NuGet advisories
+  audit:
+    name: Current NuGet and npm advisories
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -32,5 +32,10 @@ jobs:
             plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
             plugin/Jellyfin.Plugin.RefreshKit.Tests/packages.lock.json
 
-      - name: Fail on current low-or-higher NuGet advisories
+      - name: Install pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Fail on current low-or-higher NuGet or npm advisories
         run: ./test.sh security-audit

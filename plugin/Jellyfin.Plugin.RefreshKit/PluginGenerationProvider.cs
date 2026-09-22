@@ -99,11 +99,17 @@ namespace Jellyfin.Plugin.RefreshKit
             ".js", ".mjs", ".css", ".html",
         };
 
+        /// <summary>
+        /// Loaded assembly names that identify the Jellyfin host. These are
+        /// ASSEMBLY names, not project names: the <c>Jellyfin.Server</c> project
+        /// compiles to <c>jellyfin.dll</c>, so "jellyfin" is the entry. The web
+        /// client (<c>jellyfin-web</c>) is static files, not an assembly, and
+        /// never appears here.
+        /// </summary>
         private static readonly HashSet<string> HostAssemblyNames = new HashSet<string>(
             new[]
             {
                 "jellyfin",
-                "Jellyfin.Server",
                 "Jellyfin.Api",
                 "Emby.Server.Implementations",
             },
@@ -145,6 +151,16 @@ namespace Jellyfin.Plugin.RefreshKit
         private readonly Dictionary<string, PluginFingerprint> _lastKnownActiveFingerprints =
             new Dictionary<string, PluginFingerprint>(StringComparer.Ordinal);
         private readonly Dictionary<string, PluginScanCharge> _lastKnownPluginScanCharges =
+            new Dictionary<string, PluginScanCharge>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// The file/directory/byte charge of the scan that produced each
+        /// plugin's last coherent asset snapshot. A later transient failure
+        /// reserves exactly this charge (topped up over whatever the failed
+        /// attempt already consumed) so that downstream plugins see the same
+        /// aggregate capacity they saw when that snapshot was folded.
+        /// </summary>
+        private readonly Dictionary<string, PluginScanCharge> _lastGoodAssetCharges =
             new Dictionary<string, PluginScanCharge>(StringComparer.Ordinal);
 
         private string _cached = string.Empty;
@@ -400,12 +416,17 @@ namespace Jellyfin.Plugin.RefreshKit
                     var assets = ScanActiveClientAssets(
                         plugin.DirectoryPath,
                         scanBudget,
-                        contentBuffer);
+                        contentBuffer,
+                        hasLastGoodSnapshot: _activeAssetSnapshots.ContainsKey(plugin.StableIdentity));
                     var assetScanUnavailable = !assets.IsUsable;
                     var usingLastGoodAssets = false;
                     if (assets.IsUsable)
                     {
                         _activeAssetSnapshots[plugin.StableIdentity] = assets;
+                        // Assets are scanned first, so the charge since the
+                        // plugin started is exactly the asset walk's charge.
+                        _lastGoodAssetCharges[plugin.StableIdentity] =
+                            scanBudget.GetChargeSince(budgetBeforePlugin);
                     }
                     else if (_activeAssetSnapshots.TryGetValue(plugin.StableIdentity, out var previous))
                     {
@@ -478,6 +499,8 @@ namespace Jellyfin.Plugin.RefreshKit
                         assets.FileCount,
                         assets.DirectoriesScanned,
                         assets.BytesHashed,
+                        assets.ReparsePointsSkipped,
+                        assets.EntriesUnreadable,
                         assets.IsTruncated,
                         assetScanUnavailable,
                         usingLastGoodAssets,
@@ -520,6 +543,8 @@ namespace Jellyfin.Plugin.RefreshKit
                         0,
                         0,
                         0,
+                        assetReparsePointsSkipped: 0,
+                        assetEntriesUnreadable: 0,
                         assetScanTruncated: true,
                         assetScanUnavailable: true,
                         usingLastGoodAssets: false,
@@ -540,23 +565,43 @@ namespace Jellyfin.Plugin.RefreshKit
                     // diagnostics. Enumerated non-assets, queued directories and
                     // failed reads all consume budget without appearing in the
                     // successfully hashed/scanned counters on the published row.
-                    // A last-good subsystem retains at least its prior charge. An
-                    // early failure (for example, a temporarily missing plugin
-                    // directory) must not refund that subsystem's capacity to
-                    // later plugins and change their fingerprints while its
-                    // published identity is frozen. The two subsystems remain
-                    // independent: a frozen asset row does not retain config
-                    // bytes that a successful current config scan released.
+                    // A last-good subsystem retains at least the charge of the
+                    // scan that produced the retained snapshot. An early failure
+                    // (for example, a temporarily missing plugin directory) must
+                    // not refund that subsystem's capacity to later plugins and
+                    // change their fingerprints while its published identity is
+                    // frozen; equally, it must not reserve MORE than that
+                    // snapshot cost, or the next plugin in stable-identity order
+                    // would flip to the truncation sentinel and back while nothing
+                    // on disk changed. The two subsystems remain independent: a
+                    // frozen asset row does not retain config bytes that a
+                    // successful current config scan released.
                     var attemptedCharge = scanBudget.GetChargeSince(budgetBeforePlugin);
-                    if ((preservePreviousAssetCharge || preservePreviousConfigurationCharge)
+                    if (preservePreviousAssetCharge)
+                    {
+                        if (_lastGoodAssetCharges.TryGetValue(
+                                plugin.StableIdentity,
+                                out var lastGoodAssetCharge)
+                            || _lastKnownPluginScanCharges.TryGetValue(
+                                plugin.StableIdentity,
+                                out lastGoodAssetCharge))
+                        {
+                            scanBudget.Reserve(lastGoodAssetCharge.GetDeficitFrom(
+                                attemptedCharge,
+                                preserveAssets: true,
+                                preserveConfiguration: false));
+                        }
+                    }
+
+                    if (preservePreviousConfigurationCharge
                         && _lastKnownPluginScanCharges.TryGetValue(
                             plugin.StableIdentity,
                             out var previousCharge))
                     {
                         scanBudget.Reserve(previousCharge.GetDeficitFrom(
                             attemptedCharge,
-                            preservePreviousAssetCharge,
-                            preservePreviousConfigurationCharge));
+                            preserveAssets: false,
+                            preserveConfiguration: true));
                     }
 
                     _lastKnownPluginScanCharges[plugin.StableIdentity] =
@@ -624,9 +669,12 @@ namespace Jellyfin.Plugin.RefreshKit
 
         /// <summary>
         /// Builds a path-independent identity for the assemblies that define the
-        /// running Jellyfin host. A server/web package update therefore moves the
+        /// running Jellyfin host. A Jellyfin server update that loads a different
+        /// host assembly (see <see cref="HostAssemblyNames"/>) therefore moves the
         /// generation after restart even when Refresh Kit and every plugin are
-        /// byte-identical.
+        /// byte-identical. A <c>jellyfin-web</c> update on its own does NOT:
+        /// the web client is static files served by the host, not a loaded
+        /// assembly, so only host assemblies count here.
         /// </summary>
         internal static HostFingerprint DiscoverHostFingerprint(
             IReadOnlyList<LoadedModuleFingerprint> loadedModules)
@@ -806,11 +854,36 @@ namespace Jellyfin.Plugin.RefreshKit
         /// current process. DLLs are intentionally excluded: their authoritative
         /// identity is the loaded module MVID, not whatever bytes an installer has
         /// staged at the same path for the next restart.
+        ///
+        /// <para>
+        /// Failures are split into two kinds. A PERSISTENT per-entry failure — an
+        /// entry the process may not stat, a subdirectory it may not list, an
+        /// asset file it may not open — skips only that entry: it is counted in
+        /// <see cref="ActiveAssetSnapshot.EntriesUnreadable"/> and folded as a
+        /// deterministic <c>&lt;unreadable&gt;</c> sentinel keyed by its relative
+        /// path, so the identity is stable across scans and moves only when the
+        /// set of unreadable entries changes. Without that, one mode-000
+        /// subdirectory would make the plugin's assets unavailable on every scan
+        /// of a fresh process, never folded and always charged. A TRANSIENT
+        /// failure — an entry that vanished between readdir and stat, content
+        /// that changed while it was hashed, or a root that cannot be listed —
+        /// returns <see cref="ActiveAssetSnapshot.Unavailable"/> so the caller
+        /// retains the last coherent snapshot instead.
+        /// </para>
         /// </summary>
+        /// <param name="hasLastGoodSnapshot">
+        /// Whether the caller can fall back to a coherent earlier snapshot. When
+        /// it cannot, a walk failure reserves the per-plugin ceilings so the
+        /// charge does not depend on how far the native enumerator got; when it
+        /// can, the caller tops the charge up to that snapshot's own recorded
+        /// charge instead, which keeps downstream plugins' capacity identical to
+        /// the scan that folded it.
+        /// </param>
         private ActiveAssetSnapshot ScanActiveClientAssets(
             string directory,
             PluginScanBudget scanBudget,
-            byte[] buffer)
+            byte[] buffer,
+            bool hasLastGoodSnapshot)
         {
             if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
             {
@@ -819,7 +892,7 @@ namespace Jellyfin.Plugin.RefreshKit
 
             if (_scanLimits.MaxAssetBytesPerPlugin == 0 || scanBudget.RemainingAssetBytes == 0)
             {
-                return ActiveAssetSnapshot.Truncated(0, 0, 0, 0);
+                return ActiveAssetSnapshot.Truncated(0, 0, 0, 0, 0, 0);
             }
 
             long newestTicks = 0;
@@ -828,6 +901,8 @@ namespace Jellyfin.Plugin.RefreshKit
             var filesReserved = 0;
             var directoriesSeen = 0;
             var directoriesReserved = 0;
+            var reparsePointsSkipped = 0;
+            var entriesUnreadable = 0;
             var fileReservationCeiling = Math.Min(
                 _scanLimits.MaxFilesPerPlugin,
                 scanBudget.RemainingFiles);
@@ -840,15 +915,35 @@ namespace Jellyfin.Plugin.RefreshKit
             if (_scanLimits.MaxDirectoriesPerPlugin == 0
                 || scanBudget.ReserveDirectories(1) == 0)
             {
-                return ActiveAssetSnapshot.Truncated(0, 0, 0, 0);
+                return ActiveAssetSnapshot.Truncated(0, 0, 0, 0, 0, 0);
             }
 
             directoriesReserved++;
             pending.Push(directory);
 
+            ActiveAssetSnapshot Truncated() =>
+                ActiveAssetSnapshot.Truncated(
+                    newestTicks,
+                    material.Count - entriesUnreadable,
+                    directoriesSeen,
+                    bytesHashed,
+                    reparsePointsSkipped,
+                    entriesUnreadable);
+
+            void FoldUnreadable(string entry)
+            {
+                entriesUnreadable++;
+                var relative = Path.GetRelativePath(directory, entry)
+                    .Replace(Path.DirectorySeparatorChar, '/');
+                // '<' cannot occur in base64, so this line can never collide with
+                // a hashed asset's "path|length|hash" record.
+                material.Add("<unreadable>|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(relative)));
+            }
+
             while (pending.Count > 0)
             {
                 var current = pending.Pop();
+                var isRoot = current.Equals(directory, StringComparison.Ordinal);
                 directoriesSeen++;
                 try
                 {
@@ -856,7 +951,36 @@ namespace Jellyfin.Plugin.RefreshKit
                     var subdirectories = new List<string>();
                     foreach (var entry in _fileSystemEntriesProvider(current))
                     {
-                        var attributes = File.GetAttributes(entry);
+                        FileAttributes attributes;
+                        try
+                        {
+                            attributes = File.GetAttributes(entry);
+                        }
+                        catch (Exception exception) when (IsPersistentEntryFailure(exception))
+                        {
+                            // Cannot be classified as file or directory, so it is
+                            // charged as one file entry — the cheaper of the two —
+                            // and folded as unreadable. A vanished entry is not
+                            // caught here: that is a transient race handled by the
+                            // outer catch below.
+                            if (filesReserved >= _scanLimits.MaxFilesPerPlugin
+                                || scanBudget.RemainingFiles == 0
+                                || scanBudget.ReserveFiles(1) != 1)
+                            {
+                                NormalizeEntryOverflowCharge(
+                                    scanBudget,
+                                    fileReservationCeiling,
+                                    directoryReservationCeiling,
+                                    ref filesReserved,
+                                    ref directoriesReserved);
+                                return Truncated();
+                            }
+
+                            filesReserved++;
+                            FoldUnreadable(entry);
+                            continue;
+                        }
+
                         if ((attributes & FileAttributes.Directory) != 0)
                         {
                             // Charge every directory entry as it is yielded, before
@@ -875,17 +999,21 @@ namespace Jellyfin.Plugin.RefreshKit
                                     directoryReservationCeiling,
                                     ref filesReserved,
                                     ref directoriesReserved);
-                                return ActiveAssetSnapshot.Truncated(
-                                    newestTicks,
-                                    material.Count,
-                                    directoriesSeen,
-                                    bytesHashed);
+                                return Truncated();
                             }
 
                             directoriesReserved++;
                             if ((attributes & FileAttributes.ReparsePoint) == 0)
                             {
                                 subdirectories.Add(entry);
+                            }
+                            else
+                            {
+                                // A symlinked directory is never followed: it could
+                                // point anywhere on the host. It contributes what an
+                                // absent directory does, so only this counter tells a
+                                // symlinked asset tree from an empty one.
+                                reparsePointsSkipped++;
                             }
 
                             continue;
@@ -904,11 +1032,7 @@ namespace Jellyfin.Plugin.RefreshKit
                                 directoryReservationCeiling,
                                 ref filesReserved,
                                 ref directoriesReserved);
-                            return ActiveAssetSnapshot.Truncated(
-                                newestTicks,
-                                material.Count,
-                                directoriesSeen,
-                                bytesHashed);
+                            return Truncated();
                         }
 
                         filesReserved++;
@@ -931,6 +1055,9 @@ namespace Jellyfin.Plugin.RefreshKit
                             var info = new FileInfo(file);
                             if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
                             {
+                                // Same rule as a symlinked directory: not followed,
+                                // contributes what an absent file does, counted.
+                                reparsePointsSkipped++;
                                 continue;
                             }
 
@@ -939,11 +1066,7 @@ namespace Jellyfin.Plugin.RefreshKit
                                 || length > _scanLimits.MaxAssetBytesPerPlugin - bytesReserved
                                 || length > scanBudget.RemainingAssetBytes)
                             {
-                                return ActiveAssetSnapshot.Truncated(
-                                    newestTicks,
-                                    material.Count,
-                                    directoriesSeen,
-                                    bytesHashed);
+                                return Truncated();
                             }
 
                             // Reserve the declared length before opening or hashing.
@@ -984,8 +1107,18 @@ namespace Jellyfin.Plugin.RefreshKit
                                 length,
                                 contentHash));
                         }
+                        catch (UnauthorizedAccessException)
+                        {
+                            // A file the process may not open (mode 000, a
+                            // restrictive ACL) is persistent: retaining last-good
+                            // forever would never fold this plugin in a fresh
+                            // process. Its declared bytes stay reserved.
+                            FoldUnreadable(file);
+                        }
                         catch
                         {
+                            // Vanished, grew, shrank or was rewritten while being
+                            // hashed: transient, the next scan reads it coherently.
                             return ActiveAssetSnapshot.Unavailable;
                         }
                     }
@@ -996,14 +1129,37 @@ namespace Jellyfin.Plugin.RefreshKit
                         pending.Push(subdirectories[index]);
                     }
                 }
+                catch (Exception exception) when (!isRoot && IsPersistentEntryFailure(exception))
+                {
+                    // A subdirectory the process may not list. Its own directory
+                    // entry was already charged by the parent; entries it yielded
+                    // before failing (if any) were charged too and are dropped
+                    // with it, so the sentinel alone represents the subtree.
+                    FoldUnreadable(current);
+                }
                 catch
                 {
-                    NormalizeEntryOverflowCharge(
-                        scanBudget,
-                        fileReservationCeiling,
-                        directoryReservationCeiling,
-                        ref filesReserved,
-                        ref directoriesReserved);
+                    // The root cannot be listed, an entry disappeared between
+                    // readdir and stat (an uninstall's recursive delete racing the
+                    // scan), or a subdirectory listing hit a plain I/O error (a
+                    // network share hiccup, a device returning EIO once). All
+                    // transient: retain the last coherent snapshot. Folding a
+                    // one-off error as an unreadable sentinel would move the
+                    // identity now and move it back on the next scan — two client
+                    // reloads for a failure that never touched the assets. Only
+                    // when there is none does the conservative ceiling apply — the
+                    // result cannot reveal what the enumerator would have yielded
+                    // next, so the charge must not depend on where it stopped.
+                    if (!hasLastGoodSnapshot)
+                    {
+                        NormalizeEntryOverflowCharge(
+                            scanBudget,
+                            fileReservationCeiling,
+                            directoryReservationCeiling,
+                            ref filesReserved,
+                            ref directoriesReserved);
+                    }
+
                     return ActiveAssetSnapshot.Unavailable;
                 }
             }
@@ -1017,21 +1173,42 @@ namespace Jellyfin.Plugin.RefreshKit
             return new ActiveAssetSnapshot(
                 HashMaterial(identityMaterial.ToString()),
                 newestTicks,
-                material.Count,
+                material.Count - entriesUnreadable,
                 directoriesSeen,
                 bytesHashed,
+                reparsePointsSkipped,
+                entriesUnreadable,
                 isTruncated: false,
                 isUsable: true);
         }
 
         /// <summary>
+        /// Whether a per-entry exception describes an entry that exists but
+        /// cannot be read by this process — permission denied, or a path the
+        /// platform rejects outright — as opposed to anything else that can go
+        /// wrong while stat'ing or listing it. Only the former is stable across
+        /// scans and is folded as an unreadable sentinel. A generic
+        /// <see cref="IOException"/> is deliberately NOT persistent, even though
+        /// it may be: a transient EIO or a share that dropped for one scan must
+        /// retain the last-good snapshot, the same way a failed content read of
+        /// an asset file does, or the sentinel would move the identity and move
+        /// it back on the next scan. A permanent I/O error therefore keeps a
+        /// plugin on its last-good snapshot until restart, which is the same
+        /// outcome as a root that cannot be listed and is reported the same way.
+        /// </summary>
+        private static bool IsPersistentEntryFailure(Exception exception) =>
+            exception is UnauthorizedAccessException or PathTooLongException;
+
+        /// <summary>
         /// Normalizes the hidden aggregate charge after native entry enumeration
-        /// overflows or fails. The public truncation/unavailable result cannot
-        /// reveal which file/directory entries the operating system would have
-        /// yielded next, so reserving both ceilings is the only conservative result
-        /// that is independent of native mixed-entry order. Those reservations are
+        /// overflows, or fails for a plugin that has no last-good snapshot to fall
+        /// back on. The public truncation/unavailable result cannot reveal which
+        /// file/directory entries the operating system would have yielded next, so
+        /// reserving both ceilings is the only conservative result that is
+        /// independent of native mixed-entry order. Those reservations are
         /// retained with the plugin fingerprint and keep later plugins deterministic
-        /// too.
+        /// too. A plugin that DOES have a last-good snapshot is instead topped up
+        /// to that snapshot's recorded charge by the caller.
         /// </summary>
         private static void NormalizeEntryOverflowCharge(
             PluginScanBudget scanBudget,
@@ -1280,10 +1457,35 @@ namespace Jellyfin.Plugin.RefreshKit
                 signal.PendingFirstSeenUtc = signal.PendingIdentity == null
                     ? DateTime.MinValue
                     : now;
-                signal.CooldownUntilUtc = DateTime.MinValue;
+                signal.CooldownOpenedUtc = DateTime.MinValue;
+                // The window the pending change was held in no longer exists on
+                // this timeline, so it publishes as a leading edge and re-arms.
+                signal.PendingWasHeld = false;
             }
 
             signal.LastObservedUtc = now;
+
+            var cooldownMinutes = Math.Clamp(configuration?.ConfigCooldownMinutes ?? 5, 0, 1440);
+            // The window's END is derived from the CURRENT setting on every
+            // evaluation, never frozen from the setting in force when it opened.
+            // An admin who lowers the cooldown (to 0, say) therefore releases a
+            // change already held in an open window on the next scan, and one
+            // who raises it extends the hold; neither needs a restart or a
+            // fresh save to take effect.
+            //
+            // The window is closed on the first OBSERVATION past its end, not
+            // only when a publish or a clock rollback happens to reset it. A
+            // window that expired quietly (nothing arrived inside it) would
+            // otherwise linger as a start timestamp, and raising the cooldown
+            // half an hour later would resurrect it: a save made then would be
+            // held for the whole new length, measured from a start long past.
+            // Closing eagerly means a raise can only extend a window that is
+            // genuinely still open at this scan.
+            if (signal.CooldownOpenedUtc != DateTime.MinValue
+                && now >= signal.CooldownOpenedUtc.AddMinutes(cooldownMinutes))
+            {
+                signal.CooldownOpenedUtc = DateTime.MinValue;
+            }
 
             if (rawIdentity.Equals(signal.PublishedIdentity, StringComparison.Ordinal))
             {
@@ -1295,6 +1497,14 @@ namespace Jellyfin.Plugin.RefreshKit
             {
                 signal.PendingIdentity = rawIdentity;
                 signal.PendingFirstSeenUtc = now;
+                // Held (trailing) or leading edge is decided NOW, while the
+                // window's state is known, not when the change is finally
+                // released. Deriving it then from the recomputed end would
+                // misclassify a change that an admin released early by lowering
+                // the cooldown: it was held, yet its first-seen time would lie
+                // past the shrunken end, so it would read as a leading edge and
+                // re-arm a fresh window right after the one it waited out.
+                signal.PendingWasHeld = signal.CooldownOpenedUtc != DateTime.MinValue;
                 return signal.PublishedIdentity;
             }
 
@@ -1303,25 +1513,25 @@ namespace Jellyfin.Plugin.RefreshKit
                 return signal.PublishedIdentity;
             }
 
-            var cooldownMinutes = Math.Clamp(configuration?.ConfigCooldownMinutes ?? 5, 0, 1440);
-            var windowOpen = signal.CooldownUntilUtc != DateTime.MinValue;
-
-            if (windowOpen && now < signal.CooldownUntilUtc)
+            if (signal.CooldownOpenedUtc != DateTime.MinValue)
             {
-                // Inside the window: hold the newest identity until the window ends.
+                // Inside the window (an open window is, after the normalisation
+                // above, one whose end under the current setting is still
+                // ahead): hold the newest identity until it ends.
                 return signal.PublishedIdentity;
             }
 
-            // A change first seen while the window was still running is a held
-            // (trailing) publish; one first seen after the window had already
-            // expired is a fresh leading edge.
-            var wasHeldBack = windowOpen && signal.PendingFirstSeenUtc < signal.CooldownUntilUtc;
+            // A change first seen while a window was running is a held
+            // (trailing) publish and closes that window; one first seen with no
+            // window open is a fresh leading edge and opens one.
+            var wasHeldBack = signal.PendingWasHeld;
 
             signal.PublishedIdentity = rawIdentity;
             signal.PendingIdentity = null;
-            signal.CooldownUntilUtc = wasHeldBack || cooldownMinutes <= 0
+            signal.PendingWasHeld = false;
+            signal.CooldownOpenedUtc = wasHeldBack || cooldownMinutes <= 0
                 ? DateTime.MinValue
-                : now.AddMinutes(cooldownMinutes);
+                : now;
             return signal.PublishedIdentity;
         }
 
@@ -1533,11 +1743,25 @@ namespace Jellyfin.Plugin.RefreshKit
             public DateTime PendingFirstSeenUtc { get; set; }
 
             /// <summary>
-            /// End of the open cooldown window, or <see cref="DateTime.MinValue"/>
-            /// when no window is open — in which case the next debounced change
-            /// publishes on the leading edge.
+            /// Whether a cooldown window was open when <see cref="PendingIdentity"/>
+            /// was first seen. Recorded at that moment because the window's end
+            /// moves with the setting: a change released early by a lowered
+            /// cooldown is still a held publish and must close the window, not
+            /// re-arm it. Meaningless while <see cref="PendingIdentity"/> is null.
             /// </summary>
-            public DateTime CooldownUntilUtc { get; set; } = DateTime.MinValue;
+            public bool PendingWasHeld { get; set; }
+
+            /// <summary>
+            /// Start of the open cooldown window, or <see cref="DateTime.MinValue"/>
+            /// when no window is open — in which case the next debounced change
+            /// publishes on the leading edge. Only the START is stored: the end
+            /// is start + the cooldown setting CURRENT at evaluation time, so a
+            /// settings change re-sizes an already-open window. Reset on the
+            /// first observation past that end, so a window never outlives its
+            /// length by more than one scan interval and a later raise of the
+            /// setting cannot revive it.
+            /// </summary>
+            public DateTime CooldownOpenedUtc { get; set; } = DateTime.MinValue;
 
             /// <summary>Last wall-clock observation, used to detect a rollback.</summary>
             public DateTime LastObservedUtc { get; set; } = DateTime.MinValue;
@@ -1551,6 +1775,8 @@ namespace Jellyfin.Plugin.RefreshKit
                 0,
                 0,
                 0,
+                0,
+                0,
                 isTruncated: false,
                 isUsable: false);
 
@@ -1558,13 +1784,17 @@ namespace Jellyfin.Plugin.RefreshKit
                 long newestTicks,
                 int fileCount,
                 int directoriesScanned,
-                long bytesHashed) =>
+                long bytesHashed,
+                int reparsePointsSkipped,
+                int entriesUnreadable) =>
                 new ActiveAssetSnapshot(
                     HashMaterial("rk-active-assets-v2\n<budget-exceeded>"),
                     newestTicks,
                     fileCount,
                     directoriesScanned,
                     bytesHashed,
+                    reparsePointsSkipped,
+                    entriesUnreadable,
                     isTruncated: true,
                     isUsable: true);
 
@@ -1574,6 +1804,8 @@ namespace Jellyfin.Plugin.RefreshKit
                 int fileCount,
                 int directoriesScanned,
                 long bytesHashed,
+                int reparsePointsSkipped,
+                int entriesUnreadable,
                 bool isTruncated,
                 bool isUsable)
             {
@@ -1582,6 +1814,8 @@ namespace Jellyfin.Plugin.RefreshKit
                 FileCount = fileCount;
                 DirectoriesScanned = directoriesScanned;
                 BytesHashed = bytesHashed;
+                ReparsePointsSkipped = reparsePointsSkipped;
+                EntriesUnreadable = entriesUnreadable;
                 IsTruncated = isTruncated;
                 IsUsable = isUsable;
             }
@@ -1595,6 +1829,12 @@ namespace Jellyfin.Plugin.RefreshKit
             public int DirectoriesScanned { get; }
 
             public long BytesHashed { get; }
+
+            /// <summary>Symlinked asset files and directories that were charged but not followed.</summary>
+            public int ReparsePointsSkipped { get; }
+
+            /// <summary>Entries skipped with an unreadable sentinel; see <see cref="ScanActiveClientAssets"/>.</summary>
+            public int EntriesUnreadable { get; }
 
             public bool IsTruncated { get; }
 
@@ -1955,6 +2195,8 @@ namespace Jellyfin.Plugin.RefreshKit
             int assetFileCount,
             int assetDirectoriesScanned,
             long assetBytesHashed,
+            int assetReparsePointsSkipped,
+            int assetEntriesUnreadable,
             bool assetScanTruncated,
             bool assetScanUnavailable,
             bool usingLastGoodAssets,
@@ -1979,6 +2221,8 @@ namespace Jellyfin.Plugin.RefreshKit
             AssetFileCount = assetFileCount;
             AssetDirectoriesScanned = assetDirectoriesScanned;
             AssetBytesHashed = assetBytesHashed;
+            AssetReparsePointsSkipped = assetReparsePointsSkipped;
+            AssetEntriesUnreadable = assetEntriesUnreadable;
             AssetScanTruncated = assetScanTruncated;
             AssetScanUnavailable = assetScanUnavailable;
             UsingLastGoodAssets = usingLastGoodAssets;
@@ -2019,7 +2263,13 @@ namespace Jellyfin.Plugin.RefreshKit
         /// </summary>
         public long NewestConfigTicks { get; }
 
-        /// <summary>Whether this row represents assemblies loaded in the current process.</summary>
+        /// <summary>
+        /// Whether this row represents assemblies loaded in the current process.
+        /// Always <c>true</c>: the provider only ever produces rows for loaded
+        /// plugins (staged/disk-only records are excluded up front), so this is
+        /// a constant kept for diagnostics-payload compatibility, not a flag that
+        /// can vary between rows.
+        /// </summary>
         public bool IsLoaded { get; }
 
         /// <summary>Path-independent hash of the loaded modules' names, versions and MVIDs.</summary>
@@ -2033,6 +2283,24 @@ namespace Jellyfin.Plugin.RefreshKit
         public int AssetDirectoriesScanned { get; }
 
         public long AssetBytesHashed { get; }
+
+        /// <summary>
+        /// Symlinked asset files and directories under the plugin folder that
+        /// were charged but not followed. Like a symlinked configuration file,
+        /// each contributes exactly what an absent entry does, so a plugin whose
+        /// asset tree is symlinked into place (NixOS, a store-backed install)
+        /// looks like a plugin with no assets; only this counter tells them apart.
+        /// </summary>
+        public int AssetReparsePointsSkipped { get; }
+
+        /// <summary>
+        /// Entries under the plugin folder that exist but this process could not
+        /// stat, list or open (typically permission denied). Each is skipped and
+        /// folded as a deterministic per-path sentinel, so the identity is stable
+        /// and moves only when the set of unreadable entries changes; the rest of
+        /// the tree is folded normally. Not counted in <see cref="AssetFileCount"/>.
+        /// </summary>
+        public int AssetEntriesUnreadable { get; }
 
         public bool AssetScanTruncated { get; }
 
@@ -2083,6 +2351,8 @@ namespace Jellyfin.Plugin.RefreshKit
                 AssetFileCount,
                 AssetDirectoriesScanned,
                 AssetBytesHashed,
+                AssetReparsePointsSkipped,
+                AssetEntriesUnreadable,
                 AssetScanTruncated,
                 AssetScanUnavailable,
                 true,

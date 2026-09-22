@@ -132,6 +132,7 @@ jobs:
       - name: Install pinned .NET 9 test runtime
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
+          # Must equal the ci.yml pin; scripts/check-workflows.sh enforces it.
           dotnet-version: 9.0.316
 
       - name: Install pinned Node.js
@@ -168,7 +169,7 @@ jobs:
           name: release-worker-fast-${{ inputs.source_revision }}-${{ github.run_attempt }}
           path: test-results/fast
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 14
 
   integration_gate:
     name: Real-server integration gate
@@ -196,9 +197,11 @@ jobs:
           node-version-file: .node-version
           cache: npm
 
-      # The dual-Jellyfin and host-upgrade runners synthesize playback media
-      # on the host (e2e/jellyfin/run.sh and lib/host-upgrade.sh both
-      # rk_require ffmpeg); the hosted runner image does not provide it.
+      # The dual-Jellyfin lab synthesizes playback media on the host
+      # (e2e/jellyfin/run.sh rk_requires ffmpeg); the hosted runner image does
+      # not provide it. The in-place host-upgrade leg, which needs it too, is
+      # not invoked by the integration gate while its harness is being repaired
+      # (see the note in test.sh's test_integration).
       - name: Install ffmpeg for the lab media fixtures
         run: |
           sudo apt-get update
@@ -215,7 +218,7 @@ jobs:
           name: release-worker-integration-${{ inputs.source_revision }}-${{ github.run_attempt }}
           path: test-results/integration
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 14
 
   compatibility_gate:
     name: Locked compatibility gate
@@ -254,7 +257,7 @@ jobs:
           name: release-worker-compatibility-${{ inputs.source_revision }}-${{ github.run_attempt }}
           path: test-results/compatibility
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 14
 
   final_retain:
     name: Rebuild and retain one bound candidate
@@ -407,4 +410,6 @@ jobs:
           name: release-validation-${{ inputs.source_revision }}-${{ github.run_attempt }}
           path: test-results/release-validation
           if-no-files-found: error
-          retention-days: 30
+          # post-release-assets.yml requires this artifact to be unexpired.
+          # docs/contributing.md "Release steps" documents this 90-day publication window.
+          retention-days: 90

@@ -104,6 +104,7 @@ if [ ! -f "${BASE_PACKAGE}" ] || \
     rm -f -- "${BASE_PACKAGE}.part"
     rk_log "${TARGET}: downloading published lifecycle baseline ${BASE_VERSION}"
     curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+        --connect-timeout 10 --max-time 120 \
         --output "${BASE_PACKAGE}.part" "${BASE_URL}"
     ACTUAL_BASE_MD5="$(md5sum "${BASE_PACKAGE}.part" | awk '{print $1}')"
     ACTUAL_BASE_SHA256="$(sha256sum "${BASE_PACKAGE}.part" | awk '{print $1}')"

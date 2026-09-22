@@ -23,6 +23,13 @@ if [ -z "${DOTNET}" ] || [ ! -x "${DOTNET}" ]; then
     echo "FATAL: install the .NET SDK pinned by global.json." >&2
     exit 1
 fi
+# The release tooling uses zip(strict=True) and str.removeprefix, so anything
+# older than 3.10 fails deep inside a gate with an unhelpful TypeError.
+command -v python3 >/dev/null 2>&1 || { echo "FATAL: python3 is required." >&2; exit 1; }
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || {
+    echo "FATAL: the validation tooling requires Python 3.10 or newer." >&2
+    exit 1
+}
 DOTNET_INSTALL_ROOT="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${DOTNET}")"
 
 TEST_PROJECT="plugin/Jellyfin.Plugin.RefreshKit.Tests/Jellyfin.Plugin.RefreshKit.Tests.csproj"
@@ -42,10 +49,11 @@ heading() { printf '\n==> %s\n' "$1"; }
 install_browser_dependencies() {
     heading "Installing the locked browser-test dependencies"
     command -v npm >/dev/null 2>&1 || { echo "FATAL: npm is required." >&2; return 1; }
-    local node_major
-    node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
-    [ "${node_major}" -ge 20 ] || {
-        echo "FATAL: browser tests require Node.js 20 or newer (see .node-version)." >&2
+    # Puppeteer 25 (package.json engines) needs 22.12+; the repository pins
+    # 22.20.0 in .node-version. npm only warns on an engines mismatch, so
+    # enforce it here.
+    node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 12) ? 0 : 1)' || {
+        echo "FATAL: browser tests require Node.js 22.12 or newer (see .node-version)." >&2
         return 1
     }
     if [ "${RK_SKIP_NPM_CI:-0}" != 1 ]; then
@@ -81,6 +89,10 @@ validate_static_inputs() {
         -path './e2e/jellyfin/.state' -prune -o \
         -path './e2e/jellyfin/artifacts' -prune -o \
         -path './e2e/compat/.cache' -prune -o \
+        -path './e2e/compat/.state' -prune -o \
+        -path './e2e/compat/artifacts' -prune -o \
+        -path './e2e/proxy/.state' -prune -o \
+        -path './e2e/proxy/.je' -prune -o \
         -path '*/bin' -prune -o \
         -path '*/obj' -prune -o \
         -type f -name '*.sh' -print0)
@@ -97,7 +109,10 @@ validate_static_inputs() {
         -path './e2e/jellyfin/.state' -prune -o \
         -path './e2e/jellyfin/artifacts' -prune -o \
         -path './e2e/proxy/.je' -prune -o \
+        -path './e2e/proxy/.state' -prune -o \
         -path './e2e/compat/.cache' -prune -o \
+        -path './e2e/compat/.state' -prune -o \
+        -path './e2e/compat/artifacts' -prune -o \
         -type f \( -name '*.js' -o -name '*.cjs' \) -print0)
 
     python3 - <<'PY'
@@ -143,12 +158,15 @@ ET.parse(root / "NuGet.Config")
 workflow_root = root / ".github" / "workflows"
 for path in sorted({*workflow_root.glob("*.yml"), *workflow_root.glob("*.yaml")}):
     text = path.read_text(encoding="utf-8")
-    for action in re.findall(r"^\s*uses:\s*([^\s#]+)", text, flags=re.MULTILINE):
+    for action in re.findall(
+        r"^\s*(?:-\s+)?uses:\s*['\"]?([^\s#'\"]+)", text, flags=re.MULTILINE
+    ):
         if re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) is None:
             raise SystemExit(f"{path}: action is not pinned to a full commit: {action}")
 PY
 
     python3 scripts/verify-vendored-refreshkit.py
+    python3 scripts/check-doc-links.py
     python3 scripts/test-release-tools.py
     bash scripts/check-workflows.sh
     bash e2e/proxy/lib/build-snapshot-negative.sh
@@ -256,6 +274,16 @@ test_security_audit() {
         -p:TreatWarningsAsErrors=false \
         '-p:WarningsAsErrors=NU1901%3BNU1902%3BNU1903%3BNU1904'
     heading "NuGet security audit passed"
+
+    # The locked npm graph (Puppeteer/Chromium for the browser regressions) is
+    # installed by CI too, so it is part of the audited surface. Same policy as
+    # NuGet: any advisory at or above "low" fails. --package-lock-only audits the
+    # committed lock without needing node_modules, so this gate does not depend
+    # on a prior npm ci.
+    heading "Auditing the locked npm graph against the current advisory feed"
+    command -v npm >/dev/null 2>&1 || { echo "FATAL: npm is required for the npm advisory audit." >&2; return 1; }
+    npm audit --omit=optional --package-lock-only --audit-level=low
+    heading "npm security audit passed"
 }
 
 test_browser() {

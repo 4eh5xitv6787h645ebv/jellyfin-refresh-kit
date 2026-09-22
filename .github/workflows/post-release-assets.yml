@@ -122,7 +122,11 @@ jobs:
           cache: true
           cache-dependency-path: plugin/Jellyfin.Plugin.RefreshKit/packages.lock.json
 
-      - name: Rebuild and verify published bytes
+      - name: Rebuild the candidate bytes
+        run: |
+          ./plugin/build.sh
+
+      - name: Verify published bytes
         env:
           EXPECTED_VERSION: ${{ inputs.expected_version }}
           SOURCE_REVISION: ${{ inputs.source_revision }}
@@ -132,9 +136,10 @@ jobs:
           RELEASE_KIND: ${{ inputs.release_kind }}
           VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
           CANDIDATE_REF: refs/heads/release-candidate/v${{ inputs.expected_version }}
+          # Only the verifier scripts below may see the token; build.sh runs
+          # in the token-free step above.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          ./plugin/build.sh
           BUILD_SNAPSHOT="$(readlink -f plugin/build)"
           mkdir -p test-results/post-release
           python3 scripts/verify-package.py \

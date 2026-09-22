@@ -32,6 +32,8 @@ def file_hash(path: pathlib.Path, algorithm: str = "sha256") -> str:
 
 
 def load_object(path: pathlib.Path) -> dict[str, Any]:
+    if path.is_symlink():
+        raise HostUpgradeEvidenceError(f"host-upgrade evidence must not be a symlink: {path}")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -71,7 +73,7 @@ def _load_semantic_validator() -> Any:
 
 
 def _package_record(path: pathlib.Path) -> dict[str, Any]:
-    if not path.is_file():
+    if path.is_symlink() or not path.is_file():
         raise HostUpgradeEvidenceError(f"immutable host-upgrade package is missing: {path}")
     return {
         "file": path.name,
@@ -93,7 +95,7 @@ def expected_candidate_identity(build: pathlib.Path) -> tuple[dict[str, Any], di
         stage = build / directory
         meta = load_object(stage / "meta.json")
         dll = stage / "Jellyfin.Plugin.RefreshKit.dll"
-        if not dll.is_file():
+        if dll.is_symlink() or not dll.is_file():
             raise HostUpgradeEvidenceError(f"immutable host-upgrade DLL is missing: {dll}")
         version = meta.get("version")
         if not isinstance(version, str) or not version:

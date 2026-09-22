@@ -584,9 +584,11 @@ def validate_evidence(root: pathlib.Path, build: pathlib.Path) -> None:
         root, build = root.resolve(strict=True), build.resolve(strict=True)
     except OSError as error:
         raise AbiFloorEvidenceError(f"cannot resolve ABI-floor evidence/build: {error}") from error
-    actual = {
-        path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()
-    }
+    actual: set[str] = set()
+    for path in root.rglob("*"):
+        require(not path.is_symlink(), f"ABI-floor evidence contains a symlink: {path}")
+        if path.is_file():
+            actual.add(path.relative_to(root).as_posix())
     require(actual == set(REQUIRED_FILES),
             f"ABI-floor evidence inventory differs: "
             f"missing={sorted(set(REQUIRED_FILES)-actual)}, "

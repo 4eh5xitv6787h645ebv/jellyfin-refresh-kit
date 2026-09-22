@@ -73,3 +73,16 @@ mapfile -d '' WORKFLOWS < <(find "${ROOT}/.github/workflows" -maxdepth 1 -type f
     exit 1
 }
 "${WORK}/actionlint" -no-color -shellcheck= -pyflakes= "${WORKFLOWS[@]}"
+
+# ci.yml and release-validation.yml must install the same explicit .NET test
+# runtime SDK; global.json only pins the compilation SDK.
+mapfile -t SDK_PINS < <(grep -h -E '^[[:space:]]*dotnet-version:' "${WORKFLOWS[@]}" \
+    | sed -E 's/^[[:space:]]*dotnet-version:[[:space:]]*//; s/[[:space:]]+(#.*)?$//' | sort -u)
+[ "${#SDK_PINS[@]}" -ge 1 ] || {
+    printf 'FATAL: no explicit dotnet-version pin was found in the workflows\n' >&2
+    exit 1
+}
+[ "${#SDK_PINS[@]}" -eq 1 ] || {
+    printf 'FATAL: workflows pin different dotnet-version values: %s\n' "${SDK_PINS[*]}" >&2
+    exit 1
+}

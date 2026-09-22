@@ -31,48 +31,32 @@ browser caches it forever — installing this fixes it, and you stop telling use
 
 It is the packaged form of this repository. The single-file adoption path
 (`jellyfin-refresh-kit.js` + `RefreshKit.cs` copied into your own plugin) is
-unchanged and still supported — see [the root README](../README.md). The two
-coexist on one page by design.
+unchanged and still supported — see [docs/plugin-authors.md](../docs/plugin-authors.md).
+The two coexist on one page by design.
 
 ---
 
 ## Install
 
-### Method 1 — plugin repository (recommended)
+Both install methods — plugin repository (recommended) and manual folder — are
+step-by-step in the root README under [Install](../README.md#install), and
+[Verifying it works](../README.md#verifying-it-works) covers the post-restart
+check. Two manual-install details the root README does not spell out:
 
-1. Dashboard → **Plugins** → **Repositories** → **+**
-2. Repository name: `Jellyfin Refresh Kit`
-   Repository URL:
-   `https://raw.githubusercontent.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/main/manifest.json`
-3. **Catalog** → **General** → *Jellyfin Refresh Kit* → **Install**
-4. Restart Jellyfin.
-
-### Method 2 — manual folder install
-
-1. Download the zip for your server from the
-   [releases](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/releases):
-   `jellyfin-refresh-kit_<version>.zip` for Jellyfin 10.11.x, or
-   `jellyfin-refresh-kit_<version>_jf12.zip` for Jellyfin 12.x. (See
-   [Requirements](#requirements) — the wrong one will not load.)
-2. Unzip it into a folder named `Jellyfin Refresh Kit_<version>` inside your
-   Jellyfin config's `plugins` directory — e.g.
-   `/config/plugins/Jellyfin Refresh Kit_<version>/`, containing
-   `Jellyfin.Plugin.RefreshKit.dll`, its portable PDB, and `meta.json`.
-   The `Name_version` folder layout is what the server's plugin loader expects;
-   a folder without it is ignored.
-   On a native install there is no `/config`: the loader reads
-   `<datadir>/plugins/`, i.e. whatever `--datadir` points at (default
-   `/var/lib/jellyfin/plugins/` for the packaged service). Same folder layout.
-3. Restart Jellyfin.
-
-Verify: Dashboard → Plugins shows **Jellyfin Refresh Kit — Active**, and
-`GET /RefreshKit/Generation` returns JSON.
+* The folder must be named `Jellyfin Refresh Kit_<version>` inside Jellyfin's
+  `plugins` directory (e.g. `/config/plugins/Jellyfin Refresh Kit_<version>/`).
+  The `Name_version` folder layout is what the server's plugin loader expects;
+  a folder without it is ignored.
+* On a native install there is no `/config`: the loader reads
+  `<datadir>/plugins/`, i.e. whatever `--datadir` points at (default
+  `/var/lib/jellyfin/plugins/` for the packaged service). Same folder layout.
 
 ### Requirements
 
-Jellyfin **10.11.x** or **12.x**. There is one plugin per
-server generation, because a plugin assembly has to match the framework its host
-runs on:
+Jellyfin **10.11.x** or **12.x**, as in the root README's
+[Requirements](../README.md#requirements). What that section only summarises
+is why there are two zips: one plugin per server generation, because a plugin
+assembly has to match the framework its host runs on:
 
 | Server | Zip | Framework | Built against | `targetAbi` |
 |---|---|---|---|---|
@@ -82,7 +66,7 @@ runs on:
 Installing from the plugin repository, this is not a choice you have to make:
 both are listed in the one `manifest.json`, and the server offers only the build
 it can run. A 10.11 server never sees the 12 entry at all. Installing by hand,
-take the zip whose row matches the server.
+take the zip whose row matches the server — the wrong one will not load.
 
 The two builds are the SAME SOURCE, compiled twice — the plugin uses only the
 part of the plugin surface that survived the 12 rewrite, so there is no
@@ -127,14 +111,17 @@ request receives the full `200` body rather than an invalid `304`. In both
 paths the middleware **fails open**: if it cannot safely process a response, it
 serves the host's original bytes rather than breaking the page.
 
-A component *inside* this one that commits the shell itself — realistically
-another plugin that embeds the same `RefreshKit.cs` — is the mirror image of
-that buffer: it already owns the wire, so Refresh Kit stands down and forwards
-its response untouched, validators included. See
-[the ordering caveat](#ordering-caveat).
+A component *inside* this one that commits the shell itself **with its own
+`rk-` validator** — another plugin that embeds the same `RefreshKit.cs` — is the
+mirror image of that buffer: it already owns the wire, so Refresh Kit stands
+down and forwards its response untouched, validators included, until that
+owner stops committing the shell. A plain downstream that merely starts the
+response early is not an owner; its bytes are finalized like any other
+late-started source response. See [the ordering caveat](#ordering-caveat).
 
-This is the same `RefreshKit.cs` machinery documented in the root README,
-vendored into the plugin (see *Repository layout* below).
+This is the same `RefreshKit.cs` machinery documented in
+[docs/plugin-authors.md](../docs/plugin-authors.md), vendored into the plugin
+(see *Repository layout* below).
 
 ### 2. Other plugins' script tags get a cache-busting stamp
 
@@ -193,12 +180,25 @@ order, which no plugin can control:
   response: the owner's bytes, validators and conditional answers are forwarded
   untouched, and once such an owner has committed a complete shell, later shell
   requests are passed straight through so it keeps seeing the client's own
-  `If-None-Match`. The stand-down is logged once. The visible cost is that this
-  plugin's stamping and its own tag are absent from that page — the adopting
-  plugin's kit is serving it, correctly revalidating, with its own versioned
-  URLs. Standing down is the only safe answer: rewriting an owner's committed
-  framing would strip the media type and length from bytes already on their way
-  to the browser.
+  `If-None-Match`. The owner is recognised by its `rk-` signature — a plain
+  downstream that merely starts the response early is finalized like any other
+  late-started source response and never triggers this. The stand-down is
+  recoverable: two consecutive shell responses that arrive without the
+  signature (the inner kit was disabled or its plugin unloaded; a single one
+  is just a live owner failing open once) clear it, and this plugin injects
+  again from the request after that, no restart needed; both transitions are
+  logged once. The visible cost is that this plugin's stamping
+  and its own tag are absent from that page — the adopting plugin's kit is
+  serving it, correctly revalidating, with its own versioned URLs. Standing
+  down is the only safe answer: rewriting an owner's committed framing would
+  strip the media type and length from bytes already on their way to the
+  browser.
+- Cold fills of one representation are single-flight per admission stripe.
+  Requests the shared cache cannot serve (cookies, authorization) take no
+  lease, and a cacheable request waits at most 5 seconds at the gate before
+  proceeding on its own, so a downstream that requests the shell itself
+  cannot deadlock behind its own lease; the cost is a duplicate transform
+  when a fill is that slow.
 
 The compatibility matrices preserve one concrete limitation rather than hiding
 it: GetAvatar's single eligible outer-owned tag remains unstamped in both
@@ -291,11 +291,27 @@ ordinal-sorted before folding. If a budget is exhausted, the affected identity
 uses a deterministic truncation sentinel instead of a filesystem-dependent
 prefix. A native enumerator may yield one additional unadmitted entry for each
 plugin that crosses an entry ceiling, solely to detect the overflow. If an
-asset or configuration read races a writer or becomes
-unavailable, its reserved global budget remains consumed and the last-good
-snapshot is retained when one exists. `GET /RefreshKit/Diagnostics` exposes
-file/directory/byte counts, truncation and unavailability flags, skipped
-reparse-point configuration files, last-good use, and retained plugin records.
+asset or configuration read races a writer or becomes unavailable, the
+last-good snapshot is retained when one exists and the plugin reserves exactly
+that snapshot's recorded file/directory/byte charge (topped up over whatever
+the failed attempt already consumed); the conservative per-plugin ceiling is
+reserved only when no coherent snapshot exists yet. Reserving no more than the
+snapshot cost is what keeps the plugins scanned after it from flipping to the
+truncation sentinel and back while nothing on disk changed. An individual
+entry the process is not permitted to stat, list or open — a mode-000
+subdirectory, an asset file with a restrictive ACL — is skipped on its own: it
+is counted as
+`AssetEntriesUnreadable` and folded as a deterministic per-path sentinel, so
+the identity is stable and moves only when the set of unreadable entries
+changes, and the rest of the tree is folded normally. Any other I/O error while
+listing a subdirectory (a share hiccup, a one-off EIO) is treated as transient
+like a failed content read: the last-good snapshot is retained, so a single bad
+scan does not move the identity and move it back. Only a plugin folder whose
+root cannot be listed is unavailable as a whole; a missing folder still charges
+nothing. `GET /RefreshKit/Diagnostics` exposes file/directory/byte
+counts, truncation and unavailability flags, skipped reparse-point
+configuration files and asset entries, unreadable asset entries, last-good
+use, and retained plugin records.
 The whole payload is projected from one snapshot of the provider, so a
 generation is never reported beside rows from a different scan.
 
@@ -338,6 +354,13 @@ pointless server-wide reloads:
   are unaffected. `GET /RefreshKit/Diagnostics` reports
   `ConfigurationReparsePointsSkipped` per plugin, which is the only way to tell
   the case apart from a plugin that has no configuration at all.
+* **NOT followed: a symlinked asset file or asset directory** under a plugin
+  folder. The same reasoning applies — a plugin folder is trusted install
+  content, but a link inside it can point anywhere on the host — so the entry
+  contributes exactly what an absent one does and is reported as
+  `AssetReparsePointsSkipped` per plugin. A plugin whose whole asset tree is
+  symlinked into place (a store-backed install) therefore looks like a plugin
+  with no loose assets, and only that counter says otherwise.
 * **NOT watched:** the plugin's private `plugins/configurations/<AssemblyName>/`
   directory. Measured on 10.11.11 with Jellyfin Enhanced 12.1.0.0, that
   directory holds `<userId>/settings.json` (**per-user preferences**),
@@ -353,7 +376,13 @@ pointless server-wide reloads:
 * **Cooled down on the LEADING edge:** a change that arrives while no cooldown
   window is open for that plugin publishes **immediately** (after the 10s
   debounce) and opens a window of *Settings-change cooldown* length
-  (default **5 minutes**). Only changes arriving **inside** that window are
+  (default **5 minutes**). The window's end is recomputed from the *current*
+  setting on every scan, so lowering the cooldown (to 0, say) releases a change
+  already held in an open window on the next scan, and raising it extends a
+  window that is still open. A window is closed on the first scan past its end,
+  so raising the setting later cannot revive an expired one: the next save is a
+  fresh leading edge, not a hold measured from a start long past. Only changes
+  arriving **inside** that window are
   held, and they coalesce into a single publish when it expires, carrying the
   latest content identity — nothing is dropped. A held publish **closes** the window
   rather than opening a new one, so the save after it is snappy again; without
@@ -417,7 +446,11 @@ on matching DOM nodes:
   whether focused or not. A populated login field that is retained but hidden,
   natively disabled (including by a disabled fieldset), or inert after
   authentication does not block the document for life. `aria-disabled` alone
-  does not make a native input non-interactive.
+  does not make a native input non-interactive. Since runtime 2.4.9, on
+  `#/login` and `#/selectserver` only, a password the browser autofilled and
+  the user never edited is ignored while no text field on the page holds typed
+  text and no trusted click or keypress has happened since the kit booted — it
+  will be refilled by the same mechanism after the reload.
 
 The browser regressions cover both sides: Jellyfin 10.11's real hidden retained
 login password must permit a later update, while a visible interactive password
@@ -432,36 +465,57 @@ playback, dialog, or editor surface.
 
 ## Admin settings
 
-Dashboard → Plugins → **Jellyfin Refresh Kit**.
+The settings table — every switch, its default, its range and what it does —
+is in the root README under [Admin settings](../README.md#admin-settings),
+together with the blank-field and typed-zero rules. What this page adds, per
+setting, is how each one maps onto the mechanisms above:
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| Serve index.html through the refresh kit | on | Middleware switch. Off = host shell bytes pass through untouched; the configuration page and public generation/runtime endpoints remain available. |
-| Cache-bust other plugins' script tags | on | Mechanism 2. |
-| Reload open tabs after a plugin update | on | Off switches the client to `notify` mode: it logs the update instead of reloading. |
-| Treat plugin settings changes as updates | on | Mechanism 3's config input (above). |
-| Settings-change cooldown (minutes, per plugin) | 5 | Length of the leading-edge burst window: after debounce and a provider scan, the change that opens it publishes; later changes inside it coalesce to one publish at its end. 0 disables the cooldown; the debounce still applies. |
-| Ignore settings changes from these plugins | empty | One per line: plugin name, install folder, GUID or assembly name. |
-| Poll interval (seconds) | 60 | Clamped 15–3600 by the client runtime. |
-| Required idle time (seconds) | 5 | Clamped 0–300. |
-| Max reloads per minute | 3 | Clamped 1–100 and applied to verified same-origin reservation history. Unavailable coordination defers automatic reload. |
-| Developer mode | off | Serves the client runtime `no-store` and uses a distinct `dev=1` script URL. The marker itself remains `no-store` across setting races, so an immutable production response cannot poison the dev URL. |
-
-A numeric field left blank (or filled with something that is not a number)
-saves the default in the table above, not zero. A typed `0` is kept wherever
-the range allows it, because zero means something specific there: no cooldown,
-and no idle wait.
+* **Cache-bust other plugins' script tags** — mechanism 2.
+* **Reload open tabs after a plugin update** — off switches the injected
+  client to `notify` mode: it logs the update instead of reloading.
+* **Treat plugin settings changes as updates** — mechanism 3's configuration
+  input, described under
+  [Settings changes count as updates](#settings-changes-count-as-updates-and-what-that-costs).
+* **Settings-change cooldown (minutes, per plugin)** — the length of the
+  leading-edge burst window described there: after the debounce and a provider
+  scan, the change that opens the window publishes; later changes inside it
+  coalesce into one publish at its end. Clamped to 0–1440 by the settings page
+  and again by the server.
+* **Ignore settings changes from these plugins** — prefer the plugin's own
+  name, folder or GUID over an assembly name, which also matches every bundled
+  dependency the plugin loads.
+* **Max reloads per minute** — applied to verified same-origin reservation
+  history (the IndexedDB ledger described under
+  [Safe reload gates](#safe-reload-gates)); unavailable coordination defers
+  automatic reload.
+* **Developer mode** — besides serving the client runtime `no-store`, uses a
+  distinct `dev=1` script URL. The marker itself remains `no-store` across
+  setting races, so an immutable production response cannot poison the dev
+  URL.
 
 ## Endpoints
 
-| Route | Auth | Purpose |
-| --- | --- | --- |
-| `GET /RefreshKit/Generation` | anonymous | `{ Version, BuildId, CacheKey, Epoch }`; `CacheKey` = generation and `Epoch` = this process incarnation. `no-store`. |
-| `GET /RefreshKit/Generation.txt` | anonymous | The bare generation, `text/plain`. |
-| `GET /RefreshKit/kit.js` | anonymous | The embedded `jellyfin-refresh-kit.js`: immutable for a production generation URL, or `no-store` for developer mode / a `dev=1` URL. |
-| `GET /RefreshKit/Diagnostics` | admin | Loaded host modules plus per-plugin loaded/content identities, diagnostic timestamps, scan counts/budgets, truncation/unavailability, skipped reparse-point configuration files, last-good/retained-record state, and stamping abort counters. All from one provider snapshot. |
+The route table (`GET /RefreshKit/Generation`, `Generation.txt` and `kit.js`
+anonymous; `Diagnostics` admin-only) is in the root README under
+[HTTP endpoints](../README.md#http-endpoints). Cache behaviour and field
+names the root table omits:
 
-The first three are anonymous **on purpose**: the login screen is a real page of
+* `/RefreshKit/Generation` is served `no-store`; `Epoch` in its JSON is this
+  process incarnation.
+* `/RefreshKit/kit.js` is the embedded `jellyfin-refresh-kit.js`: immutable
+  for a production generation URL, or `no-store` for developer mode / a
+  `dev=1` URL.
+* `/RefreshKit/Diagnostics` reports loaded host modules plus per-plugin
+  loaded/content identities, diagnostic timestamps, scan counts/budgets,
+  truncation/unavailability, skipped reparse-point configuration files
+  (`ConfigurationReparsePointsSkipped`) and asset entries
+  (`AssetReparsePointsSkipped`), unreadable asset entries
+  (`AssetEntriesUnreadable`), last-good/retained-record state, and stamping
+  abort and failure counters (`StampFailures` counts passes the stamper
+  abandoned by throwing; it is designed never to, so a non-zero value is a bug
+  to report with the offending shell). All from one provider snapshot.
+
+The three public routes are anonymous **on purpose**: the login screen is a real page of
 the web client, it is where a stale cache most often bites, and a tab can sit on
 it for days. An authenticated version endpoint would leave exactly that page
 unable to notice an update. The routes expose opaque generation/process tokens
@@ -622,8 +676,9 @@ Nothing about the copy-the-file path changes.
 * A plugin that also embeds the **server** half (`RefreshKit.cs`) coexists with
   this one. Whichever instance ends up nearest the shell owns the response, and
   the outer instance stands down for it rather than rewriting a committed
-  response — see [the ordering caveat](#ordering-caveat). Plugin load order
-  decides which is which, and no plugin can choose it.
+  response, resuming on its own once the inner one stops committing the shell
+  — see [the ordering caveat](#ordering-caveat). Plugin load order decides
+  which is which, and no plugin can choose it.
 * The shipped runtime is **not a committed duplicate**: the csproj embeds
   `../../jellyfin-refresh-kit.js` from the repository root at build time, so the
   plugin always ships the same bytes the single-file path documents.
@@ -753,25 +808,24 @@ pre-existing tag, and never publishes, tags, or moves a branch itself.
 
 ## Validation workflow
 
-Use the repository entry point from the repository root:
-
-The full local prerequisites are Node.js 20 or newer (`.node-version` pins
+Use the repository entry point, `test.sh`, from the repository root. The full local prerequisites are Node.js 22.12 or newer (`.node-version` pins
 `22.20.0`), `npm ci` for locked Puppeteer/Chromium, the exact .NET SDK
-`10.0.302`, installed .NET Core and ASP.NET Core 9.x plus 10.x runtimes, Python
-3, and GNU/Linux shell tools including `curl`, `flock`, `sha256sum`, and `tar`.
+`10.0.302`, installed .NET Core and ASP.NET Core 9.x plus 10.x runtimes, Python 3.10 or newer, and GNU/Linux shell tools including `curl`, `flock`, `sha256sum`, and `tar`.
 Static validation downloads a checksum-pinned `actionlint` archive into a
 temporary user cache on first use and needs Docker CLI with Compose; container
-suites need a Docker engine. `security-audit` also needs the live NuGet advisory
-feed.
+suites need a Docker engine. `security-audit` also needs the live NuGet and npm advisory
+feeds.
 
 ```bash
 ./test.sh static           # syntax/JSON/XML/workflow/Compose/vendored checks
+./test.sh build            # both packages only
 ./test.sh fast             # static + packages + both .NET targets + Chromium
 ./test.sh dotnet           # root helper compile + xUnit on net9 and net10
 ./test.sh browser          # focused headless-Chromium runtime regressions
 ./test.sh package          # verify the current immutable package snapshot
 ./test.sh reproducibility  # path-isolated byte identity + build-lock checks
-./test.sh security-audit   # locked NuGet graph against the live advisory feed
+./test.sh locking          # the build-lock proof alone
+./test.sh security-audit   # locked NuGet and npm graphs against the live advisory feeds
 ./test.sh integration      # dual-Jellyfin lab, then the proxy/browser matrix
 ./test.sh compatibility    # locked ecosystem and hostile-fixture matrices
 ./test.sh all              # every gate above; intentionally long-running
@@ -842,10 +896,21 @@ artifacts/CI result before claiming a particular revision passed a heavy suite.
   `no-store` without entity validators, using the outer owner's final framing.
   This is safe freshness degradation, not strong-ETag/`304` compatibility.
 * **A downstream plugin that embeds `RefreshKit.cs` owns the shell.** When
-  another plugin's copy of the kit commits the response first, this plugin
-  stands down for it: no injection, no stamping, no late header rewriting, and
-  no `rk-` validator of its own. Freshness is then that plugin's kit's job,
-  which it does with the same machinery.
+  another plugin's copy of the kit commits the response first, signed with its
+  `rk-` ETag, this plugin stands down for it: no injection, no stamping, no
+  late header rewriting, and no `rk-` validator of its own. Freshness is then
+  that plugin's kit's job, which it does with the same machinery. The
+  stand-down lasts only as long as that owner keeps committing the shell.
+* **A response that is already started when this middleware runs is passed
+  through.** An outer middleware that commits headers first (early headers, a
+  streamed prelude) gets the host's bytes untouched; the middleware never
+  throws into the pipeline for it.
+* **A request that a downstream handler authenticates is served privately.**
+  Forward-auth style headers this middleware does not recognise (`X-SSO-User`
+  and the like) look anonymous to the shared cache; when the source then
+  confirms with `304` that the cached bytes are exactly what it would serve,
+  that request gets them as `no-store` and the shared entry stays untouched.
+  The shell is never answered with a `503`.
 * **Cross-origin assets are never stamped.** A plugin loading its client code
   from a CDN (jsDelivr, unpkg) cannot be helped from here; the CDN's own
   `@latest` resolution TTL is invisible to both the server and the browser.
@@ -855,6 +920,23 @@ artifacts/CI result before claiming a particular revision passed a heavy suite.
 * **Budget truncation is intentionally coarse.** An over-budget plugin receives
   the stable truncation sentinel until it fits again; diagnostics expose that
   state instead of pretending a partial scan is complete.
+* **A special file named like an asset can stall the scan.** The asset walk
+  opens every `.js`/`.mjs`/`.css`/`.html` file under a loaded plugin folder to
+  hash it. A FIFO or device node with such a name blocks that open — .NET has no
+  non-blocking open for a FIFO — and it blocks under the provider's scan lock,
+  so generation reads wait on it. Plugin folders are trusted install content;
+  nothing a plugin ships legitimately is a FIFO, and the fix is to remove it.
+* **A read failure on a plugin's very first scan is published as-is.** The
+  last-good snapshot is retained only *when one exists*. If a plugin's asset
+  or configuration read fails transiently on the first scan of a fresh process,
+  the unavailable sentinel is what gets folded, and the successful read on the
+  next scan is a generation change (one reload) rather than a silent recovery.
+* **Two plugin records with the same stable identity collapse to one.** The
+  provider keys process state by plugin GUID plus loaded-module identity. Two
+  records sharing both — the same plugin installed in two folders with
+  byte-identical assemblies, both matched to loaded modules — keep only the
+  record Jellyfin listed last, so which folder's loose assets are folded
+  follows Jellyfin's enumeration order. Jellyfin itself loads one of them.
 * **Broken intermediary caching still wins.** A proxy or CDN configured to
   ignore origin cache directives can pin the shell or generation endpoint.
 * **Safety probes are bounded.** Closed shadow roots and DRM/external-player

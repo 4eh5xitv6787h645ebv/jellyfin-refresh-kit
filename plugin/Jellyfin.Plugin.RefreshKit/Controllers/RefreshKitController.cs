@@ -134,6 +134,8 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
                         d.AssetFileCount,
                         d.AssetDirectoriesScanned,
                         d.AssetBytesHashed,
+                        d.AssetReparsePointsSkipped,
+                        d.AssetEntriesUnreadable,
                         d.AssetScanTruncated,
                         d.AssetScanUnavailable,
                         d.UsingLastGoodAssets,

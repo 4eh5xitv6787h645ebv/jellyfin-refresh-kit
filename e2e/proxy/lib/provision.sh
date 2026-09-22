@@ -27,6 +27,12 @@ case "$TOKEN_FILE" in
     *) echo "FATAL: refusing token path outside $SUITE/.state" >&2; exit 2 ;;
 esac
 mkdir -p "$SUITE/.state"
+for command in curl docker python3 unzip; do
+    command -v "$command" >/dev/null 2>&1 || {
+        echo "FATAL: proxy provisioning requires $command" >&2
+        exit 1
+    }
+done
 JSON='Content-Type: application/json'
 AUTH_NO_TOKEN='Authorization: MediaBrowser Client="t", Device="t", DeviceId="t", Version="1"'
 
@@ -45,22 +51,24 @@ wait_for() { # url [tries]
         [ "$code" = "200" ] && { echo "$code"; return 0; }
         sleep 2
     done
+    echo "FATAL: $url did not return 200 within $tries attempts (last HTTP status: ${code:-<none>})" >&2
     echo "$code"; return 1
 }
 
 echo "==> waiting for the origin"
 wait_for "$ORIGIN/System/Info/Public" >/dev/null
 
-if curl -s "$ORIGIN/System/Info/Public" | grep -q '"StartupWizardCompleted":false'; then
+PUBLIC_INFO="$(curl --fail --show-error --silent "$ORIGIN/System/Info/Public")"
+if printf '%s' "$PUBLIC_INFO" | grep -q '"StartupWizardCompleted":false'; then
     echo "==> running the startup wizard"
-    curl -s -X POST "$ORIGIN/Startup/Configuration" -H "$JSON" \
+    curl --fail --show-error --silent -X POST "$ORIGIN/Startup/Configuration" -H "$JSON" \
         -d '{"UICulture":"en-US","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}' -o /dev/null
-    curl -s "$ORIGIN/Startup/User" -o /dev/null
-    curl -s -X POST "$ORIGIN/Startup/User" -H "$JSON" \
+    curl --fail --show-error --silent "$ORIGIN/Startup/User" -o /dev/null
+    curl --fail --show-error --silent -X POST "$ORIGIN/Startup/User" -H "$JSON" \
         -d "{\"Name\":\"$USER_NAME\",\"Password\":\"$PASSWORD\"}" -o /dev/null
-    curl -s -X POST "$ORIGIN/Startup/RemoteAccess" -H "$JSON" \
+    curl --fail --show-error --silent -X POST "$ORIGIN/Startup/RemoteAccess" -H "$JSON" \
         -d '{"EnableRemoteAccess":true,"EnableAutomaticPortMapping":false}' -o /dev/null
-    curl -s -X POST "$ORIGIN/Startup/Complete" -H "$JSON" -o /dev/null
+    curl --fail --show-error --silent -X POST "$ORIGIN/Startup/Complete" -H "$JSON" -o /dev/null
 fi
 
 # ── the plugin under test ────────────────────────────────────────────────────
@@ -106,7 +114,8 @@ PY
 if [ ! -f "$JE_ARCHIVE" ] || [ "$(archive_sha256 "$JE_ARCHIVE")" != "$JE_SHA256" ]; then
     echo "==> downloading pinned Jellyfin Enhanced $JE_VERSION fixture"
     JE_PART="$(mktemp "$JE_DIR/${RK_PROXY_JE_ARCHIVE_NAME}.part.XXXXXX")"
-    curl --fail --show-error --silent --location -o "$JE_PART" "$JE_URL"
+    curl --fail --show-error --silent --location --connect-timeout 10 --max-time 120 \
+        -o "$JE_PART" "$JE_URL"
     ACTUAL_JE_SHA256="$(archive_sha256 "$JE_PART")"
     if [ "$ACTUAL_JE_SHA256" != "$JE_SHA256" ]; then
         rm -f -- "$JE_PART"
@@ -183,16 +192,19 @@ wait_for "$ORIGIN/RefreshKit/Generation" 120 >/dev/null
 sleep 3
 
 # ── admin token ──────────────────────────────────────────────────────────────
-TOKEN=$(curl -s -X POST "$ORIGIN/Users/AuthenticateByName" -H "$JSON" -H "$AUTH_NO_TOKEN" \
+# A non-matching grep must not abort the assignment under pipefail; the
+# explicit empty check below reports the failure.
+TOKEN=$(curl --fail --show-error --silent -X POST "$ORIGIN/Users/AuthenticateByName" \
+        -H "$JSON" -H "$AUTH_NO_TOKEN" \
         -d "{\"Username\":\"$USER_NAME\",\"Pw\":\"$PASSWORD\"}" \
-        | grep -oE '"AccessToken":"[^"]+"' | cut -d: -f2 | tr -d '"')
+        | grep -oE '"AccessToken":"[^"]+"' | cut -d: -f2 | tr -d '"' || true)
 [ -n "$TOKEN" ] || { echo "FATAL: could not authenticate as $USER_NAME" >&2; exit 1; }
 printf '%s' "$TOKEN" > "$TOKEN_FILE"
 
 # ── make the client poll fast enough for a test to finish ────────────────────
 AUTH="Authorization: MediaBrowser Client=\"t\", Device=\"t\", DeviceId=\"t\", Version=\"1\", Token=\"$TOKEN\""
-curl -s -X POST -H "$AUTH" -H "$JSON" \
+curl --fail --show-error --silent -X POST -H "$AUTH" -H "$JSON" \
     -d '{"EnableInjection":true,"EnableThirdPartyStamping":true,"EnableAutoReload":true,"PollSeconds":15,"IdleSeconds":0,"ReloadBudget":10,"EnableConfigWatching":true,"ConfigWatchExclusions":[],"ConfigCooldownMinutes":0,"DevMode":false}' \
     -o /dev/null "$ORIGIN/Plugins/515255fe-3332-49b0-b471-0be58c8221d8/Configuration"
 
-echo "==> ready. generation = $(curl -s "$ORIGIN/RefreshKit/Generation.txt")"
+echo "==> ready. generation = $(curl --fail --show-error --silent "$ORIGIN/RefreshKit/Generation.txt")"
