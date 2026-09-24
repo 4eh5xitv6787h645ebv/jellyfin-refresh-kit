@@ -2796,6 +2796,56 @@ namespace JellyfinRefreshKit
         private int _loggedOnce;
         private int _loggedFailClosedOnce;
         private int _downstreamOwnsShellResponse;
+
+        /// <summary>
+        /// Set once an OUTER middleware has been seen to buffer this filter's
+        /// shell response and own the final bytes (the Jellyfin Enhanced
+        /// injector shape). A GET through that owner carries no validator and
+        /// is no-store, so a HEAD — which such an owner passes straight through
+        /// to this filter — must not advertise a validator, length or cache
+        /// policy the corresponding GET never has. Cleared again when a shell
+        /// representation is stored, which only happens when this filter owned
+        /// the final bytes.
+        /// </summary>
+        private int _outerOwnerObserved;
+
+        /// <summary>
+        /// Consecutive cacheable shell requests whose response could not be
+        /// retained (an outer owner buffered it, or a downstream rewriter
+        /// stripped the source validators). Past
+        /// <see cref="UncachedShellsBeforeSkippingGate"/> the single-flight
+        /// gate is skipped: with nothing ever stored, serialising requests only
+        /// queues them behind one another during the very reload burst this
+        /// plugin triggers. A stored representation resets the count.
+        /// </summary>
+        private int _consecutiveUncachedShells;
+
+        private const int UncachedShellsBeforeSkippingGate = 3;
+
+        internal bool OuterOwnerObserved => Volatile.Read(ref _outerOwnerObserved) != 0;
+
+        internal int ConsecutiveUncachedShells => Volatile.Read(ref _consecutiveUncachedShells);
+
+        /// <summary>This filter is starting a GET shell response it owns outright.</summary>
+        private void NoteOwnedGetShell() => Volatile.Write(ref _outerOwnerObserved, 0);
+
+        private void NoteShellNotCached()
+        {
+            if (Volatile.Read(ref _consecutiveUncachedShells) < UncachedShellsBeforeSkippingGate)
+            {
+                Interlocked.Increment(ref _consecutiveUncachedShells);
+            }
+        }
+
+        private void NoteOuterOwnedShell()
+        {
+            Volatile.Write(ref _outerOwnerObserved, 1);
+            // The provisional path stores the intermediate entry (which reset
+            // the counter) and then removes it again; while an outer owner
+            // rewrites every shell nothing retained is ever served, so the
+            // gate is worthless from the first such response.
+            Volatile.Write(ref _consecutiveUncachedShells, UncachedShellsBeforeSkippingGate);
+        }
         private int _unsignedShellResponsesWhileStoodDown;
 
         internal RefreshKitScriptInjectionFilter(RefreshKitOptions options, ILogger logger)
@@ -2979,11 +3029,27 @@ namespace JellyfinRefreshKit
             // transform. The shell must never wait on this gate forever.
             var requestCanUseSharedCache = requestSnapshot.IsSafe;
             if (requestCanUseSharedCache
-                && await representationGate.WaitAsync(
-                    RepresentationGateWaitTimeout,
-                    context.RequestAborted).ConfigureAwait(false))
+                && Volatile.Read(ref _consecutiveUncachedShells) < UncachedShellsBeforeSkippingGate)
             {
-                Volatile.Write(ref representationGateLease, 1);
+                bool admitted;
+                try
+                {
+                    admitted = await representationGate.WaitAsync(
+                        RepresentationGateWaitTimeout,
+                        context.RequestAborted).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+                {
+                    // The client went away while queued. There is nobody to
+                    // answer and nothing was started; leaving quietly keeps an
+                    // abandoned tab from surfacing as an application error.
+                    return;
+                }
+
+                if (admitted)
+                {
+                    Volatile.Write(ref representationGateLease, 1);
+                }
             }
 
             var cached = requestCanUseSharedCache
@@ -3003,7 +3069,32 @@ namespace JellyfinRefreshKit
             var hadIfNoneMatch = requestHeaders.ContainsKey("If-None-Match");
             var hadIfUnmodifiedSince = requestHeaders.ContainsKey("If-Unmodified-Since");
             var hadIfModifiedSince = requestHeaders.ContainsKey("If-Modified-Since");
+            var hadAcceptEncoding = requestHeaders.ContainsKey("Accept-Encoding");
             var originalMethod = context.Request.Method;
+
+            // A warm entry is revalidated by asking the SOURCE whether index.html
+            // changed. A body-rewriting middleware nested INSIDE this filter (the
+            // Jellyfin Enhanced injector shape: it strips the request's
+            // Accept-Encoding so it can read the body it rewrites) passes a
+            // source 304 straight through, so the cached entry cannot know that
+            // the rewriter has started contributing since it was stored — for
+            // example when its kill switch was just turned off. Its
+            // Accept-Encoding removal is visible after the downstream call:
+            // treat that as "this base can no longer be trusted from cache",
+            // serve the entry this one time and evict it, so the next request
+            // is transformed from a full source response.
+            void EvictIfDownstreamRewroteRequest()
+            {
+                if (hadAcceptEncoding && !requestHeaders.ContainsKey("Accept-Encoding"))
+                {
+                    RemoveCachedBase(baseCacheKey);
+                    return;
+                }
+
+                // A warm hit the source just confirmed: the cache is doing its
+                // job, so single-flight admission is worth its wait again.
+                Volatile.Write(ref _consecutiveUncachedShells, 0);
+            }
 
             try
             {
@@ -3091,6 +3182,7 @@ namespace JellyfinRefreshKit
                             && context.Response.StatusCode
                                 == StatusCodes.Status304NotModified)
                         {
+                            EvictIfDownstreamRewroteRequest();
                             // An explicitly started source 304 still has to be mapped
                             // back to the transformed entity the client knows.
                             var mappedPrecondition = EvaluateClientPreconditions(
@@ -3282,6 +3374,7 @@ namespace JellyfinRefreshKit
 
                 if (context.Response.StatusCode == StatusCodes.Status304NotModified && cached != null)
                 {
+                    EvictIfDownstreamRewroteRequest();
                     // The host confirmed the source index is unchanged, so the cached
                     // injected representation is still current. The client's own
                     // validators are answered against the transformed ETag it knows.
@@ -4607,6 +4700,11 @@ namespace JellyfinRefreshKit
                 || representation.Body.Length > MaxCacheableRepresentationBytes
                 || !hasUsableSourceValidator)
             {
+                if (representation.CanStore)
+                {
+                    NoteShellNotCached();
+                }
+
                 // An authenticated request bypasses this process-shared cache without
                 // disturbing anonymous entries. In contrast, an origin response that
                 // is no-store/private, sets a cookie, declares Vary: *, or otherwise
@@ -4622,6 +4720,7 @@ namespace JellyfinRefreshKit
                 return;
             }
 
+            Volatile.Write(ref _consecutiveUncachedShells, 0);
             lock (_cacheLock)
             {
                 // A changed Vary field-name set changes the cache key model itself.
@@ -5680,6 +5779,24 @@ namespace JellyfinRefreshKit
                     return FinalizeOuterOwnedMetadataAsync();
                 }
 
+                if (Volatile.Read(ref _downstreamOwnedResponse) == 0
+                    && HttpMethods.IsGet(_context.Request.Method)
+                    && _representation != null)
+                {
+                    // A GET shell this filter finalizes itself (cold transform
+                    // or warm revalidation alike; the source status seen here
+                    // is not yet the client's): no outer owner rewrote it, so
+                    // HEAD may describe the representation again.
+                    _owner.NoteOwnedGetShell();
+                }
+
+                if (Volatile.Read(ref _downstreamOwnedResponse) == 0
+                    && _owner.OuterOwnerObserved
+                    && HttpMethods.IsHead(_context.Request.Method))
+                {
+                    return FinalizeHeadAfterOuterOwnerAsync();
+                }
+
                 if (Volatile.Read(ref _downstreamOwnedResponse) != 0
                     && IsRefreshKitOwnerETag(_context.Response.Headers["ETag"]))
                 {
@@ -5692,6 +5809,42 @@ namespace JellyfinRefreshKit
                 // Flush-started source response (source preconditions,
                 // eviction, framing safety) and never latch this instance off.
                 return EnsureBodyFinalizedAsync();
+            }
+
+            /// <summary>
+            /// An outer owner rewrites every GET into a no-store shell without
+            /// validators but passes HEAD straight through to this filter.
+            /// After ordinary finalization has written the intermediate
+            /// representation's headers, describe what that GET actually looks
+            /// like instead: no validator, no length, no caching, and a plain
+            /// 200 rather than a 304 against a validator no GET carries.
+            /// </summary>
+            private async Task FinalizeHeadAfterOuterOwnerAsync()
+            {
+                await EnsureBodyFinalizedAsync().ConfigureAwait(false);
+                try
+                {
+                    // The outer-owned GET ignores preconditions (it always
+                    // serves the full rewritten shell), so a HEAD must not
+                    // answer 304 or 412 against validators that GET never has.
+                    if (_context.Response.StatusCode == StatusCodes.Status304NotModified
+                        || _context.Response.StatusCode == StatusCodes.Status412PreconditionFailed)
+                    {
+                        _context.Response.StatusCode = StatusCodes.Status200OK;
+                    }
+
+                    ApplyOuterOwnedMetadataSafety();
+                    _context.Response.ContentLength = null;
+                    // The owner serves identity bytes with its own content type;
+                    // a negotiated coding or Vary of ours would describe a
+                    // representation the GET does not produce.
+                    _context.Response.Headers.Remove("Content-Encoding");
+                    _context.Response.Headers.Remove("Vary");
+                }
+                catch (Exception ex)
+                {
+                    _owner.LogWarning(ex);
+                }
             }
 
             private Task CompleteDownstreamOwnedResponse()
@@ -5730,6 +5883,7 @@ namespace JellyfinRefreshKit
                 _sourceFallbackIfUnmodifiedSince = StringValues.Empty;
                 _sourceFallbackIfModifiedSince = StringValues.Empty;
                 await EnsureBodyFinalizedAsync().ConfigureAwait(false);
+                _owner.NoteOuterOwnedShell();
                 if (_representation != null)
                 {
                     // PutCached runs inside normal finalization. Remove the candidate

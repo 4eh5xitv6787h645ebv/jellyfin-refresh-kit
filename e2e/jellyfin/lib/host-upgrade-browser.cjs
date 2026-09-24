@@ -48,7 +48,7 @@ const MEDIA_LIBRARY_NAME = 'Refresh Kit Host Upgrade Media';
 const MEDIA_REMOTE_DIR = '/config/rk-host-upgrade-media';
 const MEDIA_REMOTE_FILE = `${MEDIA_REMOTE_DIR}/Refresh Kit Host Upgrade Fixture.mp4`;
 const MEDIA_FIXTURE_SECONDS = 120;
-const PLAYBACK_GATE_REASONS = Object.freeze(['playback_route', 'media_element', 'fullscreen']);
+const PLAYBACK_GATE_REASONS = Object.freeze(['playback_route', 'media_element', 'fullscreen_media']);
 
 function parseArgs(argv) {
   const result = {};

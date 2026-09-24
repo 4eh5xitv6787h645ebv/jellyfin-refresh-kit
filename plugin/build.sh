@@ -327,8 +327,8 @@ GUID="${PROJECT_IDENTITY[1]}"
 }
 
 TARGETS=(
-    "net9.0|10.11.0.0|stage||Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, current Enhanced adoption coverage, reproducible compiler hosting, and pinned asynchronous lab-browser selection."
-    "net10.0|12.0.0.0|stage-jf12|_jf12|Application reload guards, Enhanced draft and in-progress-save protection, preserved clock-rollback budget accounting and configuration-read failure handling, current Enhanced adoption coverage, reproducible compiler hosting, and pinned asynchronous lab-browser selection."
+    "net9.0|10.11.0.0|stage||Enhanced compatibility: per-element settings ignore list (Enhanced's startup translation-cache and analytics receipts no longer reload tabs), Enhanced role-less overlays treated as dialogs, declarative data-refresh-kit-unsaved guard, idle window restarts on tab return, bounded per-tab history eviction, preload-hint stamping, tokenizer end-tag fixes, and injector-order cache/HEAD corrections."
+    "net10.0|12.0.0.0|stage-jf12|_jf12|Enhanced compatibility: per-element settings ignore list (Enhanced's startup translation-cache and analytics receipts no longer reload tabs), Enhanced role-less overlays treated as dialogs, declarative data-refresh-kit-unsaved guard, idle window restarts on tab return, bounded per-tab history eviction, preload-hint stamping, tokenizer end-tag fixes, and injector-order cache/HEAD corrections."
 )
 
 TIMESTAMP="$(python3 - "${BUILD_EPOCH}" <<'PY'

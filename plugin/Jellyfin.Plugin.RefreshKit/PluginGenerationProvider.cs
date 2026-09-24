@@ -6,6 +6,7 @@ using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Xml;
 using MediaBrowser.Common.Plugins;
 
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Jellyfin.Plugin.RefreshKit.Tests")]
@@ -288,6 +289,7 @@ namespace Jellyfin.Plugin.RefreshKit
                     return (_cached, _cachedDetails, _cachedHost);
                 }
 
+                _rescanPromptly = false;
                 var details = ScanActivePlugins(now);
                 HostFingerprint host;
                 try
@@ -305,10 +307,31 @@ namespace Jellyfin.Plugin.RefreshKit
                 // TTL starts when the filesystem/module scan completes. Using the
                 // scan-start timestamp makes a scan slower than the five-second TTL
                 // immediately stale and can trigger back-to-back full I/O passes.
-                _cachedAtUtc = _utcNow();
+                //
+                // Except when a plugin's first configuration observation could
+                // not be read coherently (a save racing the very first scan):
+                // that plugin contributed nothing, so the value just folded is
+                // transitional. Not caching it lets the next read, typically
+                // the runtime's 1.5-second confirmation fetch, adopt the real
+                // content before the transitional value is ever confirmed.
+                // Bounded to a short window per plugin so a permanently
+                // unreadable file cannot turn every poll into a full scan.
+                _cachedAtUtc = _rescanPromptly ? DateTime.MinValue : _utcNow();
                 return (_cached, _cachedDetails, _cachedHost);
             }
         }
+
+        private bool _rescanPromptly;
+
+        /// <summary>
+        /// Until when a plugin whose configuration has never been read coherently
+        /// keeps the snapshot uncached; see <see cref="GetSnapshot"/>. One window
+        /// per plugin per process, so a permanently unreadable file costs a few
+        /// seconds of uncached reads, never every poll.
+        /// </summary>
+        private readonly Dictionary<string, DateTime> _promptRescanWindowEndsUtc = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+
+        private static readonly TimeSpan PromptRescanWindow = TimeSpan.FromSeconds(3);
 
         /// <summary>
         /// Folds the fingerprints into the token. Ordinal-sorted first so the
@@ -443,11 +466,7 @@ namespace Jellyfin.Plugin.RefreshKit
                     var configurationScanUnavailable = false;
                     ActiveConfigurationSnapshot configurationSnapshot;
                     var watchConfiguration = configuration?.EnableConfigWatching != false
-                        && !IsConfigWatchExcluded(
-                            configuration,
-                            plugin.Folder,
-                            plugin.Id,
-                            plugin.AssemblyNames);
+                        && !IsConfigWatchExcluded(configuration, plugin);
                     if (!watchConfiguration)
                     {
                         // Disabled/excluded means omitted, not merely hidden after
@@ -463,7 +482,8 @@ namespace Jellyfin.Plugin.RefreshKit
                             configurationsPath,
                             plugin.ConfigurationFileNames,
                             scanBudget,
-                            contentBuffer);
+                            contentBuffer,
+                            ResolveIgnoredConfigurationElements(configuration, plugin));
                         configurationScanUnavailable = !configurationSnapshot.IsUsable;
                         if (configurationSnapshot.IsUsable)
                         {
@@ -479,13 +499,40 @@ namespace Jellyfin.Plugin.RefreshKit
                         }
                     }
 
+                    // A first observation that could not read the file must not
+                    // become the plugin's baseline: it would fold the unavailable
+                    // sentinel now and the real content one debounce later, two
+                    // reloads for a save that raced the very first scan. Without
+                    // a last-good snapshot the plugin simply contributes nothing
+                    // until a coherent read exists; that read is then adopted
+                    // silently as the first observation.
                     var publishedConfigurationIdentity = watchConfiguration
+                        && (configurationSnapshot.IsUsable || usingLastGoodConfiguration)
                         ? PublishConfigIdentity(
                             plugin.Folder,
                             configurationSnapshot.Identity,
                             now,
                             configuration)
                         : string.Empty;
+                    if (watchConfiguration && !configurationSnapshot.IsUsable && !usingLastGoodConfiguration)
+                    {
+                        // One bounded window per plugin, measured in time rather
+                        // than reads: a burst of polls from many tabs must not
+                        // exhaust the allowance inside the very save it guards.
+                        if (!_promptRescanWindowEndsUtc.TryGetValue(plugin.StableIdentity, out var windowEnd))
+                        {
+                            windowEnd = now + PromptRescanWindow;
+                            _promptRescanWindowEndsUtc[plugin.StableIdentity] = windowEnd;
+                        }
+
+                        // A backwards clock step must not reopen the window for
+                        // the size of the step: past the window's own length it
+                        // is treated as closed.
+                        if (now < windowEnd && windowEnd - now <= PromptRescanWindow)
+                        {
+                            _rescanPromptly = true;
+                        }
+                    }
 
                     var fingerprint = new PluginFingerprint(
                         plugin.Folder,
@@ -511,7 +558,9 @@ namespace Jellyfin.Plugin.RefreshKit
                         configurationSnapshot.IsTruncated,
                         configurationScanUnavailable,
                         usingLastGoodConfiguration,
-                        usingLastKnownPluginRecord: false);
+                        usingLastKnownPluginRecord: false,
+                        configurationElementsIgnored: configurationSnapshot.ElementsIgnored,
+                        configurationIgnoredElementNames: configurationSnapshot.IgnoredElementNames);
                     _lastKnownActiveFingerprints[plugin.StableIdentity] = fingerprint;
                     results.Add(fingerprint);
                 }
@@ -768,13 +817,25 @@ namespace Jellyfin.Plugin.RefreshKit
                         ?? plugin.Manifest.Version
                         ?? string.Empty;
                     var configurationFileNames = ResolveConfigurationFileNames(plugin);
+                    string? name = null;
+                    try
+                    {
+                        name = plugin.Instance?.Name ?? plugin.Name;
+                    }
+                    catch
+                    {
+                        // A plugin whose Name getter throws still participates;
+                        // it just cannot be excluded by display name.
+                    }
+
                     active.Add(new ActivePluginDescriptor(
                         plugin.Path,
                         id,
                         version,
                         plugin.Manifest.Status.ToString(),
                         matchedModules,
-                        configurationFileNames));
+                        configurationFileNames,
+                        name));
                 }
                 catch
                 {
@@ -1085,7 +1146,7 @@ namespace Jellyfin.Plugin.RefreshKit
                                 FileOptions.SequentialScan);
                             if (stream.Length != length)
                             {
-                                return ActiveAssetSnapshot.Unavailable;
+                                return TransientAssetFailure();
                             }
 
                             _beforeContentRead?.Invoke(file);
@@ -1093,7 +1154,7 @@ namespace Jellyfin.Plugin.RefreshKit
                             info.Refresh();
                             if (!info.Exists || info.Length != length || info.LastWriteTimeUtc.Ticks != ticks)
                             {
-                                return ActiveAssetSnapshot.Unavailable;
+                                return TransientAssetFailure();
                             }
 
                             bytesHashed += length;
@@ -1119,7 +1180,7 @@ namespace Jellyfin.Plugin.RefreshKit
                         {
                             // Vanished, grew, shrank or was rewritten while being
                             // hashed: transient, the next scan reads it coherently.
-                            return ActiveAssetSnapshot.Unavailable;
+                            return TransientAssetFailure();
                         }
                     }
 
@@ -1150,18 +1211,33 @@ namespace Jellyfin.Plugin.RefreshKit
                     // when there is none does the conservative ceiling apply — the
                     // result cannot reveal what the enumerator would have yielded
                     // next, so the charge must not depend on where it stopped.
-                    if (!hasLastGoodSnapshot)
-                    {
-                        NormalizeEntryOverflowCharge(
-                            scanBudget,
-                            fileReservationCeiling,
-                            directoryReservationCeiling,
-                            ref filesReserved,
-                            ref directoriesReserved);
-                    }
-
-                    return ActiveAssetSnapshot.Unavailable;
+                    return TransientAssetFailure();
                 }
+            }
+
+            // Every transient failure charges the same way: the last coherent
+            // snapshot's cost when one exists (the caller preserves it), else
+            // the conservative ceiling, regardless of how far the walk got.
+            ActiveAssetSnapshot TransientAssetFailure()
+            {
+                if (!hasLastGoodSnapshot)
+                {
+                    NormalizeEntryOverflowCharge(
+                        scanBudget,
+                        fileReservationCeiling,
+                        directoryReservationCeiling,
+                        ref filesReserved,
+                        ref directoriesReserved);
+                    // Bytes too: the plugins scanned after this one must see
+                    // the same remaining allowance whichever file failed.
+                    var byteCeiling = Math.Min(
+                        Math.Max(0L, _scanLimits.MaxAssetBytesPerPlugin - bytesReserved),
+                        scanBudget.RemainingAssetBytes);
+                    scanBudget.ReserveAssetBytes(byteCeiling);
+                    bytesReserved += byteCeiling;
+                }
+
+                return ActiveAssetSnapshot.Unavailable;
             }
 
             var identityMaterial = new StringBuilder("rk-active-assets-v2");
@@ -1272,7 +1348,8 @@ namespace Jellyfin.Plugin.RefreshKit
             string configurationsPath,
             IReadOnlyList<string> configurationFileNames,
             PluginScanBudget scanBudget,
-            byte[] buffer)
+            byte[] buffer,
+            HashSet<string>? ignoredElements = null)
         {
             if (configurationFileNames.Count == 0)
             {
@@ -1294,6 +1371,8 @@ namespace Jellyfin.Plugin.RefreshKit
             long bytesHashed = 0;
             long bytesReserved = 0;
             var reparsePointsSkipped = 0;
+            var elementsIgnored = 0;
+            var ignoredElementNames = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
             var material = new List<string>();
             foreach (var configuredName in configurationFileNames
                 .OrderBy(name => name, StringComparer.Ordinal))
@@ -1346,6 +1425,15 @@ namespace Jellyfin.Plugin.RefreshKit
 
                     var info = new FileInfo(file);
                     var length = info.Length;
+                    if (length == 0)
+                    {
+                        // Jellyfin writes configuration with FileMode.Create:
+                        // an empty file is the truncated instant of a save in
+                        // progress, never a plugin's settings. Treat it as a
+                        // torn read so it is retried rather than adopted.
+                        return ActiveConfigurationSnapshot.Unavailable;
+                    }
+
                     if (length < 0
                         || length > _scanLimits.MaxConfigurationBytesPerPlugin - bytesReserved
                         || length > scanBudget.RemainingConfigurationBytes)
@@ -1375,21 +1463,69 @@ namespace Jellyfin.Plugin.RefreshKit
                     }
 
                     _beforeContentRead?.Invoke(file);
-                    var contentHash = HashBoundedStream(stream, length, buffer);
+                    string line;
+                    // The whole document is read into memory (bounded by the
+                    // per-plugin ceiling) with the same torn-read checks the
+                    // streaming hash applied: a plugin may declare its own
+                    // bookkeeping elements inside the document, and dropping
+                    // elements needs the complete document either way.
+                    var content = ReadBoundedStream(stream, length);
                     info.Refresh();
                     if (!info.Exists || info.Length != length || info.LastWriteTimeUtc.Ticks != ticks)
                     {
                         return ActiveConfigurationSnapshot.Unavailable;
                     }
 
+                    var effectiveIgnored = EffectiveIgnoredElements(content, (int)length, ignoredElements);
+                    if (effectiveIgnored.Count > 0)
+                    {
+                        var filteredHash = HashFilteredConfiguration(
+                            content,
+                            (int)length,
+                            effectiveIgnored,
+                            out var ignoredHere);
+                        if (filteredHash != null)
+                        {
+                            // The raw length is deliberately not folded: an
+                            // ignored element's text can change length without
+                            // the identity moving.
+                            elementsIgnored += ignoredHere;
+                            ignoredElementNames.UnionWith(effectiveIgnored);
+                            line = string.Format(
+                                CultureInfo.InvariantCulture,
+                                "{0}|filtered|{1}",
+                                Convert.ToBase64String(Encoding.UTF8.GetBytes(fileName)),
+                                filteredHash);
+                        }
+                        else
+                        {
+                            line = string.Format(
+                                CultureInfo.InvariantCulture,
+                                "{0}|{1}|{2}",
+                                Convert.ToBase64String(Encoding.UTF8.GetBytes(fileName)),
+                                length,
+                                Convert.ToHexString(SHA256.HashData(new ReadOnlySpan<byte>(content, 0, (int)length)))
+                                    .ToLowerInvariant());
+                        }
+                    }
+                    else
+                    {
+                        // Nothing to drop: the exact bytes are the identity, in
+                        // the same form earlier releases produced, so existing
+                        // installations keep their generation across this
+                        // upgrade.
+                        line = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0}|{1}|{2}",
+                            Convert.ToBase64String(Encoding.UTF8.GetBytes(fileName)),
+                            length,
+                            Convert.ToHexString(SHA256.HashData(new ReadOnlySpan<byte>(content, 0, (int)length)))
+                                .ToLowerInvariant());
+                    }
+
                     bytesHashed += length;
                     newestTicks = Math.Max(newestTicks, ticks);
-                    material.Add(string.Format(
-                        CultureInfo.InvariantCulture,
-                        "{0}|{1}|{2}",
-                        Convert.ToBase64String(Encoding.UTF8.GetBytes(fileName)),
-                        length,
-                        contentHash));
+                    material.Add(line);
                 }
                 catch
                 {
@@ -1410,7 +1546,170 @@ namespace Jellyfin.Plugin.RefreshKit
                 bytesHashed,
                 reparsePointsSkipped,
                 isTruncated: false,
-                isUsable: true);
+                isUsable: true,
+                elementsIgnored: elementsIgnored,
+                ignoredElementNames: ignoredElementNames.ToList());
+        }
+
+        /// <summary>
+        /// The top-level element a plugin adds to its OWN configuration class to
+        /// name its bookkeeping elements, so Refresh Kit ignores them without
+        /// any registry entry or admin setting:
+        /// <code>
+        /// public string[] RefreshKitIgnoredElements { get; set; } = new[] { "LastRunUtc", "TelemetryReceipt" };
+        /// </code>
+        /// XmlSerializer writes that as
+        /// <c>&lt;RefreshKitIgnoredElements&gt;&lt;string&gt;LastRunUtc&lt;/string&gt;…&lt;/RefreshKitIgnoredElements&gt;</c>;
+        /// a plain text body separated by whitespace or commas is accepted too.
+        /// The declaration element itself is never part of the identity. Only a
+        /// direct child of the document element is honoured, names are matched
+        /// case-insensitively, and a document that is not well-formed XML
+        /// declares nothing.
+        /// </summary>
+        internal const string PluginDeclaredIgnoreElement = "RefreshKitIgnoredElements";
+
+        private static readonly byte[] PluginDeclaredIgnoreElementBytes = Encoding.ASCII.GetBytes(PluginDeclaredIgnoreElement);
+
+        /// <summary>
+        /// The admin/registry names for this plugin plus whatever the document
+        /// itself declares. Empty when neither says anything, which keeps the
+        /// exact-bytes identity for every plugin that has no bookkeeping.
+        /// </summary>
+        internal static HashSet<string> EffectiveIgnoredElements(
+            byte[] content,
+            int length,
+            HashSet<string>? configured)
+        {
+            var effective = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (configured != null)
+            {
+                effective.UnionWith(configured);
+            }
+
+            // Cheap gate before parsing: a document that never mentions the
+            // element name cannot declare anything.
+            if (new ReadOnlySpan<byte>(content, 0, length).IndexOf(PluginDeclaredIgnoreElementBytes) >= 0)
+            {
+                effective.UnionWith(ReadDeclaredIgnoredElements(content, length));
+            }
+
+            return effective;
+        }
+
+        /// <summary>
+        /// Reads a plugin's own <see cref="PluginDeclaredIgnoreElement"/>
+        /// declaration. When the element is present its own name is included in
+        /// the result, so the declaration never counts as a setting. Returns an
+        /// empty set for a document without one, or one that is not well-formed.
+        /// </summary>
+        internal static HashSet<string> ReadDeclaredIgnoredElements(byte[] content, int length)
+        {
+            var declared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var settings = new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null,
+                IgnoreComments = true,
+                IgnoreProcessingInstructions = true,
+                IgnoreWhitespace = true,
+                CloseInput = true,
+                MaxCharactersFromEntities = 0,
+            };
+
+            try
+            {
+                using var stream = new MemoryStream(content, 0, length, writable: false);
+                using var reader = XmlReader.Create(stream, settings);
+                var more = reader.Read();
+                while (more)
+                {
+                    if (reader.NodeType == XmlNodeType.Element
+                        && reader.Depth == 1
+                        && reader.LocalName.Equals(PluginDeclaredIgnoreElement, StringComparison.OrdinalIgnoreCase))
+                    {
+                        declared.Add(PluginDeclaredIgnoreElement);
+                        if (reader.IsEmptyElement)
+                        {
+                            more = reader.Read();
+                            continue;
+                        }
+
+                        // XmlSerializer's <string> items (each item is one
+                        // name, taken whole) or a plain text body directly
+                        // inside the declaration (split on whitespace/commas).
+                        var declarationDepth = reader.Depth;
+                        while (reader.Read() && !(reader.NodeType == XmlNodeType.EndElement && reader.Depth == declarationDepth))
+                        {
+                            if (reader.NodeType != XmlNodeType.Text && reader.NodeType != XmlNodeType.CDATA)
+                            {
+                                continue;
+                            }
+
+                            var candidates = reader.Depth == declarationDepth + 1
+                                ? reader.Value.Split(
+                                    new[] { ' ', '\t', '\r', '\n', ',', ';' },
+                                    StringSplitOptions.RemoveEmptyEntries)
+                                : new[] { reader.Value.Trim() };
+                            foreach (var token in candidates)
+                            {
+                                if (token.Length > 0
+                                    && IsXmlNameLike(token)
+                                    && !token.Equals(PluginDeclaredIgnoreElement, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    declared.Add(token);
+                                }
+                            }
+                        }
+
+                        more = reader.Read();
+                        continue;
+                    }
+
+                    if (reader.NodeType == XmlNodeType.Element && reader.Depth == 1 && !reader.IsEmptyElement)
+                    {
+                        // Declarations nested deeper are not honoured; skip
+                        // whole subtrees so a large document costs little.
+                        reader.Skip();
+                        continue;
+                    }
+
+                    more = reader.Read();
+                }
+            }
+            catch
+            {
+                declared.Clear();
+            }
+
+            return declared;
+        }
+
+        /// <summary>
+        /// Reads exactly <paramref name="length"/> bytes, failing the way
+        /// <see cref="HashBoundedStream"/> does when the file shrinks or grows
+        /// while it is being read.
+        /// </summary>
+        private static byte[] ReadBoundedStream(Stream stream, long length)
+        {
+            var content = new byte[length];
+            var offset = 0;
+            while (offset < content.Length)
+            {
+                var read = stream.Read(content, offset, content.Length - offset);
+                if (read <= 0)
+                {
+                    throw new EndOfStreamException("File changed while its configuration was fingerprinted.");
+                }
+
+                offset += read;
+            }
+
+            if (stream.ReadByte() != -1)
+            {
+                throw new IOException("File grew while its configuration was fingerprinted.");
+            }
+
+            return content;
         }
 
         /// <summary>
@@ -1568,9 +1867,7 @@ namespace Jellyfin.Plugin.RefreshKit
         /// </summary>
         private static bool IsConfigWatchExcluded(
             Configuration.PluginConfiguration? configuration,
-            string folder,
-            string id,
-            IReadOnlyList<string> assemblyNames)
+            ActivePluginDescriptor plugin)
         {
             var exclusions = configuration?.ConfigWatchExclusions;
             if (exclusions == null || exclusions.Length == 0)
@@ -1578,10 +1875,83 @@ namespace Jellyfin.Plugin.RefreshKit
                 return false;
             }
 
-            var underscore = folder.LastIndexOf('_');
-            var displayName = underscore > 0 ? folder.Substring(0, underscore) : folder;
-
             foreach (var raw in exclusions)
+            {
+                if (EntryMatchesPlugin(raw, plugin))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Whether one admin-typed entry names <paramref name="plugin"/>: by
+        /// install folder, the folder's display-name part, the plugin's real
+        /// display name, its GUID in any <see cref="Guid.TryParse(string?, out Guid)"/>
+        /// form (dashed, bare, braced, parenthesised), or one of its assembly
+        /// names.
+        /// </summary>
+        internal static bool EntryMatchesPlugin(string? raw, ActivePluginDescriptor plugin)
+        {
+            var entry = (raw ?? string.Empty).Trim();
+            if (entry.Length == 0)
+            {
+                return false;
+            }
+
+            var folder = plugin.Folder;
+            var underscore = folder.LastIndexOf('_');
+            var folderDisplayName = underscore > 0 ? folder.Substring(0, underscore) : folder;
+
+            if (entry.Equals(folder, StringComparison.OrdinalIgnoreCase)
+                || entry.Equals(folderDisplayName, StringComparison.OrdinalIgnoreCase)
+                || (plugin.Name.Length > 0 && entry.Equals(plugin.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+
+            if (plugin.Id.Length > 0
+                && Guid.TryParse(entry, out var entryId)
+                && Guid.TryParse(plugin.Id, out var pluginId)
+                && entryId == pluginId)
+            {
+                return true;
+            }
+
+            foreach (var assemblyName in plugin.AssemblyNames)
+            {
+                if (entry.Equals(assemblyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// The top-level configuration elements to leave out of
+        /// <paramref name="plugin"/>'s configuration identity. An entry is either
+        /// a bare element name, which applies to every plugin, or
+        /// <c>&lt;plugin&gt;:&lt;element&gt;</c>, where the plugin part is matched
+        /// exactly like a <see cref="Configuration.PluginConfiguration.ConfigWatchExclusions"/>
+        /// entry. Names are compared case-insensitively so an admin need not
+        /// match a plugin's casing exactly.
+        /// </summary>
+        internal static HashSet<string> ResolveIgnoredConfigurationElements(
+            Configuration.PluginConfiguration? configuration,
+            ActivePluginDescriptor plugin)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var entries = configuration?.ConfigIgnoredElements;
+            if (entries == null)
+            {
+                return result;
+            }
+
+            foreach (var raw in entries)
             {
                 var entry = (raw ?? string.Empty).Trim();
                 if (entry.Length == 0)
@@ -1589,17 +1959,143 @@ namespace Jellyfin.Plugin.RefreshKit
                     continue;
                 }
 
-                if (entry.Equals(folder, StringComparison.OrdinalIgnoreCase)
-                    || entry.Equals(displayName, StringComparison.OrdinalIgnoreCase)
-                    || (id.Length > 0 && entry.Replace("-", string.Empty, StringComparison.Ordinal)
-                        .Equals(id.Replace("-", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase))
-                    || assemblyNames.Any(a => entry.Equals(a, StringComparison.OrdinalIgnoreCase)))
+                var separator = entry.LastIndexOf(':');
+                string element;
+                if (separator < 0)
                 {
-                    return true;
+                    element = entry;
+                }
+                else
+                {
+                    if (!EntryMatchesPlugin(entry.Substring(0, separator), plugin))
+                    {
+                        continue;
+                    }
+
+                    element = entry.Substring(separator + 1).Trim();
+                }
+
+                if (element.Length > 0 && IsXmlNameLike(element))
+                {
+                    result.Add(element);
                 }
             }
 
-            return false;
+            return result;
+        }
+
+        private static bool IsXmlNameLike(string value)
+        {
+            foreach (var character in value)
+            {
+                if (!char.IsLetterOrDigit(character) && character != '_' && character != '-' && character != '.')
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Hashes a plugin configuration document with its ignored top-level
+        /// elements removed, so bookkeeping a plugin writes on its own (a
+        /// last-run timestamp, a telemetry receipt) does not become a
+        /// server-wide UI change. Whitespace between elements, comments and
+        /// processing instructions are not part of the identity either; the
+        /// element names, attributes and text that remain are folded in
+        /// document order. Returns null when the bytes are not well-formed XML,
+        /// in which case the caller falls back to the exact content hash.
+        /// </summary>
+        internal static string? HashFilteredConfiguration(
+            byte[] content,
+            int length,
+            HashSet<string> ignoredElements,
+            out int ignoredCount)
+        {
+            ignoredCount = 0;
+            var settings = new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null,
+                IgnoreComments = true,
+                IgnoreProcessingInstructions = true,
+                IgnoreWhitespace = true,
+                CloseInput = true,
+                MaxCharactersFromEntities = 0,
+            };
+
+            try
+            {
+                using var stream = new MemoryStream(content, 0, length, writable: false);
+                using var reader = XmlReader.Create(stream, settings);
+                using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var material = new StringBuilder("rk-filtered-configuration-v1\n");
+
+                void Flush()
+                {
+                    if (material.Length > 0)
+                    {
+                        hash.AppendData(Encoding.UTF8.GetBytes(material.ToString()));
+                        material.Clear();
+                    }
+                }
+
+                var more = reader.Read();
+                while (more)
+                {
+                    switch (reader.NodeType)
+                    {
+                        case XmlNodeType.Element:
+                            if (reader.Depth == 1 && ignoredElements.Contains(reader.LocalName))
+                            {
+                                ignoredCount++;
+                                reader.Skip();
+                                continue;
+                            }
+
+                            material.Append('<').Append(reader.Name);
+                            if (reader.HasAttributes)
+                            {
+                                while (reader.MoveToNextAttribute())
+                                {
+                                    material.Append(' ').Append(reader.Name).Append("=\"")
+                                        .Append(reader.Value).Append('"');
+                                }
+
+                                reader.MoveToElement();
+                            }
+
+                            material.Append(reader.IsEmptyElement ? "/>" : ">");
+                            break;
+                        case XmlNodeType.EndElement:
+                            material.Append("</").Append(reader.Name).Append('>');
+                            break;
+                        case XmlNodeType.Text:
+                        case XmlNodeType.CDATA:
+                        case XmlNodeType.SignificantWhitespace:
+                            material.Append('[').Append(reader.Value).Append(']');
+                            break;
+                        default:
+                            break;
+                    }
+
+                    if (material.Length >= 64 * 1024)
+                    {
+                        Flush();
+                    }
+
+                    more = reader.Read();
+                }
+
+                Flush();
+                return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+            }
+            catch
+            {
+                ignoredCount = 0;
+                return null;
+            }
         }
 
         /// <summary>
@@ -1895,7 +2391,9 @@ namespace Jellyfin.Plugin.RefreshKit
                 long bytesHashed,
                 int reparsePointsSkipped,
                 bool isTruncated,
-                bool isUsable)
+                bool isUsable,
+                int elementsIgnored = 0,
+                IReadOnlyList<string>? ignoredElementNames = null)
             {
                 Identity = identity;
                 NewestTicks = newestTicks;
@@ -1904,7 +2402,15 @@ namespace Jellyfin.Plugin.RefreshKit
                 ReparsePointsSkipped = reparsePointsSkipped;
                 IsTruncated = isTruncated;
                 IsUsable = isUsable;
+                ElementsIgnored = elementsIgnored;
+                IgnoredElementNames = ignoredElementNames ?? Array.Empty<string>();
             }
+
+            /// <summary>Top-level elements left out of the identity by the ignore list.</summary>
+            public int ElementsIgnored { get; }
+
+            /// <summary>The effective ignore names (admin, registry and plugin-declared), sorted.</summary>
+            public IReadOnlyList<string> IgnoredElementNames { get; }
 
             public string Identity { get; }
 
@@ -2132,8 +2638,10 @@ namespace Jellyfin.Plugin.RefreshKit
             string version,
             string manifestStatus,
             IReadOnlyList<LoadedModuleFingerprint> modules,
-            IReadOnlyList<string> configurationFileNames)
+            IReadOnlyList<string> configurationFileNames,
+            string? name = null)
         {
+            Name = name ?? string.Empty;
             DirectoryPath = directoryPath ?? string.Empty;
             Folder = Path.GetFileName(
                 DirectoryPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
@@ -2171,6 +2679,9 @@ namespace Jellyfin.Plugin.RefreshKit
             // lifetime key stable if an installer rewrites the record in place.
             StableIdentity = Id + "|" + ModuleIdentity;
         }
+
+        /// <summary>The plugin's display name (its instance or manifest name); empty when unknown.</summary>
+        public string Name { get; }
 
         public string DirectoryPath { get; }
 
@@ -2220,8 +2731,12 @@ namespace Jellyfin.Plugin.RefreshKit
             bool configurationScanTruncated,
             bool configurationScanUnavailable,
             bool usingLastGoodConfiguration,
-            bool usingLastKnownPluginRecord)
+            bool usingLastKnownPluginRecord,
+            int configurationElementsIgnored = 0,
+            IReadOnlyList<string>? configurationIgnoredElementNames = null)
         {
+            ConfigurationElementsIgnored = configurationElementsIgnored;
+            ConfigurationIgnoredElementNames = configurationIgnoredElementNames ?? Array.Empty<string>();
             Folder = folder;
             Id = id;
             Version = version;
@@ -2344,6 +2859,20 @@ namespace Jellyfin.Plugin.RefreshKit
         public bool ConfigurationScanUnavailable { get; }
 
         public bool UsingLastGoodConfiguration { get; }
+
+        /// <summary>
+        /// Top-level configuration elements dropped from the identity by the
+        /// admin's ignore list (diagnostics only; never folded).
+        /// </summary>
+        public int ConfigurationElementsIgnored { get; }
+
+        /// <summary>
+        /// The effective ignore names applied to this plugin's configuration —
+        /// admin setting, built-in registry and the plugin's own declaration
+        /// combined — so an admin can see why a settings change did not count.
+        /// Diagnostics only; never folded.
+        /// </summary>
+        public IReadOnlyList<string> ConfigurationIgnoredElementNames { get; }
 
         /// <summary>
         /// Jellyfin removed the disk/plugin-manager record, but the assembly is

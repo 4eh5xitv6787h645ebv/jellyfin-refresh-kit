@@ -146,6 +146,8 @@ namespace Jellyfin.Plugin.RefreshKit.Controllers
                         d.ConfigurationScanTruncated,
                         d.ConfigurationScanUnavailable,
                         d.UsingLastGoodConfiguration,
+                        d.ConfigurationElementsIgnored,
+                        d.ConfigurationIgnoredElementNames,
                         d.UsingLastKnownPluginRecord,
                     })
                     .OrderBy(d => d.Folder, System.StringComparer.Ordinal)

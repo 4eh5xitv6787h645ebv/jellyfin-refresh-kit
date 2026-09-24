@@ -816,6 +816,201 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
                 Stamp(Html));
         }
 
+        [Theory]
+        [InlineData("</div a'b>")]
+        [InlineData("</div a\"b>")]
+        [InlineData("</div a=b'c>")]
+        public void QuoteInsideEndTagAttributeName_EndsTheTagWhereBrowsersDo(string endTag)
+        {
+            // A quote only opens an attribute value directly after '='. In an
+            // attribute name it is an ordinary character, so the end tag stops
+            // at its first '>' and the following inline script body stays
+            // JavaScript rather than becoming markup that gets stamped.
+            var html = "<html><body>" + endTag
+                + "<script>var q = \"'><script src=/P/x.js>\";</script>"
+                + "<script src=\"/after.js\"></script>";
+
+            Assert.Equal(
+                "<html><body>" + endTag
+                + "<script>var q = \"'><script src=/P/x.js>\";</script>"
+                + "<script src=\"/after.js?rkv=" + Generation + "\"></script>",
+                Stamp(html));
+        }
+
+        [Fact]
+        public void LeadingEqualsSignStartsAnAttributeName()
+        {
+            // HTML recovery makes '=' the first character of the attribute
+            // name, so `<p = ">` has a valueless attribute "=" followed by a
+            // quoted value that swallows the apparent tag. The script's string
+            // literal must not be stamped.
+            const string Html = "<p = \"><script>var s = '\"><script src=/P/x.js>';</script>"
+                + "<script src=\"/after.js\"></script>";
+
+            Assert.Equal(
+                "<p = \"><script>var s = '\"><script src=/P/x.js>';</script>"
+                + "<script src=\"/after.js?rkv=" + Generation + "\"></script>",
+                Stamp(Html));
+        }
+
+        [Fact]
+        public void DoubleEqualsAttributeValueContainingTag_IsNotStamped()
+        {
+            // `<p =="x>...">`: the attribute named "=" carries a quoted value
+            // containing what looks like a script tag. Browsers keep it inside
+            // the attribute value, so it is not a request and must not change.
+            const string Html = "<p ==\"x><script src=/P/x.js>\">"
+                + "<script src=\"/after.js\"></script>";
+
+            Assert.Equal(
+                "<p ==\"x><script src=/P/x.js>\">"
+                + "<script src=\"/after.js?rkv=" + Generation + "\"></script>",
+                Stamp(Html));
+        }
+
+        [Theory]
+        [InlineData("<!-->")]
+        [InlineData("<!--->")]
+        [InlineData("<!---->")]
+        public void AbruptlyClosedScriptComment_DoesNotHideTheRealEndTag(string comment)
+        {
+            // `<!-->` and `<!--->` are complete in script data; they do not open
+            // an escaped run, so a later `<script>` mention in the body is plain
+            // source and the outer `</script>` still ends the element.
+            var html = "<script>'" + comment + "';'<script>';</script>"
+                + "<script src=\"/after.js\"></script>";
+
+            Assert.Equal(
+                "<script>'" + comment + "';'<script>';</script>"
+                + "<script src=\"/after.js?rkv=" + Generation + "\"></script>",
+                Stamp(html));
+        }
+
+        [Fact]
+        public void PreloadHintAndItsScript_ReceiveTheSameStamp()
+        {
+            // A preload hint is matched to its consumer by exact URL. Stamping
+            // only the <script> would leave the hint on the unversioned URL and
+            // make the browser fetch the resource twice.
+            const string Html = "<link rel=\"preload\" as=\"script\" href=\"/P/x.js\">"
+                + "<link rel=\"modulepreload\" href=\"/P/m.js\">"
+                + "<link rel=\"preload\" as=\"style\" href=\"/P/s.css\">"
+                + "<link rel=\"preload\" as=\"font\" href=\"/P/f.woff2\" crossorigin>"
+                + "<link rel=\"preload\" as=\"image\" href=\"/P/i.png\">"
+                + "<script src=\"/P/x.js\"></script>"
+                + "<script type=\"module\" src=\"/P/m.js\"></script>"
+                + "<link rel=\"stylesheet\" href=\"/P/s.css\">";
+
+            Assert.Equal(
+                "<link rel=\"preload\" as=\"script\" href=\"/P/x.js?rkv=" + Generation + "\">"
+                + "<link rel=\"modulepreload\" href=\"/P/m.js?rkv=" + Generation + "\">"
+                + "<link rel=\"preload\" as=\"style\" href=\"/P/s.css?rkv=" + Generation + "\">"
+                + "<link rel=\"preload\" as=\"font\" href=\"/P/f.woff2\" crossorigin>"
+                + "<link rel=\"preload\" as=\"image\" href=\"/P/i.png\">"
+                + "<script src=\"/P/x.js?rkv=" + Generation + "\"></script>"
+                + "<script type=\"module\" src=\"/P/m.js?rkv=" + Generation + "\"></script>"
+                + "<link rel=\"stylesheet\" href=\"/P/s.css?rkv=" + Generation + "\">",
+                Stamp(Html));
+        }
+
+        [Fact]
+        public void PreloadHintWithoutAnInDocumentConsumer_IsLeftAlone()
+        {
+            // The consumer is a runtime `import` (or a loader-created script),
+            // which is never stamped; stamping only the hint would make the two
+            // URLs differ and cause the double download the hint exists to
+            // avoid. The ordinary script next to it is still stamped.
+            const string Html = "<link rel=\"modulepreload\" href=\"/P/dep.js\">"
+                + "<link rel=\"preload\" as=\"script\" href=\"/P/lazy.js\">"
+                + "<link rel=\"preload\" as=\"style\" href=\"/P/other.css\">"
+                + "<script type=\"module\" src=\"/P/main.js\"></script>";
+
+            Assert.Equal(
+                "<link rel=\"modulepreload\" href=\"/P/dep.js\">"
+                + "<link rel=\"preload\" as=\"script\" href=\"/P/lazy.js\">"
+                + "<link rel=\"preload\" as=\"style\" href=\"/P/other.css\">"
+                + "<script type=\"module\" src=\"/P/main.js?rkv=" + Generation + "\"></script>",
+                Stamp(Html));
+        }
+
+        [Fact]
+        public void PreloadHintAfterItsConsumer_IsStillStamped()
+        {
+            const string Html = "<script src=\"/P/x.js\"></script><link rel=\"preload\" as=\"script\" href=\"/P/x.js\">";
+
+            Assert.Equal(
+                "<script src=\"/P/x.js?rkv=" + Generation + "\"></script>"
+                + "<link rel=\"preload\" as=\"script\" href=\"/P/x.js?rkv=" + Generation + "\">",
+                Stamp(Html));
+        }
+
+        [Fact]
+        public void CollectingPassDoesNotDoubleCountAnAbort()
+        {
+            // A document mentioning "preload" takes the two-pass path; a noscript
+            // boundary aborts both passes but must be counted once.
+            const string Html = "<link rel=\"preload\" as=\"script\" href=\"/P/x.js\"><noscript><script src=\"/P/x.js\"></script></noscript>";
+            var before = ThirdPartyTagStamper.Diagnostics.NoScriptBoundaryAborts;
+
+            Assert.Same(Html, Stamp(Html));
+            Assert.Equal(before + 1, ThirdPartyTagStamper.Diagnostics.NoScriptBoundaryAborts);
+        }
+
+        [Fact]
+        public void PreloadHintForVersionedScript_IsLeftAlone()
+        {
+            const string Html = "<link rel=\"preload\" as=\"script\" href=\"/P/x.js?v=3\">"
+                + "<script src=\"/P/x.js?v=3\"></script>";
+
+            Assert.Same(Html, Stamp(Html));
+        }
+
+        [Fact]
+        public void EnhancedScriptTag_IsByteIdenticalInEveryVariant()
+        {
+            // Jellyfin Enhanced's BuildScriptTag output (12.8): the tag carries a
+            // `v=` version, so it must never be stamped, and its plugin/version/
+            // dev attributes (read by plugin.js via a querySelector) must never
+            // be reordered or rewritten.
+            const string CacheKey = "12.8.0.0-639034876250000000";
+            foreach (var tag in new[]
+                     {
+                         "<script plugin=\"Jellyfin Enhanced\" version=\"" + CacheKey + "\" dev=\"false\" src=\"../JellyfinEnhanced/script?v=" + CacheKey + "\" defer></script>",
+                         "<script plugin=\"Jellyfin Enhanced\" version=\"" + CacheKey + "\" dev=\"true\" src=\"../JellyfinEnhanced/script?v=" + CacheKey + "\" defer></script>",
+                         "<script plugin=\"Jellyfin Enhanced\" version=\"12.8.0.0\" dev=\"false\" src=\"../JellyfinEnhanced/script?v=12.8.0.0\" defer></script>",
+                         "<script plugin=\"Jellyfin Enhanced\" version=\"\" dev=\"false\" src=\"../JellyfinEnhanced/script?v=\" defer></script>",
+                     })
+            {
+                var html = "<html><body>" + tag + "\n" + tag + "\n</body></html>";
+                Assert.Same(html, Stamp(html));
+            }
+        }
+
+        [Fact]
+        public void ManyUnmatchedEndTagsAfterDeepNesting_StayFast()
+        {
+            var builder = new StringBuilder();
+            for (var i = 0; i < ThirdPartyTagStamper.MaxOpenElementDepth - 1; i++)
+            {
+                builder.Append("<div>");
+            }
+
+            for (var i = 0; i < 150000; i++)
+            {
+                builder.Append("</span>");
+            }
+
+            builder.Append("<script src=\"/after.js\"></script>");
+            var html = builder.ToString();
+
+            var stopwatch = Stopwatch.StartNew();
+            var stamped = Stamp(html);
+            stopwatch.Stop();
+
+            Assert.EndsWith("<script src=\"/after.js?rkv=" + Generation + "\"></script>", stamped, StringComparison.Ordinal);
+            Assert.True(stopwatch.ElapsedMilliseconds < 2000, "took " + stopwatch.ElapsedMilliseconds + " ms");
+        }
+
         [Fact]
         public void GreaterThanInsideEndTagAttribute_DoesNotExposeSourceAsMarkup()
         {

@@ -151,7 +151,7 @@ Use the repository entry point, `test.sh`. Prerequisites are Node.js 22.12 or ne
 with the locked Puppeteer/Chromium package, the exact .NET SDK `10.0.302`, and
 installed .NET Core plus ASP.NET Core 9.x and 10.x runtimes for the dual-runtime
 tests. Every `test.sh` mode requires Python 3.10 or newer, and packaging also needs the documented GNU/Linux shell tools
-(`bash`, `curl`, `flock`, `readlink -f`, `sha256sum`, `tar`, and `timeout`).
+(`bash`, `curl`, `flock`, `git`, `readlink -f`, `rsync`, `sha256sum`, `tar`, and `timeout`).
 Static validation downloads a checksum-pinned `actionlint` archive into a
 temporary user cache on first use and requires Docker CLI with Compose for
 configuration parsing; container suites require a working Docker engine. The
@@ -163,7 +163,7 @@ security audit requires access to the live NuGet and npm advisory feeds.
 ./test.sh browser          # Chromium runtime regressions
 ./test.sh reproducibility  # path-isolated byte identity and controlled build locking
 ./test.sh security-audit   # current NuGet and npm advisory audit (locked graphs, low or higher fails)
-./test.sh integration      # pinned JF10/JF12 lifecycle/browser lab plus proxy matrix
+./test.sh integration      # ABI-floor smoke, pinned JF10/JF12 lifecycle/browser lab, proxy matrix, Enhanced adoption lab
 ./test.sh compatibility    # all locked third-party/hostile-fixture matrices
 ./test.sh all              # every gate above; intentionally long-running
 ```
@@ -231,6 +231,32 @@ A few constraints are intentional and should be preserved when changing the proj
 - **Run the proxy E2E suite for middleware, response-header, injection, or proxy-sensitive changes.**
 - **Keep documentation aligned with current behaviour.** User-visible behaviour belongs in the root `README.md`; the mechanism description belongs in `docs/how-it-works.md`; the drop-in integration belongs in `docs/plugin-authors.md`; deeper standalone details belong in `plugin/README.md`; compatibility evidence belongs in `COMPATIBILITY.md`.
 
+## Adding a plugin to the bookkeeping registry
+
+Plugins should declare their own bookkeeping elements (see
+[the author guide](plugin-authors.md#tell-refresh-kit-which-settings-are-bookkeeping-1104));
+the registry is for plugins that cannot. To add one:
+
+1. Confirm the churn from the plugin's source, not from a symptom: find the
+   code path that calls `SaveConfiguration()` on its own (a scheduled task, a
+   background service, a startup hook) and the exact property names it
+   rewrites, as their configuration class serializes them.
+2. Append an `Entry` to `plugin/Jellyfin.Plugin.RefreshKit/KnownPluginConfigurationHints.cs`
+   with the plugin GUID (from its `meta.json`; stable across renames), its
+   display name, the version and date you checked, the reason (which code path,
+   how often), and the element names. Only direct children of the document
+   element are matched. Do not list values an admin edits on the plugin's
+   settings page.
+3. Run `./test.sh dotnet`. `KnownPluginConfigurationHintsTests` rejects a
+   malformed GUID, a duplicate, an element name that is not XML-name-like, or a
+   reason too short to be useful; `ActivePluginGenerationTests` covers the
+   matching.
+4. Mention the plugin in the README settings table row and, when the plugin is
+   part of the locked compatibility campaign, re-run its matrix.
+
+An entry never overrides a plugin's own declaration; the two are combined.
+Removing an entry once a plugin declares its own bookkeeping is safe.
+
 ## Enhanced adoption validation
 
 For runtime reload-safety or embedding changes, run
@@ -240,7 +266,9 @@ Enhanced release, both supported host lines, both middleware orders, duplicate
 runtimes and actual Enhanced review-form behavior. See
 [the lab contract](../e2e/enhanced/README.md).
 
-The active final release version is `1.1.0.3` (runtime `2.5.0`). The fixed
+The active final release version is `1.1.0.3` (runtime `2.5.0`); the source
+tree currently carries the next candidate, `1.1.0.4` (runtime `2.5.1`), whose
+manifest entry is added only by the release procedure above. The fixed
 campaign clock, clean-source/manifest-child binding, exact validation receipts,
 and immutable asset publication checks remain required. Updating the expected
 version does not authorize replacing the existing `v1.0.1.0` assets.

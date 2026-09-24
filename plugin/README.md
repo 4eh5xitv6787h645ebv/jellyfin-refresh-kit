@@ -137,7 +137,7 @@ It is deliberately conservative. A tag is **skipped** when:
 | Skipped | Why |
 | --- | --- |
 | inline `<script>` (no `src`) | nothing to version |
-| `<link>` that is not a stylesheet (manifest, icons, preload) | not client code; stamping can break them |
+| `<link>` that is neither a stylesheet nor a script/style preload hint (manifest, icons, fonts) | not client code; stamping can break them. `rel="preload" as="script"`/`as="style"` and `rel="modulepreload"` ARE stamped when this same document also stamps a `<script src>`/stylesheet tag with the identical URL, so the hint keeps matching the tag it preloads instead of causing a second download; a hint for a runtime `import()` has no such tag and stays unstamped, like that import |
 | absolute or protocol-relative URLs (`https://cdn…`, `//host/…`) | a third-party origin may key its cache/CORS/404 behaviour on the exact URL |
 | standalone middleware: any real `<base href>` outside template content | it can redirect Refresh Kit's own PathBase-relative runtime URL, so the complete shell transform is left byte-for-byte unchanged |
 | direct `ThirdPartyTagStamper` use: any unsafe or entity-ambiguous base candidate | DOM recovery can reorder candidates, so source order is not trusted; safe same-origin relative bases remain eligible in this direct API |
@@ -264,15 +264,18 @@ one-shot authorization to the otherwise-refused historical target generation.
 That authorization survives epoch rotation among replicas serving the same
 target while the safety gates keep the reload pending; those epochs are process
 evidence, not separate releases or updates. A same-generation restart records
-its epoch without a reload. The exact epoch set is non-evicting and saturates at
-48 tuples. A separate non-evicting 128-record coverage set remembers a
-generation departed without a durably verified epoch; if even the baseline
+its epoch without a reload. The exact epoch set holds 48 tuples and, since
+runtime 2.5.1, drops its oldest tuple at capacity rather than refusing. A
+separate 128-record coverage set remembers a generation departed without a
+durably verified epoch and evicts the same way; if even the baseline
 generation was unresolved, its typed instance tombstone refuses every later
-automatic candidate for that instance for the rest of the tab session. Missing
-or invalid epochs, an already-seen epoch, incomplete coverage, corrupt or
-unavailable storage, and either saturation limit therefore fail closed. A
-finite set of stable process epochs cannot create an endless reload cycle;
-volatile or broken deployments may still delay convergence.
+automatic candidate for that instance until it is evicted or the tab session
+ends. Missing or invalid epochs, an already-seen epoch, incomplete coverage,
+and corrupt or unavailable storage therefore fail closed. A separate strict,
+saturating per-tab counter allows at most 16 epoch-authorized historical
+revisits in one tab session, so a finite set of generations served under an
+endless supply of new process epochs still cannot create an endless reload
+cycle; volatile or broken deployments may still delay convergence.
 
 #### Deterministic scan budgets and failure behaviour
 
@@ -403,10 +406,35 @@ debounce and cooldown entirely.** A staged DLL remains invisible until restart;
 the MVID of the module loaded after that restart is authoritative.
 
 The default exclusion list is **empty**. Add a plugin if its normal XML content
-moves while nobody is changing server-wide settings. The admin diagnostics
-endpoint shows the loaded/content identities, byte budgets, truncation and
-last-good state needed to distinguish configuration churn from code or asset
-changes.
+moves while nobody is changing server-wide settings and no single element
+explains it. The separate **ignored elements** list (`ConfigIgnoredElements`)
+is the finer tool: each entry names a top-level element of a plugin's
+configuration XML — `Element` for every plugin, `Plugin:Element` for one —
+that is dropped from that plugin's identity before hashing. It is the third of
+three layers: a plugin's own top-level `RefreshKitIgnoredElements` element
+(XmlSerializer `<string>` items or a whitespace/comma-separated text body) is
+always honoured and is the durable path for plugin authors; the built-in
+registry in `KnownPluginConfigurationHints.cs` seeds this setting for plugins
+that cannot declare; and this setting is the per-server override. A plugin
+with nothing to ignore from any layer keeps the exact-bytes identity earlier
+releases produced. The document is
+parsed with DTD processing prohibited and no external resolution; comments,
+processing instructions and insignificant whitespace are not identity either,
+and a document that is not well-formed XML falls back to its exact bytes. The
+shipped default covers Jellyfin Enhanced 12.8, whose *Refresh Translation
+Cache* scheduled task runs at every server start and rewrites
+`ClearTranslationCacheTimestamp`, and whose optional analytics rewrite the
+`Analytics*` receipts every 7–30 days; without it every restart reloads every
+open tab. The admin diagnostics endpoint shows the loaded/content identities,
+byte budgets, truncation, last-good state and the per-plugin count of ignored
+elements (`ConfigurationElementsIgnored`) needed to distinguish configuration
+churn from code or asset changes; `ConfigurationIgnoredElementNames` lists the
+effective names per plugin, whichever layer supplied them.
+
+Exclusion and `Plugin:` prefixes match the plugin's real display name, its
+install folder with or without the `_version` suffix, its GUID in any form
+`Guid.TryParse` accepts (dashed, bare, braced, parenthesised), or one of its
+loaded assembly names, all case-insensitively.
 
 ---
 
@@ -414,8 +442,16 @@ changes.
 
 When an update is pending, automatic reload waits while its light-DOM probes
 observe playback routes, fullscreen or picture-in-picture media, live media
-sessions, active editing, the configured idle window, or a full shared rolling
-reload budget.
+sessions, open dialogs (including, since runtime 2.5.1, Jellyfin Enhanced's
+role-less settings panel, Seerr more-info modal, bookmark, hidden-content and
+multi-select overlays, active-streams panel and Elsewhere streaming-settings
+modal), active editing, application
+work (Enhanced review drafts, dirty or saving Enhanced admin settings, any
+element marked `data-refresh-kit-unsaved`, and registered reload guards), the
+configured idle window, or a full shared rolling reload budget. Since 2.5.1
+the idle window restarts when a hidden tab is shown again, and a refusal
+decided before the media probe (hidden, route, fullscreen, dialog, guard) no
+longer restarts the parked-media escape clock.
 
 Runtime 2.4.7 and newer serialize automatic-reload reservations across
 same-origin tabs and update their authoritative bounded numeric-v1 ledger in
@@ -926,11 +962,21 @@ artifacts/CI result before claiming a particular revision passed a heavy suite.
   non-blocking open for a FIFO — and it blocks under the provider's scan lock,
   so generation reads wait on it. Plugin folders are trusted install content;
   nothing a plugin ships legitimately is a FIFO, and the fix is to remove it.
-* **A read failure on a plugin's very first scan is published as-is.** The
-  last-good snapshot is retained only *when one exists*. If a plugin's asset
-  or configuration read fails transiently on the first scan of a fresh process,
-  the unavailable sentinel is what gets folded, and the successful read on the
+  The same lock applies to a plugin folder on a hard-mounted network share
+  that stops answering: the shell and generation endpoints wait with it until
+  the mount recovers.
+* **An asset read failure on a plugin's very first scan is published as-is.**
+  The last-good snapshot is retained only *when one exists*. If a plugin's
+  asset read fails transiently on the first scan of a fresh process, the
+  unavailable sentinel is what gets folded, and the successful read on the
   next scan is a generation change (one reload) rather than a silent recovery.
+  Configuration is handled differently since 1.1.0.4: a plugin whose
+  configuration file cannot be read coherently on its first observation
+  contributes nothing yet, the transitional generation is not cached (for at
+  most three reads per plugin, so a permanently unreadable file cannot turn
+  every poll into a scan), and the first coherent read is adopted silently.
+  The browser runtime's two-observation confirmation then never sees the
+  transitional value long enough to act on it.
 * **Two plugin records with the same stable identity collapse to one.** The
   provider keys process state by plugin GUID plus loaded-module identity. Two
   records sharing both — the same plugin installed in two folders with

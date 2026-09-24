@@ -191,7 +191,7 @@
  *     keyed entry > singular > data-* > defaults.
  *
  * ---------------------------------------------------------------------------
- * REGISTRATION CONTRACT (revision 3) — FROZEN. This section is the
+ * REGISTRATION CONTRACT (revision 4) — FROZEN. This section is the
  * compatibility promise between kit copies of DIFFERENT versions cohabiting a
  * page. Revisions are STRICTLY ADDITIVE: any future kit version MUST keep
  * every numbered clause working forever, and a caller speaking an older
@@ -363,6 +363,20 @@
  *     A newer manager re-NORMALIZES every transferred config under its own
  *     rules, which is the point of newest-wins: a clamp or validation the newer
  *     copy tightened governs the instances it inherited too.
+ *  8. (REVISION 4, 2.5.1 — ADDITIVE.) APPLICATION RELOAD GUARDS are part of
+ *     the frozen surface. Every manager MUST expose
+ *     registerReloadGuard(name, canReload) → frozen handle { release(),
+ *     changed() } and the internal __reloadGuardsChanged(); a retired
+ *     manager forwards both to its delegate. The transfer record's
+ *     `shared.reloadGuards` carries the live guard records — plain objects
+ *     { name, canReload, allowed, released } — and a newer manager MUST adopt
+ *     them and keep evaluating them, failing closed (refusing the reload)
+ *     while any guard does not return exactly `true`. A handle returned
+ *     before a handoff keeps working after it. Under any revision-4 manager,
+ *     a connected light-DOM element carrying `data-refresh-kit-unsaved` (any
+ *     value but "false") refuses automatic reloads; adopters that cannot
+ *     reach the API — the frozen global belongs to an older copy — use that
+ *     attribute (inside a shadow root, mark the host element).
  *
  * ---------------------------------------------------------------------------
  * BOOTSTRAP MODE (recommended adoption)
@@ -840,7 +854,7 @@
      *   2.4.6 — PROCESS-INCARNATION EPOCHS let a genuinely restarted server
      *           revisit a historical generation once without weakening the
      *           LEFT-version flap guard. Exact version/epoch pairs are
-     *           confirmed twice, claimed in a strict saturating per-tab set,
+     *           confirmed twice, claimed in a strict bounded per-tab set,
      *           and never participate in asset URLs or generation identity.
      *           Retained createElement wrappers created by 2.4.6+ also forward
      *           freshly-created elements through the newest manager; the exact
@@ -947,8 +961,19 @@
      *   2.5.0 — Page-wide application reload guards survive runtime handoffs.
      *           Enhanced inline review forms and dirty admin settings remain
      *           protected after blur and throughout asynchronous saves.
+     *   2.5.1 — Guards join the frozen contract (clause 8) and a declarative
+     *           `data-refresh-kit-unsaved` attribute works under any manager.
+     *           Enhanced's role-less overlays (settings panel, Seerr more-info,
+     *           bookmark/hidden-content/multi-select overlays, active-streams
+     *           panel) count as open dialogs. Returning to a hidden tab
+     *           restarts the idle window; a verdict reached before the media
+     *           probe no longer resets the parked-media clock; the idle,
+     *           hidden and media clocks survive a wall-clock rollback; and the
+     *           per-tab LEFT/epoch/coverage sets drop their oldest records at
+     *           capacity instead of refusing every further reload for the life
+     *           of the tab.
      */
-    var KIT_VERSION = '2.5.0';
+    var KIT_VERSION = '2.5.1';
 
     /**
      * @type {number} Registration-contract revision this copy speaks (see the
@@ -962,7 +987,7 @@
      *       __contractVersion >= 3 before it does, and registers (loudly) when
      *       the manager cannot hand over.
      */
-    var CONTRACT_VERSION = 3;
+    var CONTRACT_VERSION = 4;
 
     /** @type {string} Console prefix for every message this kit emits. */
     var LOG = '[RefreshKit]';
@@ -1008,21 +1033,36 @@
      * refused because A was abandoned. A legitimate operator rollback can also
      * revisit A; 2.4.6 permits that only when the JSON endpoint supplies a fresh
      * process epoch, the exact (A, epoch) pair confirms twice, and this tab can
-     * claim the epoch in the strict saturating set below.
+     * claim the epoch in the strict bounded set below.
      * @type {string}
      */
     var LEFT_KEY = 'jellyfin-refresh-kit-left-v1';
 
     /**
-     * Strict, saturating per-tab set of process epochs already observed for a
+     * Strict, bounded per-tab set of process epochs already observed for a
      * baseline generation or claimed to authorize one historical-generation
-     * revisit. Entries are [instanceName, epoch] tuples. Unlike flip history,
-     * this set NEVER evicts: forgetting an older epoch would make a finite
-     * replica cycle reload forever. Unavailable, corrupt, full or unverifiable
-     * storage therefore fails the historical override closed.
+     * revisit. Entries are [instanceName, epoch] tuples. Since 2.5.1 the set
+     * drops its oldest tuple at capacity (a long-lived tab must not stop
+     * reloading after 48 restarts); the endless-cycle bound that saturation
+     * used to provide is carried by EPOCH_OVERRIDE_KEY instead. Unavailable,
+     * corrupt or unverifiable storage still fails the historical override
+     * closed.
      * @type {string}
      */
     var EPOCH_KEY = 'jellyfin-refresh-kit-epochs-v1';
+
+    /**
+     * Strict, SATURATING per-tab count of historical-generation revisits that
+     * a fresh process epoch has authorized (2.5.1). A stuck rolling deploy or
+     * a crash-looping pair can present a finite set of generations under an
+     * endless supply of new epochs; with the epoch set now evicting, this
+     * counter is what keeps such a cycle finite: once MAX_EPOCH_OVERRIDES
+     * revisits have been spent in this tab, no further epoch can authorize
+     * one for the rest of the tab session. Ordinary forward updates never
+     * touch it. Unreadable, corrupt or unwritable state refuses the override.
+     * @type {string}
+     */
+    var EPOCH_OVERRIDE_KEY = 'jellyfin-refresh-kit-epoch-overrides-v1';
 
     /**
      * Strict per-tab set of [instanceName, generation] baselines that were
@@ -1030,8 +1070,9 @@
      * [instanceName, null] is a collision-free instance tombstone for a shared
      * reload that departed while that instance's first version fetch was still
      * unresolved. A later epoch cannot prove freshness in either case — it may
-     * be the exact process this tab previously ran — so gaps saturate and
-     * permanently veto unsafe auto-reloads.
+     * be the exact process this tab previously ran — so a gap vetoes unsafe
+     * auto-reloads until it is evicted at capacity (2.5.1) or the tab session
+     * ends.
      * @type {string}
      */
     var EPOCH_GAP_KEY = 'jellyfin-refresh-kit-epoch-gaps-v1';
@@ -1066,10 +1107,10 @@
     /** @type {number} Hard character cap before parsing/writing recoveries. */
     var MAX_RECOVERY_STORAGE_CHARS = 16384;
 
-    /** @type {number} Strict saturating cap for versions this tab has left. */
+    /** @type {number} Bounded cap for versions this tab has left (oldest evicted). */
     // A shared page can legitimately host dozens of independently versioned
-    // adopters. LEFT remains bounded/saturating, but its cap must cover that
-    // topology because one page reload departs every registered baseline.
+    // adopters. LEFT is bounded, but its cap must cover that topology because
+    // one page reload departs every registered baseline.
     var MAX_LEFT_RECORDS = 128;
 
     /** @type {number} Bound one canonical instance/version LEFT record. */
@@ -1078,8 +1119,11 @@
     /** @type {number} Hard character cap before parsing/writing LEFT history. */
     var MAX_LEFT_STORAGE_CHARS = 65536;
 
-    /** @type {number} Saturating cap for epoch tuples (per tab, all instances). */
+    /** @type {number} Bounded cap for epoch tuples (per tab, all instances; oldest evicted). */
     var MAX_EPOCH_RECORDS = 48;
+
+    /** @type {number} Strict saturating cap for epoch-authorized historical revisits per tab. */
+    var MAX_EPOCH_OVERRIDES = 16;
 
     /** @type {number} Bound each tuple's instance-key component. */
     var MAX_EPOCH_INSTANCE_NAME_LENGTH = 200;
@@ -1087,7 +1131,7 @@
     /** @type {number} Hard character cap before parsing/writing epoch history. */
     var MAX_EPOCH_STORAGE_CHARS = 65536;
 
-    /** @type {number} Saturating cap for unknown-baseline epoch coverage gaps. */
+    /** @type {number} Bounded cap for unknown-baseline epoch coverage gaps (oldest evicted). */
     var MAX_EPOCH_GAP_RECORDS = 128;
 
     /** @type {number} Hard character cap for typed gap tuples. */
@@ -3387,6 +3431,23 @@
     var checkingReloadGuards = false;
     var reloadGuardRevision = 0;
 
+    /**
+     * Jellyfin Enhanced 12.8 overlays that carry no dialog role, no
+     * aria-modal and no <dialog> element, so the generic dialog probe cannot
+     * see them (2.5.1). Each is created when opened and REMOVED from the DOM
+     * when closed (the settings panel, the bookmark, hidden-content and
+     * multi-select confirm overlays), or toggles a class that alone makes it
+     * visible (the Seerr more-info modal's `active`, the active-streams
+     * panel's `je-as-panel-open`) or is display:none until opened (the
+     * "Elsewhere" streaming-settings modal, which isRenderedElement then
+     * ignores), so none can block for ever; the screensaver override applies
+     * to them as to any dialog. Verified against Enhanced main on 2026-09-23.
+     */
+    var ENHANCED_OVERLAY_SELECTORS =
+        '#jellyfin-enhanced-panel, .je-more-info-modal.active, .je-bm-library-modal-overlay, ' +
+        '.je-hide-confirm-overlay, .je-hidden-management-overlay, .je-remove-confirm-overlay, ' +
+        '#je-active-streams-panel.je-as-panel-open, #streaming-settings-modal';
+
     function applicationReloadBlock() {
         if (checkingReloadGuards) return 'reload_guard';
         checkingReloadGuards = true;
@@ -3408,6 +3469,20 @@
                     }
                 } catch (_) { /* unknown */ }
                 if (!guard.allowed || revision !== reloadGuardRevision) return 'reload_guard';
+            }
+            // DECLARATIVE GUARD (2.5.1). Any connected light-DOM element carrying
+            // `data-refresh-kit-unsaved` (with any value other than "false")
+            // blocks exactly like a registered guard. It needs no JavaScript
+            // API at all, which matters on a page where an OLDER kit copy owns
+            // the frozen window.JellyfinRefreshKit global: registerReloadGuard
+            // is missing there even after a newer copy has taken the page
+            // over, but the live manager still runs this probe. Hidden
+            // elements count too — hiding a draft is not saving it.
+            var declared = document.querySelectorAll('[data-refresh-kit-unsaved]');
+            for (var d = 0; d < declared.length; d++) {
+                if (String(declared[d].getAttribute('data-refresh-kit-unsaved')).trim().toLowerCase() !== 'false') {
+                    return 'unsaved_work';
+                }
             }
             // Enhanced 12.8 keeps review drafts (including rating-only edits)
             // in this inline form until save succeeds or Cancel removes it.
@@ -3522,11 +3597,13 @@
             if (!screensaver) {
                 var dialogs = querySelectorAllCompat(
                     '.dialog.opened, .actionSheet.opened, dialog[open], ' +
-                    '[role~="dialog" i], [role~="alertdialog" i], [aria-modal="true" i]',
+                    '[role~="dialog" i], [role~="alertdialog" i], [aria-modal="true" i], ' +
+                    ENHANCED_OVERLAY_SELECTORS,
                     // Engines without the `i` flag (2.4.9): the case-sensitive
                     // spellings, which is what every real page uses.
                     '.dialog.opened, .actionSheet.opened, dialog[open], ' +
-                    '[role~="dialog"], [role~="alertdialog"], [aria-modal="true"]'
+                    '[role~="dialog"], [role~="alertdialog"], [aria-modal="true"], ' +
+                    ENHANCED_OVERLAY_SELECTORS
                 );
                 for (var i = 0; i < dialogs.length; i++) {
                     // Jellyfin and plugins retain closed dialogs in several
@@ -3594,7 +3671,16 @@
             // from "the user is idle", and it costs one second.
             if (screensaver) idleMs = Math.min(idleMs, MIN_SETTLE_MS);
 
-            if ((Date.now() - lastInteractionAt) < idleMs) return 'not_idle';
+            var idleElapsed = Date.now() - lastInteractionAt;
+            if (idleElapsed < 0) {
+                // The wall clock stepped backwards (NTP, a VM restore): the
+                // last interaction is now "in the future". Re-stamp it so the
+                // idle wait restarts from here instead of lasting until the
+                // clock catches up (2.5.1).
+                lastInteractionAt = Date.now();
+                idleElapsed = 0;
+            }
+            if (idleElapsed < idleMs) return 'not_idle';
             return null;
         } catch (err) {
             // A probe that throws leaves safety unknown — refuse the reload.
@@ -3742,15 +3828,16 @@
             }
             ownId = nextId;
 
-            [FLIP_KEY, LEFT_KEY, EPOCH_KEY, EPOCH_GAP_KEY, RECOVERY_KEY, BUDGET_KEY].forEach(function (key) {
+            [FLIP_KEY, LEFT_KEY, EPOCH_KEY, EPOCH_GAP_KEY, EPOCH_OVERRIDE_KEY, RECOVERY_KEY, BUDGET_KEY].forEach(function (key) {
                 safe(function () {
                     if (typeof ss.removeItem === 'function') ss.removeItem(key);
                 });
                 // A few embedded storage shims expose removeItem but silently
-                // ignore it. An empty list has the same semantics and gives us
-                // a write fallback when read-back proves the key survived.
+                // ignore it. An empty list (or a zero count for the revisit
+                // counter) has the same semantics and gives us a write
+                // fallback when read-back proves the key survived.
                 if (safe(function () { return ss.getItem(key); }, null) !== null) {
-                    safe(function () { ss.setItem(key, '[]'); });
+                    safe(function () { ss.setItem(key, key === EPOCH_OVERRIDE_KEY ? '0' : '[]'); });
                 }
             });
             safe(function () {
@@ -4356,7 +4443,7 @@
     }
 
     /**
-     * Strictly read the saturating epoch set. Unlike the diagnostic flip ring,
+     * Strictly read the bounded epoch set. Unlike the diagnostic flip ring,
      * every malformed or unverifiable state is reported as failure so it can
      * never authorize a historical generation.
      * @returns {{ok:boolean,storage:Storage|null,records:Array<string[]>}}
@@ -4392,6 +4479,25 @@
         }
     }
 
+    /**
+     * BOUNDED, NOT SATURATING (2.5.1). The per-tab LEFT, epoch and
+     * epoch-coverage sets used to refuse every further automatic reload once
+     * they were full. A long-lived tab (a wall display, a restored session)
+     * reaches 128 departures through nothing but ordinary plugin updates and
+     * settings saves, and then silently went stale for good — the exact
+     * failure this kit exists to prevent. The records exist to refuse a
+     * reload BACK to a generation this tab already left, and a flap between
+     * generations never needs more than a handful of records, so dropping
+     * the OLDEST ones when the cap is reached keeps every realistic
+     * protection while removing the dead end. Corrupt, unreadable or
+     * unwritable storage still fails closed exactly as before.
+     * @param {Array} records Mutated in place.
+     * @param {number} keep How many of the newest records to retain.
+     */
+    function evictOldestRecords(records, keep) {
+        while (records.length > keep && records.length > 0) records.shift();
+    }
+
     /** @returns {boolean} */
     function epochSetContains(records, name, epoch) {
         for (var i = 0; i < records.length; i++) {
@@ -4401,9 +4507,59 @@
     }
 
     /**
-     * Add an epoch without eviction and verify the exact serialized write.
-     * `freshOnly` is the historical-rollback claim: an epoch previously seen
-     * at the baseline or spent by an earlier rollback must be refused.
+     * @returns {{ok:boolean,storage:Storage|null,count:number}} The strict
+     *   per-tab count of epoch-authorized revisits; `ok:false` when the record
+     *   is unreadable, corrupt or over the cap.
+     */
+    function readEpochOverrideCount() {
+        try {
+            var ss = safeStorage('sessionStorage');
+            if (!ss) return { ok: false, storage: null, count: 0 };
+            var raw = ss.getItem(EPOCH_OVERRIDE_KEY);
+            if (raw === null) return { ok: true, storage: ss, count: 0 };
+            if (!/^(0|[1-9][0-9]{0,3})$/.test(raw)) return { ok: false, storage: ss, count: 0 };
+            var count = Number(raw);
+            if (count > MAX_EPOCH_OVERRIDES) return { ok: false, storage: ss, count: count };
+            return { ok: true, storage: ss, count: count };
+        } catch (_) {
+            return { ok: false, storage: null, count: 0 };
+        }
+    }
+
+    /** @returns {boolean} Whether one more epoch-authorized revisit may be spent. */
+    function epochOverrideAvailable() {
+        var current = readEpochOverrideCount();
+        return current.ok && !!current.storage && current.count < MAX_EPOCH_OVERRIDES;
+    }
+
+    /**
+     * Spend one epoch-authorized revisit with a verified write. Never evicts,
+     * never resets: this is the bound that keeps a finite generation cycle
+     * served by ever-new process epochs from reloading a tab forever.
+     * @returns {boolean}
+     */
+    function claimEpochOverride() {
+        var current = readEpochOverrideCount();
+        if (!current.ok || !current.storage || current.count >= MAX_EPOCH_OVERRIDES) return false;
+        try {
+            var serialized = String(current.count + 1);
+            current.storage.setItem(EPOCH_OVERRIDE_KEY, serialized);
+            if (current.storage.getItem(EPOCH_OVERRIDE_KEY) !== serialized) return false;
+            var verified = readEpochOverrideCount();
+            return verified.ok && verified.count === current.count + 1;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
+     * Add an epoch, evicting the oldest tuple at capacity, and verify the
+     * exact serialized write. A tuple that is already present is moved to the
+     * newest position when something else is written in the same claim, so a
+     * later eviction in this preflight cannot drop the record it just
+     * re-asserted. `freshOnly` is the historical-rollback claim: an epoch
+     * previously seen at the baseline or spent by an earlier rollback must be
+     * refused.
      * @param {string} name
      * @param {string} epoch
      * @param {boolean} freshOnly
@@ -4413,11 +4569,21 @@
         if (!validEpochInstanceName(name) || normalizeEpoch(epoch) !== epoch) return false;
         var current = readEpochSet();
         if (!current.ok || !current.storage) return false;
-        if (epochSetContains(current.records, name, epoch)) return !freshOnly;
-        if (current.records.length >= MAX_EPOCH_RECORDS) return false;
+        if (epochSetContains(current.records, name, epoch)) {
+            if (freshOnly) return false;
+            // Already recorded. Only a FULL set needs its position refreshed
+            // (so a sibling's claim in this same preflight cannot evict it);
+            // below capacity the insertion order is left untouched.
+            if (current.records.length < MAX_EPOCH_RECORDS) return true;
+            var last = current.records[current.records.length - 1];
+            if (last[0] === name && last[1] === epoch) return true;
+        }
 
         try {
-            var next = current.records.slice();
+            var next = current.records.filter(function (tuple) {
+                return !(tuple[0] === name && tuple[1] === epoch);
+            });
+            evictOldestRecords(next, MAX_EPOCH_RECORDS - 1);
             next.push([name, epoch]);
             var serialized = JSON.stringify(next);
             if (serialized.length > MAX_EPOCH_STORAGE_CHARS) return false;
@@ -4438,7 +4604,7 @@
     }
 
     /**
-     * Strictly read the saturating unknown-baseline coverage-gap set.
+     * Strictly read the bounded unknown-baseline coverage-gap set.
      * @returns {{ok:boolean,storage:Storage|null,records:Array<string[]>}}
      */
     function readEpochGapSet() {
@@ -4522,6 +4688,7 @@
         var current = readEpochGapSet();
         if (!current.ok || !current.storage) return false;
         var next = current.records.slice();
+        var changed = false;
         for (var i = 0; i < gaps.length; i++) {
             var tuple = gaps[i];
             if (!Array.isArray(tuple) || tuple.length !== 2 ||
@@ -4530,11 +4697,27 @@
                 return false;
             }
             if (!epochGapContains(next, tuple[0], tuple[1])) {
-                if (next.length >= MAX_EPOCH_GAP_RECORDS) return false;
+                evictOldestRecords(next, MAX_EPOCH_GAP_RECORDS - 1);
                 next.push([tuple[0], tuple[1]]);
+                changed = true;
+            } else if (next.length >= MAX_EPOCH_GAP_RECORDS) {
+                // Re-asserted in this same preflight with the set full: move
+                // the covering record (the exact tuple, or the instance-wide
+                // null tombstone) to the newest position so a later eviction
+                // cannot drop it.
+                for (var h = next.length - 1; h >= 0; h--) {
+                    if (next[h][0] === tuple[0] && (next[h][1] === tuple[1] || next[h][1] === null)) {
+                        if (h !== next.length - 1) {
+                            next.push(next.splice(h, 1)[0]);
+                            changed = true;
+                        }
+                        break;
+                    }
+                }
             }
         }
-        if (next.length === current.records.length) return true;
+        // Length alone cannot tell: an eviction plus an append leaves it equal.
+        if (!changed) return true;
         try {
             var serialized = JSON.stringify(next);
             if (serialized.length > MAX_EPOCH_GAP_STORAGE_CHARS) return false;
@@ -4677,7 +4860,7 @@
     }
 
     /**
-     * Strictly read the saturating LEFT set. A malformed or unreadable history
+     * Strictly read the bounded LEFT set. A malformed or unreadable history
      * cannot mean "this tab never left that version"; callers fail closed.
      * @returns {{ok:boolean,storage:Storage|null,records:string[]}}
      */
@@ -4726,11 +4909,12 @@
     }
 
     /**
-     * Add every known running baseline in one verified, saturating write. A
+     * Add every known running baseline in one verified, bounded write. A
      * page reload departs all registered adopters, including one whose endpoint
      * response lands during the unload window, so pre-claiming the whole
-     * registry is what makes late observations safe to freeze. No evidence is
-     * evicted. The return lists only records newly added by this attempt so a
+     * registry is what makes late observations safe to freeze. At capacity
+     * the oldest records are evicted (2.5.1), never the ones this claim
+     * asserts. The return lists only records newly added by this attempt so a
      * failed-navigation watchdog can retract exactly those.
      * @param {Object[]} instances
      * @param {boolean} [dryRun] (2.4.9) Validate, check capacity and rehearse
@@ -4744,19 +4928,31 @@
 
         var next = current.records.slice();
         var added = [];
+        var changed = false;
         for (var i = 0; i < instances.length; i++) {
             var p = instances[i];
             var from = p && p.getBaselineVersion();
             if (!from) continue;
             var entry = leftRecord(p.name, from);
             if (!validLeftRecord(entry)) return { ok: false, added: [] };
-            if (next.indexOf(entry) === -1) {
-                if (next.length >= MAX_LEFT_RECORDS) return { ok: false, added: [] };
+            var at = next.indexOf(entry);
+            if (at === -1) {
+                evictOldestRecords(next, MAX_LEFT_RECORDS - 1);
                 next.push(entry);
                 added.push(entry);
+                changed = true;
+            } else if (next.length >= MAX_LEFT_RECORDS && at !== next.length - 1) {
+                // Departing it again with the set full: make it the newest
+                // record so an eviction for a sibling's entry in this same
+                // claim — or a later one — cannot drop it. Below capacity the
+                // order is untouched. `added` stays limited to new records so
+                // a watchdog retraction never removes evidence that predates
+                // this attempt.
+                next.push(next.splice(at, 1)[0]);
+                changed = true;
             }
         }
-        if (added.length === 0) return { ok: true, added: [] };
+        if (!changed) return { ok: true, added: [] };
 
         try {
             var serialized = JSON.stringify(next);
@@ -5081,7 +5277,15 @@
 
     /** @returns {number} How long this tab has been hidden; 0 when visible. */
     function hiddenForMs() {
-        return hiddenSince === null ? 0 : Date.now() - hiddenSince;
+        if (hiddenSince === null) return 0;
+        var elapsed = Date.now() - hiddenSince;
+        if (elapsed < 0) {
+            // Wall clock stepped backwards while hidden: restart the grace
+            // from now rather than waiting for the clock to catch up (2.5.1).
+            hiddenSince = Date.now();
+            return 0;
+        }
+        return elapsed;
     }
 
     /** Cancel the hidden tab's single-shot timer. */
@@ -5136,6 +5340,7 @@
 
     /** @returns {number} How much of the hidden-settle grace is still to run. */
     function hiddenSettleRemainingMs() {
+        if (hiddenSince !== null && hiddenSince > Date.now()) hiddenSince = Date.now();
         var since = hiddenSince === null ? Date.now() : hiddenSince;
         return Math.max(0, since + hiddenSettleWindowMs() - Date.now());
     }
@@ -5256,7 +5461,14 @@
 
     /** @returns {number} How long the current zero-progress media block has lasted. */
     function mediaBlockedForMs() {
-        return mediaBlockSince === null ? 0 : Date.now() - mediaBlockSince;
+        if (mediaBlockSince === null) return 0;
+        var elapsed = Date.now() - mediaBlockSince;
+        if (elapsed < 0) {
+            // Clock rollback: a streak cannot be negative; restart it (2.5.1).
+            mediaBlockSince = Date.now();
+            return 0;
+        }
+        return elapsed;
     }
 
     /**
@@ -5599,7 +5811,14 @@
                 }
                 reason = escaped;
             }
-        } else {
+        } else if (reason === null || reason === 'active_editor' ||
+                   reason === 'password_entry' || reason === 'not_idle') {
+            // Only a verdict reached AFTER the media probe proves the media
+            // is not what is blocking. A refusal decided before it (hidden,
+            // route, fullscreen, a dialog, a guard) says nothing about the
+            // media, so it must not restart the starvation clock (2.5.1): a
+            // hidden tab's evaluations kept resetting it, and the escape then
+            // fired the moment the user came back instead of never.
             resetMediaBlockStreak();
         }
 
@@ -6070,6 +6289,15 @@
             return;
         }
         onVisible();
+        // COMING BACK IS NOT BEING IDLE (2.5.1). Hidden tabs do not poll, so
+        // an update that shipped while the user was away is first seen by
+        // the wake-up fetch below. Time spent hidden must not count toward
+        // the idle window, or the reload lands a second or two after the
+        // user returns — exactly the "reloaded in their face" the hidden path
+        // exists to avoid. Stamp the clock so a full idle window has to pass
+        // AFTER the return. The hidden-settle path is unaffected: it runs
+        // while the tab is hidden and never reaches this branch.
+        lastInteractionAt = Math.max(lastInteractionAt, Date.now());
         for (i = 0; i < registry.length; i++) registry[i].wake();
         // A pending update that was blocked purely by 'hidden' can now proceed.
         if (pendingInstances().length > 0) { blockedRetries = 0; safe(tryReload); }
@@ -7142,7 +7370,11 @@
                 // consume every node's epoch while a safety gate is blocking.
                 epochOverride = true;
             } else if (leftBefore && historicalEvidenceReliable && !gapCheck.found && epoch &&
-                ensureBaselineEpochRecorded() && claimEpoch(name, epoch, true)) {
+                epochOverrideAvailable() && ensureBaselineEpochRecorded() &&
+                claimEpoch(name, epoch, true) && claimEpochOverride()) {
+                // Availability is checked first so a tab that has spent its
+                // revisits does not consume the epoch tuple for nothing; the
+                // counter is then spent only once the tuple is claimed.
                 authorizedVersion = version;
                 authorizedEpoch = epoch;
                 epochOverride = true;
@@ -9052,13 +9284,29 @@
          */
         registerReloadGuard: function (name, canReload) {
             var d = forwardTo();
-            if (d) return d.registerReloadGuard(name, canReload);
+            if (d) {
+                // Clause 8 obliges every later manager to keep this member. A
+                // retired copy must not register locally as a fallback: its
+                // own list is no longer the one the live manager evaluates,
+                // so that would hand the caller a handle that protects
+                // nothing. Refusing loudly lets the adopter fall back to the
+                // declarative data-refresh-kit-unsaved attribute instead.
+                if (typeof d.registerReloadGuard !== 'function') {
+                    throw new Error('the live Jellyfin Refresh Kit manager does not expose registerReloadGuard');
+                }
+                return d.registerReloadGuard(name, canReload);
+            }
             return registerReloadGuard(name, canReload);
         },
 
         __reloadGuardsChanged: function () {
             var d = forwardTo();
-            if (d) return d.__reloadGuardsChanged();
+            if (d) {
+                safe(function () {
+                    if (typeof d.__reloadGuardsChanged === 'function') d.__reloadGuardsChanged();
+                });
+                return;
+            }
             reloadGuardRevision += 1;
             reloadGuards = reloadGuards.filter(function (g) { return !g.released; });
             cancelBudgetReservation();

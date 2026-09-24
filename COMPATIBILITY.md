@@ -254,8 +254,9 @@ target generation. That authorization remains attached to the target while a
 reload is safety-blocked, even if polls rotate through other process epochs
 serving the same generation; replica rotation is not a new release or update. A
 same-generation restart is recorded without reloading. Invalid, missing, seen,
-corrupt, unwritable, or saturated epoch state fails closed to the legacy flap
-refusal. A permanent per-tab coverage record also blocks an epoch override for
+corrupt, unwritable, or (before runtime 2.5.1, which evicts the oldest record
+at capacity instead) saturated epoch state fails closed to the legacy flap
+refusal. A bounded per-tab coverage record (evicting its oldest entries at capacity since runtime 2.5.1) also blocks an epoch override for
 any generation left before its epoch was durably known; an unresolved baseline
 creates an instance-wide tombstone because no exact historical generation can
 be named safely. This permits legitimate finite `A → B → A` lifecycle

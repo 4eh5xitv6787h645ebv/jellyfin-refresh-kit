@@ -338,6 +338,10 @@ test_integration() {
     integration_cleanup() {
         bash "${REPO_ROOT}/e2e/jellyfin/run.sh" down >/dev/null 2>&1 || true
         bash "${REPO_ROOT}/e2e/proxy/run.sh" down >/dev/null 2>&1 || true
+        # The Enhanced lab removes its own containers; a killed run (a CI
+        # timeout that outlives its SIGTERM handling) can still leave one.
+        docker ps -aq --filter label=rk.enhanced-readiness=true 2>/dev/null \
+            | xargs -r docker rm -f >/dev/null 2>&1 || true
         if [ -n "${log_dir:-}" ] && [ -d "${log_dir}" ]; then
             rm -rf -- "${log_dir}"
         fi

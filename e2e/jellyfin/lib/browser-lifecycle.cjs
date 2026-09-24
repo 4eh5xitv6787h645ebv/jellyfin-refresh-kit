@@ -550,7 +550,7 @@ async function exercisePlaybackGate(pages, fixture, generationBefore) {
     'primary playback tab was not visible before the gated generation change',
   );
   assert.ok(
-    ['playback_route', 'media_element', 'fullscreen'].includes(playing.wouldBlockNow),
+    ['playback_route', 'media_element', 'fullscreen_media'].includes(playing.wouldBlockNow),
     `live playback did not engage a reload gate: ${playing.wouldBlockNow}`,
   );
   await savePluginConfiguration(false);
@@ -570,7 +570,7 @@ async function exercisePlaybackGate(pages, fixture, generationBefore) {
   assert.equal(gatedWhilePlaying.kit?.version, generationBefore);
   assert.equal(gatedWhilePlaying.kit?.latestVersion, changedServer.generation);
   assert.ok(
-    ['playback_route', 'media_element', 'fullscreen'].includes(gatedWhilePlaying.kit?.wouldBlockNow),
+    ['playback_route', 'media_element', 'fullscreen_media'].includes(gatedWhilePlaying.kit?.wouldBlockNow),
     `playing update was not blocked: ${gatedWhilePlaying.kit?.wouldBlockNow}`,
   );
 
@@ -587,7 +587,7 @@ async function exercisePlaybackGate(pages, fixture, generationBefore) {
   assert.equal(paused.kit?.version, generationBefore);
   assert.equal(paused.kit?.latestVersion, changedServer.generation);
   assert.ok(
-    ['playback_route', 'media_element', 'fullscreen'].includes(paused.kit?.wouldBlockNow),
+    ['playback_route', 'media_element', 'fullscreen_media'].includes(paused.kit?.wouldBlockNow),
     `paused session did not remain conservatively gated: ${paused.kit?.wouldBlockNow}`,
   );
 

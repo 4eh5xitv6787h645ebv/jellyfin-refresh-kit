@@ -1,6 +1,6 @@
 # Enhanced adoption readiness: Refresh Kit 1.1.0.3
 
-This closes the findings in the 2026-09-22 review at `e2e/jellyfin/artifacts/readiness-review/review.md` against Enhanced 12.8.0.0. Runtime 2.5.0 protects Enhanced review forms after blur, dirty admin settings, and saves in progress. Other application-owned drafts and saves use `registerReloadGuard`; every registered guard must explicitly permit a reload. Guards compose across instances and retain their release handles during manager upgrades. Successful saving or intentional discarding allows reloads again.
+This closes the findings of the 2026-09-22 readiness review (a local, untracked artifact) against Enhanced 12.8.0.0. Runtime 2.5.0 protects Enhanced review forms after blur, dirty admin settings, and saves in progress. Other application-owned drafts and saves use `registerReloadGuard`; every registered guard must explicitly permit a reload. Guards compose across instances and retain their release handles during manager upgrades. Successful saving or intentional discarding allows reloads again.
 
 The three existing fixes were reviewed and preserved: clock-rollback reload-budget accounting, retaining the last good configuration snapshot after read/access failures, and disabled-fieldset editor detection with first-legend exceptions.
 

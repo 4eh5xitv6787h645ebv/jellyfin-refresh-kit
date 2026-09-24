@@ -36,6 +36,7 @@ While processing the app shell, Refresh Kit looks for other plugins' same-origin
 
 - `<script src="…">`
 - `<link rel="stylesheet" href="…">`
+- `<link rel="preload" as="script|style" href="…">` and `<link rel="modulepreload" href="…">`, but only when this same document also stamps a `<script src>` or stylesheet tag with the identical URL, so the hint keeps matching the tag it preloads instead of causing a second download; a hint whose consumer is a runtime `import()` or a loader-created script has no such tag and is left unstamped, like that import
 
 When an eligible URL does not already carry its own version identity, Refresh Kit adds:
 
@@ -48,7 +49,7 @@ When the monitored plugin state changes, the generation changes and the browser 
 The stamper is deliberately conservative. It leaves these alone:
 
 - inline scripts
-- non-stylesheet `<link>` elements
+- `<link>` elements other than stylesheets and script/style preload hints
 - cross-origin and protocol-relative URLs
 - in standalone middleware, any real `<base href>` outside template content; it can redirect Refresh Kit's own PathBase-relative runtime URL, so the complete shell transform is left byte-for-byte unchanged
 - when the stamper is used directly by an adopter, any unsafe or entity-ambiguous base candidate; DOM recovery can reorder candidates, so source order is not trusted (safe same-origin relative bases remain eligible in that direct API)
@@ -79,7 +80,7 @@ The identity is folded deterministically from:
 - selected loaded Jellyfin host assemblies: assembly name/version and module MVID
 - actually loaded plugin assemblies: the stable plugin ID plus, for each loaded module, its assembly name, assembly version and module MVID. The manifest/instance version text is deliberately *not* folded — it is mutable and an installer can rewrite it in place — so only the versions carried by the loaded assemblies participate
 - active loose client assets: relative path, size, and content hash for `.js`, `.mjs`, `.css`, and `.html`
-- the exact content of the plugin's Jellyfin configuration XML when configuration watching is enabled
+- the plugin's Jellyfin configuration XML when configuration watching is enabled: its exact bytes, or, when the admin's ignore list names top-level elements for that plugin, the document with those elements removed (insignificant whitespace and comments do not count either)
 
 Manifest status, absolute paths, timestamps, source maps, databases, logs, and private runtime-data directories are not generation identity. Some remain available as diagnostics, but they cannot make two nodes with identical active bytes disagree merely because files were copied at different times.
 
@@ -105,6 +106,7 @@ Configuration signals are controlled in three ways:
 - **Debounce:** a changed configuration-content identity must remain stable for 10 seconds before publication.
 - **Per-plugin cooldown:** the first change publishes promptly; further changes during the configured window are coalesced into one later update. The window's length follows the current setting, so lowering the cooldown releases an already-held change on the next scan (as the held publish it is, closing the window rather than arming a new one) and raising it extends a window that is still open; a window that has already expired is never revived by a later raise.
 - **Exclusions:** individual plugins can be ignored for configuration-change tracking.
+- **Ignored elements:** individual top-level elements of a plugin's configuration XML can be left out of its identity, so bookkeeping a plugin writes on its own does not count as a settings change. Three layers combine: a plugin's own `RefreshKitIgnoredElements` declaration inside its configuration (the durable option; it ships with the plugin), the built-in registry in `KnownPluginConfigurationHints.cs` for plugins that cannot declare (today Jellyfin Enhanced 12.8, which rewrites a translation-cache timestamp at every server start and its analytics receipts on a timer; without it every restart would reload every open tab), and the admin setting as the per-server override. The diagnostics endpoint lists the names in effect per plugin.
 
 Loaded-module and active loose-asset identity changes are not held behind the
 settings cooldown.
@@ -119,11 +121,13 @@ light-DOM safety probes observe an interaction that should not be interrupted.
 | Hidden-tab settle | the tab has not satisfied the hidden-tab settle rules |
 | Playback route | a Jellyfin video route is open |
 | Fullscreen media | media is fullscreen or in picture-in-picture |
-| Dialog | a rendered native, Jellyfin, or ARIA dialog/action sheet is open |
+| Dialog | a rendered native, Jellyfin, or ARIA dialog/action sheet is open, or (since 2.5.1) one of Jellyfin Enhanced's role-less overlays: its settings panel, Seerr more-info modal, bookmark, hidden-content and multi-select overlays, active-streams panel, or Elsewhere streaming-settings modal |
 | Media session | real media playback is active on the page |
 | Active editor | a text-editing field has focus (on `#/login` and `#/selectserver` only, an empty field — or, since 2.4.9, one the browser autofilled and the user never edited, while the page has seen no trusted click or keypress since the kit booted — does not count) |
 | Password entry | a rendered, enabled, non-inert password field still contains a value (on the empty routes only, since 2.4.9, a browser-autofilled password is ignored while no text field on the page holds typed text and no trusted click or keypress has happened since the kit booted; a credential the user had to pick from the browser's chooser is not refilled unprompted after a reload) |
-| Not idle | the configured user-idle period has not elapsed — never less than the runtime's 1-second settle floor, and relaxed to that floor on the empty routes, under Jellyfin's screensaver and for 2.5 s after leaving playback |
+| Not idle | the configured user-idle period has not elapsed — never less than the runtime's 1-second settle floor, and relaxed to that floor on the empty routes, under Jellyfin's screensaver and for 2.5 s after leaving playback. Since 2.5.1 the clock restarts when a hidden tab becomes visible again, so time spent away never counts as idle |
+| Application work (`unsaved_work`) | a connected Enhanced review form, dirty Enhanced admin settings or an Enhanced save in progress exist, or any light-DOM element carries `data-refresh-kit-unsaved` (any value but `false`; inside a shadow root, mark the host). Never overridden by the screensaver or the hidden-tab path |
+| Registered guard (`reload_guard`) | a guard registered through `registerReloadGuard` did not return exactly `true` |
 
 Refresh Kit also uses:
 
@@ -145,7 +149,7 @@ slot conservatively spent without navigating. Since runtime 2.4.9 the per-tab
 safety records a navigation must write (the LEFT-version set and the
 epoch-coverage gaps in `sessionStorage`) are rehearsed in that same pre-append
 pass — the exact bytes are written, verified and restored — so a tab that could
-never write them (a saturated set, storage that refuses writes) refuses before
+never write them (storage that refuses writes) refuses before
 the append and spends nothing, instead of burning one origin-wide slot per
 window and starving its sibling tabs.
 
@@ -177,19 +181,33 @@ so the cross-tab serialization guarantee applies only while the participating
 same-origin tabs run 2.4.7 or newer.
 
 The optional process epoch is a JSON-only sidecar. An exact fresh
-generation/epoch pair must be observed twice and claimed in a strict,
-saturating per-tab set before it can provide one-shot proof for a historical
+generation/epoch pair must be observed twice and claimed in a strict, bounded
+per-tab set before it can provide one-shot proof for a historical
 target generation. That authorization remains attached to the target generation
 while its reload is pending, even if polls rotate through other process epochs
 serving the same generation; replica rotation is not a new update identity. A
 same-generation restart is recorded without reloading. Missing, invalid,
 previously seen, or unverifiable epoch state preserves the older fail-closed
 flap refusal. If a page leaves before one instance's baseline epoch or even its
-baseline generation is durably known, a separate non-evicting per-tab coverage
-record permanently prevents a later epoch from claiming that ambiguous history
+baseline generation is durably known, a separate bounded per-tab coverage
+record prevents a later epoch from claiming that ambiguous history
 fresh; an unresolved-generation record conservatively disables automatic
-updates for that instance for the rest of the tab session. Epochs never enter
-asset URLs, ETags, or the generation itself.
+updates for that instance until it is evicted or the tab session ends. Epochs
+never enter asset URLs, ETags, or the generation itself.
+
+The per-tab LEFT, epoch and coverage sets are bounded (128, 48 and 128
+records). Before runtime 2.5.1 a full set refused every further automatic
+reload for the life of the tab, which a long-lived wall-display tab reached
+through nothing but ordinary updates and settings saves and then went stale
+for good. Since 2.5.1 a full set drops its oldest records instead: a flap
+between generations only ever needs a handful of records, so the protection
+these sets provide is unchanged for any realistic cycle, while corrupt,
+unreadable or unwritable storage still fails closed. The one guarantee
+saturation used to carry — that a finite set of generations served under an
+endless supply of new process epochs cannot reload a tab forever — is kept by
+a separate strict, saturating counter: at most 16 epoch-authorized revisits of
+a historical generation are ever spent in one tab session. Ordinary forward
+updates never touch it.
 
 A scripted reload keeps the current document alive until the new response
 commits, so the runtime cannot tell a host that refused the navigation from an
@@ -215,5 +233,10 @@ decision, including the final checks around shared-budget acquisition. Unknown
 guard state refuses a reload. Guard registrations and release handles transfer
 with a newer runtime. Enhanced 12.8 review forms and its dirty admin-settings
 indicator are also checked directly, protecting drafts after blur and while
-saving. These checks are not bypassed by hidden tabs or screensavers. See
+saving. These checks are not bypassed by hidden tabs or screensavers. Runtime
+2.5.1 adds a declarative form that needs no JavaScript API: any light-DOM
+element carrying `data-refresh-kit-unsaved` blocks the same way (inside a
+shadow root, mark the host element), which is the path to use when an older
+runtime copy owns the page's frozen global and `registerReloadGuard` is
+therefore missing from it. See
 [the author API](plugin-authors.md#protect-application-work-runtime-250).

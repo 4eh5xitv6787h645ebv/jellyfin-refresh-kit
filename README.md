@@ -99,7 +99,8 @@ Open **Dashboard → Plugins → Jellyfin Refresh Kit**.
 | Reload open tabs after a plugin update | On | Performs safe automatic reloads. When off, update detection remains available without automatic reloads. |
 | Treat plugin settings changes as updates | On | Includes each plugin's saved configuration (its Jellyfin configuration XML) in the generation, so saving a plugin's settings counts as an update. |
 | Settings-change cooldown | 5 min | Per plugin: the first settings change publishes promptly and opens a window this long; further changes inside the window are merged into one update when it ends. `0` disables the cooldown; the 10-second debounce (a change must stay stable for 10 seconds before it is published) still applies. Range 0–1440 (a day), clamped by the settings page and again by the server. |
-| Ignore settings changes from these plugins | Empty | One entry per line. Accepts plugin name, install folder, GUID, or assembly name. An assembly-name entry matches every assembly a plugin loads, including bundled dependencies, so `Newtonsoft.Json` would exclude each plugin that ships that DLL. |
+| Ignore settings changes from these plugins | Empty | One entry per line. Accepts the plugin's display name, its install folder (with or without the version suffix), its GUID in any common form, or an assembly name. An assembly-name entry matches every assembly a plugin loads, including bundled dependencies, so `Newtonsoft.Json` would exclude each plugin that ships that DLL. Prefer the next setting when only one element of a plugin's settings is noisy. |
+| Ignore these settings elements | Enhanced 12.8 bookkeeping | One entry per line: a top-level element of a plugin's configuration XML that is left out of its settings identity. `Element` applies to every plugin; `Plugin:Element` limits it to one plugin, using the same plugin forms as above. The shipped entries come from the plugin's built-in registry and cover Jellyfin Enhanced 12.8 by GUID, whose translation-cache task rewrites `ClearTranslationCacheTimestamp` at every server start and whose optional usage analytics rewrite `Analytics*` receipts on a multi-day timer; without them every Jellyfin restart would reload every open tab. Plugins can also declare their own bookkeeping in a `RefreshKitIgnoredElements` element of their settings, which is always honoured and needs no entry here. A settings file that is not well-formed XML is hashed as exact bytes instead. The Diagnostics section lists the names in effect per plugin. |
 | Poll interval | 60 sec | How often a visible tab asks the server for the current generation; hidden tabs do not poll and catch up when shown. Range 15–3600 seconds, clamped by the browser runtime. |
 | Required idle time | 5 sec | Minimum time since the user's last click, key or scroll before an automatic reload. Range 0–300 seconds, clamped by the browser runtime; `0` leaves only a fixed 1-second settle. |
 | Max reloads per minute | 3 | Ceiling on automatic reloads per rolling minute, shared by every Jellyfin tab of the same origin in one browser. Range 1–100, clamped by the browser runtime. A reload the budget refuses waits; it is not lost. If the browser's shared ledger (IndexedDB) is unavailable, the reload also waits. |
@@ -200,7 +201,7 @@ In the browser console, run:
 JellyfinRefreshKit.state()
 ```
 
-Runtime 2.5.0 also protects Enhanced review drafts and unsaved admin settings after focus moves away (`unsaved_work`). Adopting plugins can register application reload guards for other drafts and saves (`reload_guard`); see [the integration guide](docs/plugin-authors.md#protect-application-work-runtime-250).
+Runtime 2.5.0 also protects Enhanced review drafts and unsaved admin settings after focus moves away (`unsaved_work`), and runtime 2.5.1 treats Enhanced's own overlays (its settings panel, Seerr more-info modal, bookmark, hidden-content and multi-select overlays, the active-streams panel and the Elsewhere streaming-settings modal) as open dialogs (`dialog`). Adopting plugins can register application reload guards for other drafts and saves (`reload_guard`), or mark an element with `data-refresh-kit-unsaved`; see [the integration guide](docs/plugin-authors.md#protect-application-work-runtime-250).
 
 The returned object includes the current reload `blockReason`, naming the safety gate that is holding the reload (the gates are listed in [docs/how-it-works.md](docs/how-it-works.md#safe-automatic-reloads)).
 
@@ -254,7 +255,8 @@ The standalone plugin declares support for **Jellyfin 10.11.x and Jellyfin
 12.x**. Its exact build inputs are Jellyfin Controller/Model `10.11.0` on
 `net9.0` (`targetAbi` `10.11.0.0`) and `12.0.0-rc4` on `net10.0`
 (`targetAbi` `12.0.0.0`); the disposable Docker test labs pin Jellyfin
-`10.11.11` and `12.0.0-rc4` images by digest. A harness or declared range is not evidence that
+`10.11.11` and `12.0.0-rc4` images by digest, and the Enhanced adoption lab
+pins `10.11.11` and `12.1`. A harness or declared range is not evidence that
 every future minor passed; current-candidate results and exact snapshot
 identities are recorded separately in [COMPATIBILITY.md](COMPATIBILITY.md).
 

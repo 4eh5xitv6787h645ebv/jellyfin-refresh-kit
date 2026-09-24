@@ -417,6 +417,354 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             Assert.Equal(1, publishedDetail.ConfigurationFileCount);
         }
 
+        private const string EnhancedConfigurationTemplate =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            + "<PluginConfiguration xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n"
+            + "  <!-- generated -->\n"
+            + "  <EnableSpoilerGuard>{0}</EnableSpoilerGuard>\n"
+            + "  <ClearTranslationCacheTimestamp>{1}</ClearTranslationCacheTimestamp>\n"
+            + "  <AnalyticsLastReportedAt>{2}</AnalyticsLastReportedAt>\n"
+            + "  <AnalyticsLastPayloadJson>{3}</AnalyticsLastPayloadJson>\n"
+            + "  <Shortcuts><Shortcut><Name>Search</Name><Key>/</Key></Shortcut></Shortcuts>\n"
+            + "</PluginConfiguration>\n";
+
+        private static string EnhancedConfiguration(bool spoilerGuard, long timestamp, long reportedAt, string payload) =>
+            string.Format(
+                CultureInfo.InvariantCulture,
+                EnhancedConfigurationTemplate,
+                spoilerGuard ? "true" : "false",
+                timestamp,
+                reportedAt,
+                payload);
+
+        [Fact]
+        public void IgnoredConfigurationElementsDoNotMoveTheGenerationAcrossProcesses()
+        {
+            // Jellyfin Enhanced rewrites ClearTranslationCacheTimestamp at every
+            // server start and the Analytics* receipts on a timer. Two processes
+            // (two providers) whose configuration differs only in those elements
+            // must agree, or every restart reloads every tab. A real setting
+            // must still move the generation.
+            var pluginId = Guid.Parse("f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b");
+            var firstRoot = Path.Combine(_root, "enhanced-node-a");
+            var secondRoot = Path.Combine(_root, "enhanced-node-b");
+            var firstConfigurations = Path.Combine(firstRoot, "configurations");
+            var secondConfigurations = Path.Combine(secondRoot, "configurations");
+            Directory.CreateDirectory(firstConfigurations);
+            Directory.CreateDirectory(secondConfigurations);
+            var firstPlugin = NodePlugin(firstRoot, "JellyfinEnhanced_12.8.0.0", pluginId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Jellyfin.Plugin.JellyfinEnhanced.xml", "Jellyfin Enhanced");
+            var secondPlugin = NodePlugin(secondRoot, "JellyfinEnhanced_12.8.0.0", pluginId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Jellyfin.Plugin.JellyfinEnhanced.xml", "Jellyfin Enhanced");
+            var firstFile = Path.Combine(firstConfigurations, "Jellyfin.Plugin.JellyfinEnhanced.xml");
+            var secondFile = Path.Combine(secondConfigurations, "Jellyfin.Plugin.JellyfinEnhanced.xml");
+            File.WriteAllText(firstFile, EnhancedConfiguration(true, 1790000000, 1789000000, "{}"));
+            File.WriteAllText(secondFile, EnhancedConfiguration(true, 1790086400, 1789500000, "{\"features\":[1,2,3]}"));
+            Configuration.PluginConfiguration Config() => new Configuration.PluginConfiguration();
+
+            var firstProvider = new PluginGenerationProvider(() => new[] { firstPlugin }, firstConfigurations, configurationProvider: Config);
+            var secondProvider = new PluginGenerationProvider(() => new[] { secondPlugin }, secondConfigurations, configurationProvider: Config);
+
+            Assert.Equal(firstProvider.Generation, secondProvider.Generation);
+            var detail = Assert.Single(firstProvider.Details);
+            Assert.Equal(3, detail.ConfigurationElementsIgnored);
+            Assert.Equal(1, detail.ConfigurationFileCount);
+
+            // The admin flips a real setting: identical bookkeeping, different UI.
+            File.WriteAllText(secondFile, EnhancedConfiguration(false, 1790086400, 1789500000, "{\"features\":[1,2,3]}"));
+            var thirdProvider = new PluginGenerationProvider(() => new[] { secondPlugin }, secondConfigurations, configurationProvider: Config);
+            Assert.NotEqual(firstProvider.Generation, thirdProvider.Generation);
+
+            // With the ignore list cleared the bookkeeping counts again.
+            var rawFirst = new PluginGenerationProvider(() => new[] { firstPlugin }, firstConfigurations, configurationProvider: () => new Configuration.PluginConfiguration { ConfigIgnoredElements = Array.Empty<string>() });
+            var rawSecond = new PluginGenerationProvider(() => new[] { secondPlugin }, secondConfigurations, configurationProvider: () => new Configuration.PluginConfiguration { ConfigIgnoredElements = Array.Empty<string>() });
+            Assert.NotEqual(rawFirst.Generation, rawSecond.Generation);
+            Assert.Equal(0, Assert.Single(rawFirst.Details).ConfigurationElementsIgnored);
+        }
+
+        [Fact]
+        public void PluginDeclaredIgnoredElementsNeedNoRegistryOrAdminEntry()
+        {
+            // A plugin nobody has heard of ships its own declaration in its
+            // configuration class. Two processes whose files differ only in the
+            // declared bookkeeping agree; a real setting still moves the
+            // generation; the declaration itself is not a setting either.
+            var pluginId = Guid.NewGuid();
+            var firstRoot = Path.Combine(_root, "declared-node-a");
+            var secondRoot = Path.Combine(_root, "declared-node-b");
+            var firstConfigurations = Path.Combine(firstRoot, "configurations");
+            var secondConfigurations = Path.Combine(secondRoot, "configurations");
+            Directory.CreateDirectory(firstConfigurations);
+            Directory.CreateDirectory(secondConfigurations);
+            var first = NodePlugin(firstRoot, "Future_9.0.0.0", pluginId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Future.xml", "Future Plugin");
+            var second = NodePlugin(secondRoot, "Future_9.0.0.0", pluginId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Future.xml", "Future Plugin");
+            static string Document(string feature, string lastRun, string declaration) =>
+                "<?xml version=\"1.0\"?>\n<PluginConfiguration>\n"
+                + "  <EnableFeature>" + feature + "</EnableFeature>\n"
+                + "  <LastRunUtc>" + lastRun + "</LastRunUtc>\n"
+                + declaration
+                + "</PluginConfiguration>\n";
+            const string Declaration = "  <RefreshKitIgnoredElements>\n    <string>LastRunUtc</string>\n  </RefreshKitIgnoredElements>\n";
+            var firstFile = Path.Combine(firstConfigurations, "Future.xml");
+            var secondFile = Path.Combine(secondConfigurations, "Future.xml");
+            File.WriteAllText(firstFile, Document("true", "2026-09-24T01:00:00Z", Declaration));
+            File.WriteAllText(secondFile, Document("true", "2026-09-25T13:37:00Z", Declaration));
+            // The admin list is empty: nothing but the plugin's own declaration.
+            Configuration.PluginConfiguration Config() => new Configuration.PluginConfiguration { ConfigIgnoredElements = Array.Empty<string>() };
+
+            var firstProvider = new PluginGenerationProvider(() => new[] { first }, firstConfigurations, configurationProvider: Config);
+            var secondProvider = new PluginGenerationProvider(() => new[] { second }, secondConfigurations, configurationProvider: Config);
+            Assert.Equal(firstProvider.Generation, secondProvider.Generation);
+            var detail = Assert.Single(firstProvider.Details);
+            Assert.Equal(2, detail.ConfigurationElementsIgnored);
+            Assert.Equal(new[] { "LastRunUtc", "RefreshKitIgnoredElements" }, detail.ConfigurationIgnoredElementNames);
+
+            File.WriteAllText(secondFile, Document("false", "2026-09-25T13:37:00Z", Declaration));
+            var changed = new PluginGenerationProvider(() => new[] { second }, secondConfigurations, configurationProvider: Config);
+            Assert.NotEqual(firstProvider.Generation, changed.Generation);
+
+            // Without the declaration the bookkeeping counts again, exactly as
+            // it did before this release (the exact-bytes identity).
+            File.WriteAllText(firstFile, Document("true", "2026-09-24T01:00:00Z", string.Empty));
+            File.WriteAllText(secondFile, Document("true", "2026-09-25T13:37:00Z", string.Empty));
+            var rawFirst = new PluginGenerationProvider(() => new[] { first }, firstConfigurations, configurationProvider: Config);
+            var rawSecond = new PluginGenerationProvider(() => new[] { second }, secondConfigurations, configurationProvider: Config);
+            Assert.NotEqual(rawFirst.Generation, rawSecond.Generation);
+            Assert.Empty(Assert.Single(rawFirst.Details).ConfigurationIgnoredElementNames);
+        }
+
+        [Fact]
+        public void IgnoredElementEntriesSupportBareAndPluginScopedForms()
+        {
+            var pluginId = Guid.Parse("f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b");
+            var plugin = NodePlugin(_root, "JellyfinEnhanced_12.8.0.0", pluginId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Jellyfin.Plugin.JellyfinEnhanced.xml", "Jellyfin Enhanced");
+            var other = NodePlugin(_root, "Other_1.0.0.0", Guid.NewGuid(), "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Other.xml", "Other Plugin");
+            var configuration = new Configuration.PluginConfiguration
+            {
+                ConfigIgnoredElements = new[]
+                {
+                    "  LastRunUtc ",
+                    "{F69E946A-4B3C-4E9A-8F0A-8D7C1B2C4D9B}:ClearTranslationCacheTimestamp",
+                    "jellyfinenhanced:analyticslastreportedat",
+                    "Jellyfin.Plugin.Demo:AnalyticsInstallSecret",
+                    "Other Plugin:OtherOnly",
+                    "Jellyfin Enhanced:not a name",
+                    "",
+                    "Nobody:Missing",
+                },
+            };
+
+            var resolved = PluginGenerationProvider.ResolveIgnoredConfigurationElements(configuration, plugin);
+            Assert.Equal(
+                new[] { "AnalyticsInstallSecret", "ClearTranslationCacheTimestamp", "LastRunUtc", "analyticslastreportedat" },
+                resolved.OrderBy(name => name, StringComparer.Ordinal));
+            Assert.Contains("ANALYTICSLASTREPORTEDAT", resolved);
+
+            // Both fixtures load Jellyfin.Plugin.Demo, so the assembly-scoped
+            // entry applies to both; the GUID- and name-scoped ones do not.
+            var resolvedOther = PluginGenerationProvider.ResolveIgnoredConfigurationElements(configuration, other);
+            Assert.Equal(
+                new[] { "AnalyticsInstallSecret", "LastRunUtc", "OtherOnly" },
+                resolvedOther.OrderBy(name => name, StringComparer.Ordinal));
+        }
+
+        [Fact]
+        public void ExclusionEntriesMatchRealNameFolderAndEveryGuidForm()
+        {
+            var pluginId = Guid.Parse("f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b");
+            var plugin = NodePlugin(_root, "Enhanced", pluginId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Jellyfin.Plugin.JellyfinEnhanced.xml", "Jellyfin Enhanced");
+
+            foreach (var entry in new[]
+                     {
+                         "Jellyfin Enhanced",
+                         "jellyfin enhanced",
+                         "Enhanced",
+                         "f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b",
+                         "F69E946A4B3C4E9A8F0A8D7C1B2C4D9B",
+                         "{f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b}",
+                         "(f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9b)",
+                         "Jellyfin.Plugin.Demo",
+                         "  Jellyfin Enhanced\r",
+                     })
+            {
+                Assert.True(PluginGenerationProvider.EntryMatchesPlugin(entry, plugin), entry);
+            }
+
+            foreach (var entry in new[] { "Jellyfin", "Enhance", "Jellyfin.Plugin", "", "   ", "f69e946a-4b3c-4e9a-8f0a-8d7c1b2c4d9c" })
+            {
+                Assert.False(PluginGenerationProvider.EntryMatchesPlugin(entry, plugin), entry);
+            }
+
+            var underscoreFolder = NodePlugin(_root, "Media_Bar", Guid.NewGuid(), "cccccccc-cccc-cccc-cccc-cccccccccccc", "MediaBar.xml", "Media Bar");
+            Assert.True(PluginGenerationProvider.EntryMatchesPlugin("Media Bar", underscoreFolder));
+            Assert.True(PluginGenerationProvider.EntryMatchesPlugin("Media_Bar", underscoreFolder));
+        }
+
+        [Fact]
+        public void MalformedConfigurationWithIgnoreListIsHashedAsExactBytes()
+        {
+            var folder = NewPluginFolder("Demo_1.0.0.0", "asset");
+            var descriptor = Descriptor(folder, "11111111-1111-1111-1111-111111111111", "Demo.xml");
+            var configurationFile = Path.Combine(_configurations, "Demo.xml");
+            File.WriteAllText(configurationFile, "<PluginConfiguration><LastRunUtc>1</LastRunUtc><Broken>");
+            var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var provider = new PluginGenerationProvider(
+                () => new[] { descriptor },
+                _configurations,
+                () => now,
+                configurationProvider: () => new Configuration.PluginConfiguration { ConfigIgnoredElements = new[] { "LastRunUtc" } });
+            var baseline = provider.Generation;
+            Assert.Equal(0, Assert.Single(provider.Details).ConfigurationElementsIgnored);
+
+            File.WriteAllText(configurationFile, "<PluginConfiguration><LastRunUtc>2</LastRunUtc><Broken>");
+            now = now.AddSeconds(1);
+            provider.Invalidate();
+            provider.Generation.ToString();
+            now = now.AddSeconds(11);
+            provider.Invalidate();
+            Assert.NotEqual(baseline, provider.Generation);
+        }
+
+        [Fact]
+        public void FilteredConfigurationIgnoresWhitespaceCommentsAndOnlyTopLevelElements()
+        {
+            var ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Stamp" };
+            static byte[] Bytes(string text) => System.Text.Encoding.UTF8.GetBytes(text);
+            var compact = Bytes("<Root><A>1</A><Stamp>9</Stamp></Root>");
+            var spaced = Bytes("<?xml version=\"1.0\"?>\n<Root>\n  <!-- c -->\n  <A>1</A>\n  <Stamp>10</Stamp>\n</Root>\n");
+            var nested = Bytes("<Root><A><Stamp>1</Stamp></A><Stamp>9</Stamp></Root>");
+            var nestedChanged = Bytes("<Root><A><Stamp>2</Stamp></A><Stamp>9</Stamp></Root>");
+            var textChanged = Bytes("<Root><A>1 </A><Stamp>9</Stamp></Root>");
+
+            var compactHash = PluginGenerationProvider.HashFilteredConfiguration(compact, compact.Length, ignored, out var compactIgnored);
+            var spacedHash = PluginGenerationProvider.HashFilteredConfiguration(spaced, spaced.Length, ignored, out var spacedIgnored);
+            Assert.Equal(compactHash, spacedHash);
+            Assert.Equal(1, compactIgnored);
+            Assert.Equal(1, spacedIgnored);
+
+            var nestedHash = PluginGenerationProvider.HashFilteredConfiguration(nested, nested.Length, ignored, out _);
+            var nestedChangedHash = PluginGenerationProvider.HashFilteredConfiguration(nestedChanged, nestedChanged.Length, ignored, out _);
+            Assert.NotEqual(nestedHash, nestedChangedHash);
+            Assert.NotEqual(compactHash, PluginGenerationProvider.HashFilteredConfiguration(textChanged, textChanged.Length, ignored, out _));
+
+            var dtd = Bytes("<!DOCTYPE Root [<!ENTITY x \"y\">]><Root><A>&x;</A></Root>");
+            Assert.Null(PluginGenerationProvider.HashFilteredConfiguration(dtd, dtd.Length, ignored, out _));
+            var broken = Bytes("<Root><A>");
+            Assert.Null(PluginGenerationProvider.HashFilteredConfiguration(broken, broken.Length, ignored, out _));
+        }
+
+        [Fact]
+        public void UnreadableFirstConfigurationObservationIsNotAdoptedAsBaseline()
+        {
+            var folder = NewPluginFolder("Demo_1.0.0.0", "asset");
+            var descriptor = Descriptor(folder, "11111111-1111-1111-1111-111111111111", "Demo.xml");
+            var configurationFile = Path.Combine(_configurations, "Demo.xml");
+            File.WriteAllText(configurationFile, "<PluginConfiguration><A>1</A></PluginConfiguration>");
+            var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var failReads = true;
+            var scans = 0;
+            var provider = new PluginGenerationProvider(
+                () =>
+                {
+                    scans++;
+                    return new[] { descriptor };
+                },
+                _configurations,
+                () => now,
+                beforeContentRead: path =>
+                {
+                    if (failReads && path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new IOException("torn");
+                    }
+                });
+
+            // The reference: a process that read the file coherently from the start.
+            var reference = new PluginGenerationProvider(() => new[] { descriptor }, _configurations, () => now);
+            var expected = reference.Generation;
+
+            var transitionalSnapshot = provider.Snapshot;
+            var transitional = transitionalSnapshot.Generation;
+            var first = Assert.Single(transitionalSnapshot.Details);
+            Assert.True(first.ConfigurationScanUnavailable);
+            Assert.False(first.UsingLastGoodConfiguration);
+            Assert.Equal(string.Empty, first.ConfigurationIdentity);
+            Assert.NotEqual(expected, transitional);
+
+            // Not cached: the very next read rescans without waiting for the TTL
+            // and adopts the coherent content silently, with no debounce and no
+            // intermediate sentinel generation.
+            failReads = false;
+            Assert.Equal(expected, provider.Generation);
+            Assert.Equal(2, scans);
+            Assert.Equal(expected, provider.Generation);
+            Assert.Equal(2, scans);
+
+            // A permanently unreadable file stops forcing rescans once its
+            // 3-second window has passed, however many reads arrive meanwhile.
+            var stuckScans = 0;
+            var stuckNow = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var stuck = new PluginGenerationProvider(
+                () =>
+                {
+                    stuckScans++;
+                    return new[] { descriptor };
+                },
+                _configurations,
+                () => stuckNow,
+                beforeContentRead: path => throw new IOException("always"));
+            for (var i = 0; i < 20; i++)
+            {
+                stuck.Generation.ToString();
+            }
+
+            Assert.Equal(20, stuckScans);
+            stuckNow = stuckNow.AddSeconds(3);
+            for (var i = 0; i < 10; i++)
+            {
+                stuck.Generation.ToString();
+            }
+
+            Assert.Equal(21, stuckScans);
+
+            // A backwards clock step must not reopen the window for the size
+            // of the step: the TTL path rescans once, then caches again.
+            stuckNow = stuckNow.AddHours(-1);
+            for (var i = 0; i < 10; i++)
+            {
+                stuck.Generation.ToString();
+            }
+
+            Assert.Equal(22, stuckScans);
+        }
+
+        [Fact]
+        public void EmptyConfigurationFileIsATornReadNotASetting()
+        {
+            var folder = NewPluginFolder("Demo_1.0.0.0", "asset");
+            var descriptor = Descriptor(folder, "11111111-1111-1111-1111-111111111111", "Demo.xml");
+            var configurationFile = Path.Combine(_configurations, "Demo.xml");
+            File.WriteAllText(configurationFile, "<PluginConfiguration><A>1</A></PluginConfiguration>");
+            var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var provider = new PluginGenerationProvider(() => new[] { descriptor }, _configurations, () => now);
+            var baseline = provider.Generation;
+
+            // FileMode.Create truncates before it writes: the empty instant
+            // must retain the last good content, not publish an "empty" setting.
+            File.WriteAllText(configurationFile, string.Empty);
+            now = now.AddSeconds(11);
+            provider.Invalidate();
+            Assert.Equal(baseline, provider.Generation);
+            var detail = Assert.Single(provider.Details);
+            Assert.True(detail.UsingLastGoodConfiguration);
+
+            File.WriteAllText(configurationFile, "<PluginConfiguration><A>2</A></PluginConfiguration>");
+            now = now.AddSeconds(1);
+            provider.Invalidate();
+            provider.Generation.ToString();
+            now = now.AddSeconds(11);
+            provider.Invalidate();
+            Assert.NotEqual(baseline, provider.Generation);
+        }
+
         [Fact]
         public void IdenticalActiveConfigurationContentAgreesAcrossPathsAndTimestamps()
         {
@@ -1004,7 +1352,9 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
 
             var unavailableDirectory = first.DirectoryPath + ".temporarily-unavailable";
             Directory.Move(first.DirectoryPath, unavailableDirectory);
-            File.WriteAllText(firstConfiguration, string.Empty);
+            // Removing the file releases its budget (an empty file would be a
+            // torn read and keep the last good content instead).
+            File.Delete(firstConfiguration);
             provider.Invalidate();
 
             var failedFirst = Assert.Single(
@@ -1962,7 +2312,8 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
             string folderName,
             Guid id,
             string mvid,
-            string? configurationFileName = null)
+            string? configurationFileName = null,
+            string? name = null)
         {
             var folder = Path.Combine(root, folderName);
             Directory.CreateDirectory(Path.Combine(folder, "web"));
@@ -1984,7 +2335,8 @@ namespace Jellyfin.Plugin.RefreshKit.Tests
                 },
                 configurationFileName == null
                     ? Array.Empty<string>()
-                    : new[] { configurationFileName });
+                    : new[] { configurationFileName },
+                name);
         }
     }
 }

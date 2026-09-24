@@ -67,20 +67,57 @@ namespace Jellyfin.Plugin.RefreshKit.Configuration
 
         /// <summary>
         /// Gets or sets the plugins whose configuration changes are IGNORED.
-        /// An entry matches a plugin folder (<c>Media Bar_2.4.12.0</c>), a
-        /// display name (<c>Media Bar</c>), a plugin GUID, or an assembly name
-        /// (<c>Jellyfin.Plugin.MediaBar</c>).
+        /// An entry matches a plugin folder (<c>Media Bar_2.4.12.0</c>), the
+        /// folder's display-name part or the plugin's real display name
+        /// (<c>Media Bar</c>), a plugin GUID in any common form, or an assembly
+        /// name (<c>Jellyfin.Plugin.MediaBar</c>).
         /// <para>
-        /// Empty by default: on a live 10.11.11 server, the plugins tested
-        /// (Jellyfin Enhanced, Media Bar, File Transformation,
-        /// InPlayerEpisodePreview) keep per-user preferences and runtime caches
-        /// in their private data directory, NOT in the watched plugin
-        /// configuration XML — so none of them needed excluding. Add a plugin
-        /// here if you observe it bumping the generation while nobody is
-        /// changing settings.
+        /// Empty by default: the plugins tested (Jellyfin Enhanced, Media Bar,
+        /// File Transformation, InPlayerEpisodePreview) keep per-user
+        /// preferences and runtime caches in their private data directory,
+        /// NOT in the watched plugin configuration XML. A plugin that writes
+        /// bookkeeping into its configuration XML is usually better served by
+        /// <see cref="ConfigIgnoredElements"/>, which keeps its real settings
+        /// watched. Add a plugin here only if it bumps the generation while
+        /// nobody is changing settings and no single element explains it.
         /// </para>
         /// </summary>
         public string[] ConfigWatchExclusions { get; set; } = Array.Empty<string>();
+
+        /// <summary>
+        /// Gets or sets the top-level elements of a plugin's configuration XML
+        /// that are left out of its configuration identity. A plugin that
+        /// records a timestamp or telemetry receipt in its configuration on a
+        /// timer, or at every start, would otherwise reload every open tab
+        /// each time it does so.
+        /// <para>
+        /// One entry per line. A bare element name (<c>LastRunUtc</c>) applies
+        /// to every plugin; <c>&lt;plugin&gt;:&lt;element&gt;</c> limits it to one
+        /// plugin, where the plugin part accepts the same forms as
+        /// <see cref="ConfigWatchExclusions"/>. Element names are compared
+        /// case-insensitively. Only direct children of the document element
+        /// are matched; a document that is not well-formed XML is hashed as
+        /// exact bytes instead.
+        /// </para>
+        /// <para>
+        /// This list is one of three layers. A plugin can declare its own
+        /// bookkeeping in a top-level <c>RefreshKitIgnoredElements</c> element
+        /// of its configuration XML, which is always honoured and needs no
+        /// entry anywhere. The shipped default of this list comes from the
+        /// built-in registry in <c>KnownPluginConfigurationHints.cs</c> (today:
+        /// Jellyfin Enhanced 12.8, whose scheduled translation-cache task
+        /// rewrites <c>ClearTranslationCacheTimestamp</c> at every server start
+        /// and whose optional usage analytics rewrite the <c>Analytics*</c>
+        /// receipts on a multi-day timer). This setting is the per-server
+        /// override on top of both. Restarts and updates still move the
+        /// generation through the loaded code; the one thing an ignored element
+        /// gives up is a reload for a change to that element alone.
+        /// </para>
+        /// </summary>
+        public string[] ConfigIgnoredElements { get; set; } = DefaultConfigIgnoredElements();
+
+        /// <summary>The shipped <see cref="ConfigIgnoredElements"/> list, rendered from the built-in registry.</summary>
+        public static string[] DefaultConfigIgnoredElements() => KnownPluginConfigurationHints.DefaultConfigIgnoredElements();
 
         /// <summary>
         /// Gets or sets the length, in minutes, of the burst window that follows a

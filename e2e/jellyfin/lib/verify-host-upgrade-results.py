@@ -66,7 +66,7 @@ MD5 = re.compile(r"^[0-9a-f]{32}$")
 MEDIA_LIBRARY_NAME = "Refresh Kit Host Upgrade Media"
 MEDIA_REMOTE_DIR = "/config/rk-host-upgrade-media"
 MEDIA_REMOTE_FILE = f"{MEDIA_REMOTE_DIR}/Refresh Kit Host Upgrade Fixture.mp4"
-PLAYBACK_GATE_REASONS = {"playback_route", "media_element", "fullscreen"}
+PLAYBACK_GATE_REASONS = {"playback_route", "media_element", "fullscreen_media"}
 EXPECTED_CONFIG = {
     "EnableInjection": True,
     "EnableThirdPartyStamping": True,

@@ -96,6 +96,23 @@
                 </div>
 
                 <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="rkConfigIgnoredElements">Ignore these settings elements</label>
+                    <textarea is="emby-textarea" id="rkConfigIgnoredElements" class="emby-textarea" rows="6"></textarea>
+                    <div class="fieldDescription">
+                        One per line. A top-level element of a plugin's configuration XML that is left out of
+                        its settings identity, so a plugin writing a timestamp or telemetry receipt into its
+                        configuration on its own (at every start, or on a timer) does not reload every tab.
+                        <code>Element</code> applies to every plugin; <code>Plugin:Element</code> limits it to
+                        one plugin (name, folder, GUID or assembly name, as above). The shipped entries come from
+                        the plugin's built-in registry and cover Jellyfin Enhanced 12.8 (by GUID, so a rename cannot
+                        break them). A plugin that declares its own bookkeeping in a
+                        <code>RefreshKitIgnoredElements</code> element of its settings needs no entry here.
+                        Clearing the list keeps only plugin declarations; the Diagnostics section lists the
+                        names in effect per plugin.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
                     <label class="inputLabel inputLabelUnfocused" for="rkPollSeconds">Poll interval (seconds)</label>
                     <input is="emby-input" type="number" id="rkPollSeconds" min="15" max="3600" />
                     <div class="fieldDescription">
@@ -211,6 +228,7 @@
                 page.querySelector('#rkEnableConfigWatching').checked = config.EnableConfigWatching !== false;
                 page.querySelector('#rkConfigCooldown').value = config.ConfigCooldownMinutes === 0 ? 0 : (config.ConfigCooldownMinutes || 5);
                 page.querySelector('#rkConfigExclusions').value = (config.ConfigWatchExclusions || []).join('\n');
+                page.querySelector('#rkConfigIgnoredElements').value = (config.ConfigIgnoredElements || []).join('\n');
             }
 
             document.querySelector('#RefreshKitConfigPage').addEventListener('pageshow', function () {
@@ -358,6 +376,8 @@
                     config.EnableConfigWatching = page.querySelector('#rkEnableConfigWatching').checked;
                     config.ConfigCooldownMinutes = readNumber(page, '#rkConfigCooldown', 5, 0, 1440);
                     config.ConfigWatchExclusions = page.querySelector('#rkConfigExclusions').value
+                        .split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+                    config.ConfigIgnoredElements = page.querySelector('#rkConfigIgnoredElements').value
                         .split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
                     return ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);

@@ -34,7 +34,11 @@ namespace Jellyfin.Plugin.RefreshKit
     /// <list type="number">
     /// <item><description>Only <c>&lt;script src&gt;</c> and
     /// <c>&lt;link rel="stylesheet" href&gt;</c>. Inline scripts have no URL;
-    /// manifests, icons, preconnects and preloads are left alone.</description></item>
+    /// manifests, icons, preconnects and fetch/font/image preloads are left alone.
+    /// A <c>preload</c>/<c>modulepreload</c> hint for a script or stylesheet is
+    /// stamped only when this same document also stamps a tag consuming that
+    /// exact URL, so hint and consumer keep matching; a hint whose consumer is a
+    /// runtime import is left alone for the same reason.</description></item>
     /// <item><description>Same-origin relative URLs only. Anything with a scheme
     /// (<c>https:</c>, <c>data:</c>, <c>blob:</c>) or a protocol-relative
     /// <c>//host/…</c> is skipped: a CDN or a third-party origin may key its
@@ -247,6 +251,28 @@ namespace Jellyfin.Plugin.RefreshKit
         /// </summary>
         private static string Walk(string html, string generation, string? ownTagMarker)
         {
+            // Preload hints are matched to their consumer by exact URL, so a hint
+            // may only be stamped when a stamped <script src>/stylesheet with the
+            // same raw URL exists in this document. Documents with hints are
+            // rare; when one is present, a first collecting pass records those
+            // consumer URLs and the real pass consults them.
+            HashSet<string>? consumers = null;
+            if (html.IndexOf("preload", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                consumers = new HashSet<string>(StringComparer.Ordinal);
+                WalkCore(html, generation, ownTagMarker, consumers, null);
+            }
+
+            return WalkCore(html, generation, ownTagMarker, null, consumers);
+        }
+
+        private static string WalkCore(
+            string html,
+            string generation,
+            string? ownTagMarker,
+            HashSet<string>? collectConsumers,
+            HashSet<string>? stampableHintUrls)
+        {
             var builder = new StringBuilder(html.Length + 64);
             var elements = new List<ElementContext>();
             var index = 0;
@@ -319,7 +345,13 @@ namespace Jellyfin.Plugin.RefreshKit
                         closeNameEnd++;
                     }
 
-                    if (!TryFindTagEnd(html, closeNameEnd, out var closeTagEnd))
+                    // An end tag's attributes are tokenized by the same
+                    // attribute states as a start tag's: a quote only opens a
+                    // value directly after '=', so `</div a'b>` ends at the
+                    // first '>' exactly as a browser sees it. Ending it later
+                    // would make the JavaScript of a following inline script
+                    // look like markup and expose it to stamping.
+                    if (!TryParseAttributes(html, closeNameEnd, out _, out var closeTagEnd))
                     {
                         builder.Append(html, open, html.Length - open);
                         index = html.Length;
@@ -330,6 +362,18 @@ namespace Jellyfin.Plugin.RefreshKit
                     if (closeNameEnd > nameStart)
                     {
                         var closeName = html.Substring(nameStart, closeNameEnd - nameStart);
+                        if (elements.Count == 0
+                            || (elements[elements.Count - 1].Namespace == MarkupNamespace.Html
+                                && !HasOpenElement(elements, closeName)))
+                        {
+                            // Nothing on the stack can match, so every walker
+                            // below is a no-op. Skipping them keeps a run of
+                            // unmatched end tags linear rather than paying the
+                            // full scope/namespace scans for each one.
+                            index = closeTagEnd + 1;
+                            continue;
+                        }
+
                         PopForForeignContentEndTagBreakout(elements, closeName);
                         if (ForeignEndTagRequiresFailClosed(elements, closeName))
                         {
@@ -388,7 +432,12 @@ namespace Jellyfin.Plugin.RefreshKit
                     // enabled and ordinary markup when it is disabled. A server
                     // cannot know the eventual UA flag, so URL stamping cannot
                     // safely infer an effective base in either parse.
-                    Interlocked.Increment(ref _noScriptBoundaryAborts);
+                    if (collectConsumers == null)
+                    {
+                        // The collecting pass aborts the same way; count once.
+                        Interlocked.Increment(ref _noScriptBoundaryAborts);
+                    }
+
                     return html;
                 }
 
@@ -409,7 +458,7 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
 
                 if (elementNamespace == MarkupNamespace.Html
-                    && StampTag(html, open, tagEnd, name, attributes, generation, ownTagMarker, builder))
+                    && StampTag(html, open, tagEnd, name, attributes, generation, ownTagMarker, builder, collectConsumers, stampableHintUrls))
                 {
                     changed = true;
                 }
@@ -436,7 +485,11 @@ namespace Jellyfin.Plugin.RefreshKit
                     // Deeper than any honest shell. Give the caller its own
                     // bytes back rather than keep walking a document whose
                     // per-token scans are no longer bounded.
-                    Interlocked.Increment(ref _openElementDepthAborts);
+                    if (collectConsumers == null)
+                    {
+                        Interlocked.Increment(ref _openElementDepthAborts);
+                    }
+
                     return html;
                 }
 
@@ -483,7 +536,9 @@ namespace Jellyfin.Plugin.RefreshKit
             List<TagAttribute> attributes,
             string generation,
             string? ownTagMarker,
-            StringBuilder builder)
+            StringBuilder builder,
+            HashSet<string>? collectConsumers,
+            HashSet<string>? stampableHintUrls)
         {
             var length = tagEnd - tagStart + 1;
             var isLink = name.Equals("link", StringComparison.OrdinalIgnoreCase);
@@ -502,7 +557,8 @@ namespace Jellyfin.Plugin.RefreshKit
                 return false;
             }
 
-            if (isLink && !IsStylesheet(html, attributes))
+            var linkKind = isLink ? ClassifyLink(html, attributes) : LinkKind.None;
+            if (isLink && linkKind == LinkKind.None)
             {
                 builder.Append(html, tagStart, length);
                 return false;
@@ -515,8 +571,24 @@ namespace Jellyfin.Plugin.RefreshKit
                 return false;
             }
 
-            var stamped = StampUrl(html.Substring(url.ValueStart, url.ValueLength), generation);
-            if (stamped == null)
+            var rawUrl = html.Substring(url.ValueStart, url.ValueLength);
+            var stamped = StampUrl(rawUrl, generation);
+            if (collectConsumers != null)
+            {
+                // Collecting pass: remember which consumer URLs the real pass
+                // will stamp; never change the output.
+                if (stamped != null && linkKind != LinkKind.Hint)
+                {
+                    collectConsumers.Add(rawUrl);
+                }
+
+                builder.Append(html, tagStart, length);
+                return false;
+            }
+
+            if (stamped == null
+                || (linkKind == LinkKind.Hint
+                    && (stampableHintUrls == null || !stampableHintUrls.Contains(rawUrl))))
             {
                 builder.Append(html, tagStart, length);
                 return false;
@@ -528,11 +600,29 @@ namespace Jellyfin.Plugin.RefreshKit
             return true;
         }
 
-        private static bool IsStylesheet(string html, List<TagAttribute> attributes)
+        /// <summary>
+        /// A <c>&lt;link&gt;</c> is versioned when it is a stylesheet, or when it
+        /// is a <c>preload</c>/<c>modulepreload</c> hint for a script or a
+        /// stylesheet. A hint is matched to its consumer by exact URL, so
+        /// stamping only the consuming <c>&lt;script&gt;</c> or stylesheet would
+        /// leave the hint pointing at the unversioned URL: the browser then
+        /// downloads the resource twice and warns that the preload went unused.
+        /// Both tags receive the same deterministic stamp, so their URLs keep
+        /// matching. Every other link type (icons, manifests, fonts) is left
+        /// alone.
+        /// </summary>
+        private enum LinkKind
+        {
+            None,
+            Stylesheet,
+            Hint,
+        }
+
+        private static LinkKind ClassifyLink(string html, List<TagAttribute> attributes)
         {
             if (!TryGetAttribute(attributes, "rel", out var rel))
             {
-                return false;
+                return LinkKind.None;
             }
 
             // `rel` is an ASCII-whitespace-separated set of link-type tokens,
@@ -555,15 +645,39 @@ namespace Jellyfin.Plugin.RefreshKit
                     index++;
                 }
 
-                if (index > start
-                    && value.Substring(start, index - start)
-                        .Equals("stylesheet", StringComparison.OrdinalIgnoreCase))
+                if (index <= start)
                 {
-                    return true;
+                    continue;
+                }
+
+                var token = value.Substring(start, index - start);
+                if (token.Equals("stylesheet", StringComparison.OrdinalIgnoreCase))
+                {
+                    return LinkKind.Stylesheet;
+                }
+
+                if (token.Equals("modulepreload", StringComparison.OrdinalIgnoreCase)
+                    || (token.Equals("preload", StringComparison.OrdinalIgnoreCase)
+                        && IsScriptOrStylePreload(html, attributes)))
+                {
+                    return LinkKind.Hint;
                 }
             }
 
-            return false;
+            return LinkKind.None;
+        }
+
+        private static bool IsScriptOrStylePreload(string html, List<TagAttribute> attributes)
+        {
+            if (!TryGetAttribute(attributes, "as", out var destination))
+            {
+                return false;
+            }
+
+            var value = WebUtility.HtmlDecode(
+                html.Substring(destination.ValueStart, destination.ValueLength)).Trim();
+            return value.Equals("script", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("style", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsHtmlSpace(char value) =>
@@ -626,6 +740,17 @@ namespace Jellyfin.Plugin.RefreshKit
                 }
 
                 var nameStart = index;
+                if (html[index] == '=')
+                {
+                    // HTML's unexpected-equals-sign-before-attribute-name
+                    // recovery: a leading '=' starts the attribute NAME, so
+                    // `<p =="x>` has an attribute named "=" whose quoted value
+                    // may contain '>'. Treating it as an empty name plus a
+                    // value would end the tag at a different place than a
+                    // browser does.
+                    index++;
+                }
+
                 while (index < html.Length
                        && html[index] != '='
                        && html[index] != '>'
@@ -1170,6 +1295,19 @@ namespace Jellyfin.Plugin.RefreshKit
             return true;
         }
 
+        private static bool HasOpenElement(List<ElementContext> elements, string name)
+        {
+            for (var index = elements.Count - 1; index >= 0; index--)
+            {
+                if (elements[index].Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private static void PopElement(List<ElementContext> elements, string name)
         {
             if (elements.Count == 0)
@@ -1335,7 +1473,7 @@ namespace Jellyfin.Plugin.RefreshKit
 
             if (html[open + 1] == '/')
             {
-                return TryFindTagEnd(html, open + 2, out var tagEnd)
+                return TryParseAttributes(html, open + 2, out _, out var tagEnd)
                     ? tagEnd + 1
                     : html.Length;
             }
@@ -1344,37 +1482,6 @@ namespace Jellyfin.Plugin.RefreshKit
             // comments; their first '>' ends the token regardless of quotes.
             var close = html.IndexOf('>', open + 1);
             return close < 0 ? html.Length : close + 1;
-        }
-
-        private static bool TryFindTagEnd(string html, int from, out int tagEnd)
-        {
-            var quote = '\0';
-            for (var index = from; index < html.Length; index++)
-            {
-                var character = html[index];
-                if (quote != '\0')
-                {
-                    if (character == quote)
-                    {
-                        quote = '\0';
-                    }
-
-                    continue;
-                }
-
-                if (character == '"' || character == '\'')
-                {
-                    quote = character;
-                }
-                else if (character == '>')
-                {
-                    tagEnd = index;
-                    return true;
-                }
-            }
-
-            tagEnd = -1;
-            return false;
         }
 
         /// <summary>
@@ -1435,6 +1542,24 @@ namespace Jellyfin.Plugin.RefreshKit
                 {
                     state = ScriptTextState.Escaped;
                     index += 4;
+
+                    // `<!--` leaves the tokenizer in escaped-dash-dash state,
+                    // where any further '-' stays put and '>' returns to plain
+                    // script data. So `<!-->` and `<!--->` are complete and
+                    // do NOT open an escaped run; staying escaped here would
+                    // hide the real `</script>` when the body later mentions
+                    // `<script>` and leave every tag after it unstamped.
+                    while (index < html.Length && html[index] == '-')
+                    {
+                        index++;
+                    }
+
+                    if (index < html.Length && html[index] == '>')
+                    {
+                        state = ScriptTextState.Normal;
+                        index++;
+                    }
+
                     continue;
                 }
 

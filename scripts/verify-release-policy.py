@@ -10,7 +10,7 @@ import sys
 import time
 
 
-FINAL_VERSION = "1.1.0.3"
+FINAL_VERSION = "1.1.0.4"
 MILESTONE = re.compile(r"^1\.0\.0\.([1-9][0-9]*)$")
 BOUNDARY_WINDOW_SECONDS = 24 * 60 * 60
 # The persistent goal's authoritative createdAt value.  Milestone callers must

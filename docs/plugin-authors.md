@@ -245,6 +245,47 @@ If `jellyfin-refresh-kit.js` is one of the injected scripts, put it **before** s
 - JavaScript cannot add response `ETag` or `Cache-Control` headers; use the server helper when those guarantees are required.
 - When two plugins embed `RefreshKit.cs`, the innermost instance owns the shell response and the outer one stands down, so the outer plugin's tag is not injected on that page while the inner one keeps committing it; the outer instance resumes on its own once the inner one stops. See [More than one plugin embedding the helper](#more-than-one-plugin-embedding-the-helper).
 
+## Tell Refresh Kit which settings are bookkeeping (1.1.0.4)
+
+The standalone plugin treats a change to a plugin's configuration XML as a
+settings change and reloads open tabs for it. If your plugin writes to its own
+configuration on a timer or at startup — a last-run timestamp, a telemetry
+receipt, a cache stamp — declare those elements so they are left out of the
+identity. Nothing else in Refresh Kit needs to know about your plugin, and the
+declaration ships and versions with your code:
+
+```csharp
+public class PluginConfiguration : BasePluginConfiguration
+{
+    public bool EnableFeature { get; set; } = true;
+
+    // Rewritten by a scheduled task; not a setting.
+    public long LastRunUtc { get; set; }
+
+    // Read by Jellyfin Refresh Kit: top-level elements of THIS document that
+    // are bookkeeping. The element itself is never treated as a setting.
+    public string[] RefreshKitIgnoredElements { get; set; } = new[] { "LastRunUtc" };
+}
+```
+
+XmlSerializer writes that as
+`<RefreshKitIgnoredElements><string>LastRunUtc</string></RefreshKitIgnoredElements>`;
+a plain text body with names separated by whitespace or commas is accepted
+too. Rules: only a direct child of the document element named
+`RefreshKitIgnoredElements` is honoured; names match direct children of the
+document element, case-insensitively; a document that is not well-formed XML
+declares nothing; and an admin's own **Ignore these settings elements** entries
+are added on top, never subtracted. List only values that change nothing a
+browser renders — a setting an admin edits belongs in the generation, because
+reloading for it is the point.
+
+If you cannot ship the declaration (an older release you no longer build, or a
+plugin you do not maintain), the fallback layers are the built-in registry in
+`plugin/Jellyfin.Plugin.RefreshKit/KnownPluginConfigurationHints.cs` (see
+[docs/contributing.md](contributing.md#adding-a-plugin-to-the-bookkeeping-registry))
+and the admin setting. The admin **Diagnostics** section lists the names in
+effect per plugin, whichever layer they came from.
+
 ## Protect application work (runtime 2.5.0)
 
 `JellyfinRefreshKit.registerReloadGuard(name, canReload)` adds page-wide
@@ -269,17 +310,45 @@ reservation in flight. Guard closures and retained handles survive a newer
 runtime taking over; no callback or draft text is persisted to browser storage.
 `state().reloadGuards` reports names and the last evaluated permission only.
 
-Use a guard for draft editors, custom/shadow-DOM forms and asynchronous saves:
+Use a guard for draft editors, custom/shadow-DOM forms and asynchronous saves.
+Always feature-detect: the kit may be absent (disabled, blocked, not
+installed), a 1.x singleton may own the page, or an OLDER kit copy may own
+the frozen `window.JellyfinRefreshKit` global — a newer copy that takes the
+page over cannot re-point that global, so `registerReloadGuard` is missing
+from it even though the live manager supports guards. Your save path must
+never depend on the kit:
 
 ```js
-const guard = JellyfinRefreshKit.registerReloadGuard(
-    'My editor', () => !editor.isDirty && editor.pendingSaves === 0
-);
+const rk = window.JellyfinRefreshKit;
+const guard = (rk && typeof rk.registerReloadGuard === 'function')
+    ? rk.registerReloadGuard('My editor', () => !editor.isDirty && editor.pendingSaves === 0)
+    : { changed() {}, release() {} };
 // Notify after updates to those values:
 guard.changed();
 // On an intentional, safe teardown:
 guard.release();
 ```
+
+### Declarative protection (runtime 2.5.1)
+
+Where the API is unreachable, or simpler, mark the element that holds the
+unfinished work:
+
+```html
+<form class="my-editor" data-refresh-kit-unsaved>…</form>
+```
+
+Any element in the document's light DOM carrying `data-refresh-kit-unsaved`
+with a value other than `false` blocks automatic reloads with `unsaved_work`,
+whichever kit copy manages the page (2.5.1 or newer). The probe does not look
+inside shadow roots, so a web-component editor marks its host element. Hidden
+elements count too — hiding a draft is not saving it — so set the attribute
+when the work becomes dirty or a save starts, and remove it (or set it to
+`false`) only after a confirmed successful save or an explicit discard. When
+`registerReloadGuard` is called on a retired runtime copy whose live manager
+lacks the API (a contract violation), it throws rather than returning a handle
+that protects nothing; catch that and use the attribute. This is part of the frozen registration contract
+(clause 8), as are `registerReloadGuard` and guard transfer between copies.
 
 Do not release at submit time. Wait for a confirmed successful save and account
 for edits made while that save was pending. A failed save still holds work.

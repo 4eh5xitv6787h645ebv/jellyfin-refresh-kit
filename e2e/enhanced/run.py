@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -22,13 +23,26 @@ def run(*args, **kwargs):
 def digest(p):
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
+def require(condition, message):
+    """A check that survives `python -O`; `assert` would silently vanish there."""
+    if not condition:
+        raise SystemExit('FATAL: ' + message)
+
+def remove_container(name):
+    # By name, never by a possibly-unset id: a `docker run` that created the
+    # container but failed afterwards must still be cleaned up.
+    subprocess.run(['docker', 'rm', '-f', name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
 def main():
+    # A CI timeout delivers SIGTERM; turn it into an exception so the
+    # `finally` blocks below still remove the containers and lab directories.
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt('SIGTERM')))
     parser = argparse.ArgumentParser()
     parser.add_argument('--snapshot', type=pathlib.Path, default=REPO / 'plugin/build')
     parser.add_argument('--target', choices=IMAGES)
     args = parser.parse_args()
     snapshot = args.snapshot.resolve()
-    assert snapshot.is_relative_to(REPO / 'plugin/.builds')
+    require(snapshot.is_relative_to(REPO / 'plugin/.builds'), 'the snapshot must be an immutable plugin/.builds entry: ' + str(snapshot))
     run('python3', str(REPO / 'scripts/verify-package.py'), '--build-dir', str(snapshot), '--manifest', str(REPO / 'manifest.json'), '--manifest-mode', 'structure', '--require-immutable-snapshot')
     lock = json.loads((REPO / 'e2e/compat/ecosystem.lock.json').read_text())
     artifacts = {a['id']: a for a in lock['artifacts']}
@@ -50,7 +64,7 @@ def main():
         archive = state / artifact['archive']['name']
         if not archive.exists() or digest(archive) != artifact['archive']['sha256']:
             urllib.request.urlretrieve(artifact['archive']['url'], archive)
-        assert digest(archive) == artifact['archive']['sha256']
+        require(digest(archive) == artifact['archive']['sha256'], 'downloaded Enhanced archive does not match the locked SHA-256: ' + artifact['archive']['name'])
         traces = []
         for order in ('first', 'last'):
             (output / (target + '-' + order + '.json')).unlink(missing_ok=True)
@@ -61,6 +75,7 @@ def main():
             (lab / 'cache').mkdir()
             name = 'rk-enhanced-' + uuid.uuid4().hex[:12]
             container = None
+            started = False
 
             def plugin_folder(folder, source, plugin_meta):
                 dest = plugins / folder
@@ -82,9 +97,15 @@ def main():
             with zipfile.ZipFile(archive) as z:
                 (enhanced / artifact['plugin']['assembly']).write_bytes(z.read(artifact['plugin']['assembly']))
             (enhanced / 'meta.json').write_text(json.dumps(dict(name='Jellyfin Enhanced', guid=artifact['plugin']['guid'], version=artifact['plugin']['version'], targetAbi=meta['targetAbi'], status='Active', autoUpdate=False)))
-            for assembly, route, guid, sort in [('EnhancedAdoptionFixture', 'EnhancedAdoption', 'c39e6da2-71fe-49ac-96ce-8bd3ba780e03', '000' if order == 'first' else '999'), ('SiblingRefreshFixture', 'SiblingRefresh', 'b9d81601-6a04-4a9a-95d5-08e250da36d0', '500')]:
+            # Jellyfin registers plugins in ordinal name order, so the prefix
+            # decides where the adopter sits relative to BOTH "Jellyfin Enhanced"
+            # and "Jellyfin Refresh Kit": '000' registers first (outermost
+            # middleware), 'zzz' registers after both (innermost). A digit
+            # prefix for "last" would still sort before the letter J.
+            for assembly, route, guid, sort in [('EnhancedAdoptionFixture', 'EnhancedAdoption', 'c39e6da2-71fe-49ac-96ce-8bd3ba780e03', '000' if order == 'first' else 'zzz'), ('SiblingRefreshFixture', 'SiblingRefresh', 'b9d81601-6a04-4a9a-95d5-08e250da36d0', '500')]:
                 plugin_folder(sort + route, [state / 'builds' / ('true' if route == 'EnhancedAdoption' else 'false') / 'bin/Release' / tfm / (assembly + '.dll')], dict(name=sort + route, guid=guid, version='1.0.0.0', targetAbi=meta['targetAbi'], status='Active', autoUpdate=False))
             try:
+                started = True
                 container = run('docker', 'run', '-d', '--name', name, '--label', 'rk.enhanced-readiness=true', '--network', 'bridge', '--user', f'{os.getuid()}:{os.getgid()}', '-p', '127.0.0.1::8096', '-v', str(lab / 'config') + ':/config', '-v', str(lab / 'cache') + ':/cache', IMAGES[target], capture_output=True).stdout.strip()
                 info = json.loads(run('docker', 'inspect', container, capture_output=True).stdout)[0]
                 port = info['NetworkSettings']['Ports']['8096/tcp'][0]['HostPort']
@@ -125,17 +146,20 @@ def main():
                 traces.append(d['middlewareOrder'])
                 print(target, order, 'PASS', flush=True)
             finally:
-                if container:
-                    # Full server logs may contain authenticated request URLs.
-                    # Retain only assembly/plugin startup identities.
-                    log = run('docker', 'logs', container, capture_output=True)
-                    (output / (target + '-' + order + '-startup.log')).write_text('\n'.join((x for x in (log.stdout + log.stderr).splitlines() if 'Loaded assembly' in x or 'Loaded plugin' in x)))
-                    run('docker', 'stop', '--timeout', '10', container, stdout=subprocess.DEVNULL)
-                    run('docker', 'rm', container, stdout=subprocess.DEVNULL)
-                for directory, _, _ in os.walk(lab):
-                    pathlib.Path(directory).chmod(0o755)
-                shutil.rmtree(lab)
-        assert traces[0] != traces[1], f'{target}: both orders must actually execute differently: {traces}'
+                try:
+                    if container:
+                        # Full server logs may contain authenticated request URLs.
+                        # Retain only assembly/plugin startup identities.
+                        log = subprocess.run(['docker', 'logs', container], check=False, text=True, capture_output=True)
+                        (output / (target + '-' + order + '-startup.log')).write_text('\n'.join((x for x in (log.stdout + log.stderr).splitlines() if 'Loaded assembly' in x or 'Loaded plugin' in x)))
+                        subprocess.run(['docker', 'stop', '--timeout', '10', container], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                finally:
+                    if started:
+                        remove_container(name)
+                    for directory, _, _ in os.walk(lab):
+                        pathlib.Path(directory).chmod(0o755)
+                    shutil.rmtree(lab, ignore_errors=True)
+        require(traces[0] != traces[1], f'{target}: both orders must actually execute differently: {traces}')
     print('Enhanced adoption lab passed', flush=True)
 if __name__ == '__main__':
     main()
