@@ -266,9 +266,7 @@ Enhanced release, both supported host lines, both middleware orders, duplicate
 runtimes and actual Enhanced review-form behavior. See
 [the lab contract](../e2e/enhanced/README.md).
 
-The active final release version is `1.1.0.3` (runtime `2.5.0`); the source
-tree currently carries the next candidate, `1.1.0.4` (runtime `2.5.1`), whose
-manifest entry is added only by the release procedure above. The fixed
+The active final release version is `1.1.0.4` (runtime `2.5.1`). The fixed
 campaign clock, clean-source/manifest-child binding, exact validation receipts,
 and immutable asset publication checks remain required. Updating the expected
 version does not authorize replacing the existing `v1.0.1.0` assets.

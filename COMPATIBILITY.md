@@ -34,16 +34,24 @@ are rejected by the harnesses.
 
 | Evidence family | Current status | What may be claimed |
 | --- | --- | --- |
-| Fast/static, dual-runtime xUnit, and Chromium suites | **PASS** for 1.1.0.3 | 399 tests per .NET target and 101 Chromium regressions; package, reproducibility, locking, and security gates passed. |
+| Fast/static, dual-runtime xUnit, and Chromium suites | **PASS** for 1.1.0.4 | 429 tests per .NET target and 109 Chromium regressions; package, reproducibility, locking, and security gates passed. |
 | Jellyfin 10.11.11 and 12.0.0-rc4 self lifecycle | **PASS** for the exact release candidate | Real install/update/disable/enable/uninstall/reinstall APIs, restarts, playback gating, and open-tab convergence passed. |
 | Genuine third-party v1/v2 lifecycle | **PASS** for the exact release candidate | Automatic `G0 → G1 → G2 → G0 → G2 → G0` convergence with exact process epochs and real assemblies/assets passed. |
 | Reverse-proxy/browser matrix | **PASS** for the exact release candidate | Strong validators, ordinary proxies, subpaths, websockets, loose-asset changes, and adversarial-cache controls/remedies passed. |
 | Locked fourteen-matrix ecosystem campaign | **PASS WITH LIMITATION** for the exact release candidate | All 44 locked archives verified; 12 runtime matrices passed and two retained the expected GetAvatar outer-owner stamping limitation. |
 | Enhanced 12.8 adoption | **PASS** on 10.11.11 and stable 12.1, both middleware orders | All four cases verified entry preservation, duplicate runtimes, draft/save protection, resumed reloads, and injection disable/reenable. |
 
-The [1.1.0.3 readiness report](docs/enhanced-readiness.md) binds these results to
-source `4a09fc3`, manifest child `25da87f`, exact package hashes, the successful
-release-validation run, and the successful published-asset correspondence check.
+Release 1.1.0.4 is bound to source `915da1c853e1f03f88ab0f801b07ed1b2373988f`
+and manifest child `7c274044d9bc2ef243dda75927f2c9d4f3f2d5c1`: the
+[release validation run](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/actions/runs/35994262194)
+passed all five jobs (the integration gate includes the four Enhanced adoption
+cases) and the
+[post-release correspondence run](https://github.com/4eh5xitv6787h645ebv/jellyfin-refresh-kit/actions/runs/35998321874)
+verified the published assets (MD5 `27781971f24554d97999e744ae472252` for
+10.11, `bfa7103c40633e0b2519a5a54f4124de` for 12) against the retained bytes.
+The earlier [1.1.0.3 readiness report](docs/enhanced-readiness.md) binds that
+release to source `4a09fc3`, manifest child `25da87f`, its package hashes and
+its own validation and correspondence runs.
 The historical diagnostic below is kept as provenance and is superseded by
 those exact release receipts.
 
